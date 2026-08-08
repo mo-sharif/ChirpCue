@@ -1,0 +1,289 @@
+import Foundation
+
+public enum MeetingCaptureMode: String, Codable, CaseIterable, Sendable {
+    case manualOnly
+    case microphoneOnly
+    case systemOutputOnly
+    case microphoneAndSystemOutput
+
+    public var capturesMicrophone: Bool {
+        self == .microphoneOnly || self == .microphoneAndSystemOutput
+    }
+
+    public var capturesSystemOutput: Bool {
+        self == .systemOutputOnly || self == .microphoneAndSystemOutput
+    }
+
+    public var enabledLanes: [AudioLane] {
+        var lanes: [AudioLane] = []
+        if capturesMicrophone { lanes.append(.microphone) }
+        if capturesSystemOutput { lanes.append(.output) }
+        return lanes
+    }
+}
+
+public struct MeetingConsent: Equatable, Sendable {
+    public let participantDisclosureConfirmed: Bool
+
+    public init(participantDisclosureConfirmed: Bool) {
+        self.participantDisclosureConfirmed = participantDisclosureConfirmed
+    }
+}
+
+public struct MeetingGroundingIdentity: Equatable, Sendable {
+    public let repoAlias: String
+    public let fingerprint: String
+
+    public init(repoAlias: String, fingerprint: String) {
+        self.repoAlias = repoAlias
+        self.fingerprint = fingerprint
+    }
+}
+
+public struct MeetingSessionConfiguration: Sendable {
+    public let meetingID: UUID
+    public let captureMode: MeetingCaptureMode
+    public let localeIdentifier: String
+    public let grounding: MeetingGroundingIdentity?
+    public let transcriptRetention: Duration
+    public let transcriptContextSeconds: TimeInterval
+    public let turnBoundaryDelay: Duration
+    public let microphoneAttributionDelay: Duration
+
+    public init(
+        meetingID: UUID = UUID(),
+        captureMode: MeetingCaptureMode,
+        localeIdentifier: String = "en-US",
+        grounding: MeetingGroundingIdentity? = nil,
+        transcriptRetention: Duration = .seconds(180),
+        transcriptContextSeconds: TimeInterval = 45,
+        turnBoundaryDelay: Duration = .milliseconds(450),
+        microphoneAttributionDelay: Duration = .milliseconds(250)
+    ) {
+        precondition(transcriptContextSeconds > 0)
+        self.meetingID = meetingID
+        self.captureMode = captureMode
+        self.localeIdentifier = localeIdentifier
+        self.grounding = grounding
+        self.transcriptRetention = transcriptRetention
+        self.transcriptContextSeconds = transcriptContextSeconds
+        self.turnBoundaryDelay = turnBoundaryDelay
+        self.microphoneAttributionDelay = microphoneAttributionDelay
+    }
+}
+
+public struct MeetingAudioLaneServices: Sendable {
+    public let lane: AudioLane
+    public let capture: any AudioCapturing
+    public let transcriber: any AudioTranscribing
+
+    public init(
+        lane: AudioLane,
+        capture: any AudioCapturing,
+        transcriber: any AudioTranscribing
+    ) {
+        self.lane = lane
+        self.capture = capture
+        self.transcriber = transcriber
+    }
+}
+
+public struct MeetingAudioServices: Sendable {
+    public let microphone: MeetingAudioLaneServices?
+    public let systemOutput: MeetingAudioLaneServices?
+
+    public init(
+        microphone: MeetingAudioLaneServices? = nil,
+        systemOutput: MeetingAudioLaneServices? = nil
+    ) {
+        self.microphone = microphone
+        self.systemOutput = systemOutput
+    }
+}
+
+public struct MeetingBrownout: Identifiable, Equatable, Sendable {
+    public let reason: BrownoutReason
+    public let lane: AudioLane?
+
+    public init(reason: BrownoutReason, lane: AudioLane? = nil) {
+        self.reason = reason
+        self.lane = lane
+    }
+
+    public var id: String {
+        "\(reason.rawValue):\(lane?.rawValue ?? "session")"
+    }
+
+    public var summary: String {
+        switch reason {
+        case .systemAudioLost:
+            "Meeting audio is unavailable. Typed Coach still works."
+        case .microphoneLost:
+            "Microphone audio is unavailable."
+        case .microphoneDisabled:
+            "Microphone capture is off."
+        case .outputDisabled:
+            "Meeting audio capture is off. Use typed Coach for questions."
+        case .transcriptUncertain:
+            "The local transcript may be incomplete."
+        case .transcriberAssetMissing:
+            "The local transcription language is not ready."
+        case .codexOffline:
+            "Codex is unavailable."
+        case .authenticationExpired:
+            "Sign in to the isolated Codex profile to continue."
+        case .accountMismatch:
+            "The active Codex account does not match this profile."
+        case .protocolUnsupported:
+            "This Codex build is not compatible with PaceNote."
+        case .appServerCrashed:
+            "The Codex service stopped unexpectedly."
+        case .quickLimited:
+            "The quick response path is temporarily limited."
+        case .deepLimited:
+            "The grounded response path is temporarily limited."
+        case .repositoryChanged:
+            "The approved repository changed after its snapshot was sealed."
+        case .snapshotBlocked:
+            "The repository snapshot was blocked by a safety check."
+        case .snapshotBusy:
+            "The repository snapshot is still being prepared."
+        case .permissionProfileMismatch:
+            "The Codex permission profile is not read-only."
+        case .skillPolicyMismatch:
+            "The selected skill is not approved for this session."
+        case .speakerUncertain:
+            "Speaker attribution is uncertain."
+        }
+    }
+}
+
+public struct MeetingSessionState: Equatable, Sendable {
+    public let phase: MeetingPhase
+    public let captureMode: MeetingCaptureMode
+    public let consentConfirmed: Bool
+    public let isPrepared: Bool
+    public let isRunning: Bool
+    public let runtime: MeetingSessionRuntimeStatus?
+    public let transcript: [TranscriptSegment]
+    public let suggestions: [SuggestionCard]
+    public let brownouts: [MeetingBrownout]
+
+    public init(
+        phase: MeetingPhase,
+        captureMode: MeetingCaptureMode,
+        consentConfirmed: Bool,
+        isPrepared: Bool,
+        isRunning: Bool,
+        runtime: MeetingSessionRuntimeStatus?,
+        transcript: [TranscriptSegment],
+        suggestions: [SuggestionCard],
+        brownouts: [MeetingBrownout]
+    ) {
+        self.phase = phase
+        self.captureMode = captureMode
+        self.consentConfirmed = consentConfirmed
+        self.isPrepared = isPrepared
+        self.isRunning = isRunning
+        self.runtime = runtime
+        self.transcript = transcript
+        self.suggestions = suggestions
+        self.brownouts = brownouts
+    }
+}
+
+public struct MeetingSessionRuntimeStatus: Equatable, Sendable {
+    public let planType: String?
+    public let quickRoute: CodexModelRoute
+    public let deepRoute: CodexModelRoute
+    public let usesRealtimeQuick: Bool
+
+    public init(
+        planType: String?,
+        quickRoute: CodexModelRoute,
+        deepRoute: CodexModelRoute,
+        usesRealtimeQuick: Bool
+    ) {
+        self.planType = planType
+        self.quickRoute = quickRoute
+        self.deepRoute = deepRoute
+        self.usesRealtimeQuick = usesRealtimeQuick
+    }
+}
+
+public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
+    case invalidLifecycle
+    case consentRequired
+    case microphonePermissionRequired
+    case microphonePermissionDenied
+    case missingAudioServices(AudioLane)
+    case invalidAudioServices(AudioLane)
+    case transcriptionAssetUnavailable
+    case responseSignInRequired
+    case responseAccountMismatch
+    case responseProtocolUnsupported
+    case responseUnavailable
+    case captureUnavailable(AudioLane)
+    case systemAudioPermissionDenied
+    case noCandidateQuestion
+    case emptyManualQuestion
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidLifecycle:
+            "That action is not available in the current meeting state."
+        case .consentRequired:
+            "Confirm participant disclosure before preparing the meeting coach."
+        case .microphonePermissionRequired:
+            "Microphone permission must be requested explicitly before setup can finish."
+        case .microphonePermissionDenied:
+            "Microphone permission is denied."
+        case .missingAudioServices(let lane):
+            "The \(lane.rawValue) audio service is not configured."
+        case .invalidAudioServices(let lane):
+            "The \(lane.rawValue) audio service is assigned to the wrong lane."
+        case .transcriptionAssetUnavailable:
+            "The local transcription language could not be prepared."
+        case .responseSignInRequired:
+            "Sign in to the isolated Codex profile before starting."
+        case .responseAccountMismatch:
+            "The Codex account does not match the selected PaceNote profile."
+        case .responseProtocolUnsupported:
+            "The installed Codex build is not compatible with PaceNote."
+        case .responseUnavailable:
+            "The Codex response runtime could not be prepared."
+        case .captureUnavailable(let lane):
+            "The \(lane.rawValue) audio route could not be started."
+        case .systemAudioPermissionDenied:
+            "System audio capture permission is denied. Allow PaceNote in System Settings, then try again."
+        case .noCandidateQuestion:
+            "No recent question from the other party is available to coach yet."
+        case .emptyManualQuestion:
+            "Enter a question before using Coach."
+        }
+    }
+}
+
+public enum MeetingSessionEvent: Sendable {
+    case stateChanged(MeetingSessionState)
+    case transcriptUpserted(TranscriptSegment)
+    case transcriptRemoved(UUID)
+    case transcriptsCleared
+    case suggestionsCleared(TurnIdentity?)
+    case suggestionUpserted(SuggestionCard)
+    case brownoutActivated(MeetingBrownout)
+    case brownoutCleared(MeetingBrownout)
+    case failed(MeetingSessionFailure)
+}
+
+public protocol MeetingTimeProviding: Sendable {
+    func now() -> TimeInterval
+}
+
+public struct HostMeetingTimeProvider: MeetingTimeProviding {
+    public init() {}
+
+    public func now() -> TimeInterval {
+        HostTimestamp.now.seconds
+    }
+}

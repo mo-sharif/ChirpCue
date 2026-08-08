@@ -1,0 +1,19 @@
+.DS_Store
+/.build/
+/build/
+/DerivedData/
+/.swiftpm/
+/dist/
+/*.xcodeproj/xcuserdata/
+*.xcuserstate
+*.swp
+*.tmp
+.pace-note/
+PaceNote.app/
+PaceNote-*.zip
+
+# Other SuperIdea work retained locally but outside the PaceNote repository.
+/AI_RELEASE_QUEST_ENGINE_SPEC.md
+/EVIDENCE_LEDGER_CLAUDE_REVIEW.md
+/EVIDENCE_LEDGER_SELF_SERVE_PLAN.md
+/PHASED_EXECUTION_BRIEF.md

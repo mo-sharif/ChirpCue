@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>PaceNote</string>
+    <key>CFBundleExecutable</key>
+    <string>PaceNote</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.mosharif.pacenote</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>PaceNote</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Mo Sharif. All rights reserved.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>PaceNote uses your microphone only after you start a coaching session, so it can distinguish your side of the conversation.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>PaceNote captures meeting audio routed through this Mac only after you start a coaching session.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>PaceNote transcribes approved meeting audio on this Mac only after you start a coaching session.</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+</dict>
+</plist>
