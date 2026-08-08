@@ -446,11 +446,11 @@ public actor SystemAudioCaptureService: AudioCapturing {
                 sourceCount: matches.count
             )
         case .global(let excluded):
-            var safeExclusions = excluded
-            safeExclusions.append(AudioProcessTarget(processID: getpid()))
-            if let ownBundleID = Bundle.main.bundleIdentifier {
-                safeExclusions.append(AudioProcessTarget(bundleID: ownBundleID))
-            }
+            let safeExclusions = Self.globalOutputExclusions(
+                requested: excluded,
+                ownProcessID: getpid(),
+                ownBundleID: Bundle.main.bundleIdentifier
+            )
             let processIDs = Set(safeExclusions.compactMap(\.processID))
             let requestedBundleIDs = Set(safeExclusions.compactMap(\.bundleID))
             let matches = try available.filter { process in
@@ -467,6 +467,19 @@ public actor SystemAudioCaptureService: AudioCapturing {
                 sourceCount: max(matches.count, requestedBundleIDs.count)
             )
         }
+    }
+
+    static func globalOutputExclusions(
+        requested: [AudioProcessTarget],
+        ownProcessID: Int32,
+        ownBundleID: String?
+    ) -> [AudioProcessTarget] {
+        var exclusions = requested
+        exclusions.append(AudioProcessTarget(processID: ownProcessID))
+        if let ownBundleID, !ownBundleID.isEmpty {
+            exclusions.append(AudioProcessTarget(bundleID: ownBundleID))
+        }
+        return exclusions
     }
 
     static func selectedTargetMatches(

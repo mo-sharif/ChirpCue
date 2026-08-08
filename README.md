@@ -24,10 +24,11 @@ Claude `-p` usage is subscription-authenticated, but Anthropic currently assigns
 ./Scripts/toolchain.sh swift build -c release
 ./Scripts/package-app.sh
 ./Scripts/verify-app.sh
-open dist/PrismCue.app
+./Scripts/install-personal-app.sh
+open /Applications/PrismCue.app
 ```
 
-The package script creates `dist/PrismCue.app` with a local ad hoc hardened-runtime signature. That build is intended for the Mac that built it. Distribution to another Mac requires Developer ID signing and Apple notarization, which are not currently configured.
+The package script creates `dist/PrismCue.app` with a local ad hoc hardened-runtime signature. The installer verifies that bundle again, refuses to overwrite an existing `/Applications/PrismCue.app`, and installs it only on this Mac. Remove an old copy deliberately before installing a replacement. Distribution to another Mac requires Developer ID signing and Apple notarization, which are not currently configured.
 
 ## First use
 
@@ -41,7 +42,7 @@ The package script creates `dist/PrismCue.app` with a local ad hoc hardened-runt
 
 During a meeting, every eligible turn immediately shows the fixed local **SAY NOW** bridge “Let me think through that carefully for a second.” The production coordinator never runs or displays a model-written Quick answer, and Deep starts automatically. Without a repository, Deep can return only a `general_answer`, clarification, or abstention. General guidance has no evidence, is visibly labeled **verify before speaking**, and is rejected if it claims repository grounding. With a repository, an answer appears only after exact extractive evidence verification: it must match one verified basis claim while preserving punctuation, and that claim must copy one complete cited source line. For clarification or abstention, PrismCue ignores model prose and shows fixed local safe text. If validation fails, no Deep card appears; the bridge remains visible with a limited-mode status. No classifier or model flag can bypass the bridge or suppress Deep. Speak a suggestion yourself only if it is accurate and appropriate.
 
-Use **Pause** to stop capture temporarily. Use **Stop** when the meeting ends so PrismCue can interrupt inference, clear in-memory content, delete Codex threads, remove Claude runtime data and sealed snapshots, sanitize transient profile state, and audit cleanup.
+Use **Dismiss** to stop only the current answer while capture and transcript continue. Use **Pause** to stop capture temporarily. Use **Stop** when the meeting ends so PrismCue can join inference, clear and zero in-memory content, delete Codex threads, remove Claude runtime data and sealed snapshots, sanitize transient profile state, and audit app-owned state for bounded fragments of meeting and response content, including dismissed or late-arriving answers.
 
 ## Troubleshooting
 

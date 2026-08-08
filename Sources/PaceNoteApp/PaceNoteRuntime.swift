@@ -873,6 +873,11 @@ actor PaceNoteRuntime {
         }
     }
 
+    func dismissSuggestion(_ identity: TurnIdentity) async {
+        guard let activeMeeting else { return }
+        await activeMeeting.controller.dismissSuggestion(identity: identity)
+    }
+
     func stopMeeting() async throws {
         guard let activeMeeting else { return }
         let report = await activeMeeting.controller.stop()
@@ -1764,6 +1769,9 @@ extension MeetingActions {
                 do { try await runtime.coachCurrentTurn($0) } catch {
                     throw PaceNoteActionError.safeMessage(PaceNoteRuntime.safeMessage(for: error))
                 }
+            },
+            dismissSuggestion: {
+                await runtime.dismissSuggestion($0)
             }
         )
     }

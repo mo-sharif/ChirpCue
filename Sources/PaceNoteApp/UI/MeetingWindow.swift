@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 struct MeetingWindow: View {
     @Bindable var model: MeetingViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isManualQuestionFocused: Bool
 
     var body: some View {
@@ -14,7 +15,11 @@ struct MeetingWindow: View {
                 ActionErrorBanner(message: actionError) {
                     model.dismissActionError()
                 }
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .move(edge: .top).combined(with: .opacity)
+                )
             }
             if !model.brownouts.isEmpty {
                 BrownoutBanner(reasons: model.brownouts, provider: model.selectedProvider)
@@ -25,7 +30,11 @@ struct MeetingWindow: View {
                     .frame(minWidth: 390)
                 SuggestionsPane(
                     quick: model.quickSuggestion,
-                    deep: model.deepSuggestion
+                    deep: model.deepSuggestion,
+                    canDismiss: model.canDismissSuggestion,
+                    dismiss: {
+                        Task { await model.dismissSuggestion() }
+                    }
                 )
                 .frame(minWidth: 320, idealWidth: 370)
             }
@@ -34,7 +43,7 @@ struct MeetingWindow: View {
                 text: $model.manualQuestion,
                 isEnabled: model.canCoach,
                 isCurrentTurnEnabled: model.canCoachCurrentTurn,
-                isBusy: model.isPerformingMeetingAction,
+                isBusy: model.isPerformingMeetingAction || model.isDismissingSuggestion,
                 isFocused: $isManualQuestionFocused,
                 coachQuestion: {
                     Task { await model.coachManualQuestion() }
@@ -61,7 +70,10 @@ struct MeetingWindow: View {
         .task {
             await model.bootstrap()
         }
-        .animation(.easeInOut(duration: 0.2), value: model.actionError)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.2),
+            value: model.actionError
+        )
     }
 }
 
@@ -128,7 +140,9 @@ private struct MeetingHeader: View {
                     )
                 }
                 Spacer()
-                if model.isBootstrapping || model.isPerformingMeetingAction {
+                if model.isBootstrapping || model.isPerformingMeetingAction
+                    || model.isDismissingSuggestion
+                {
                     ProgressView()
                         .controlSize(.small)
                         .accessibilityLabel("\(AppBrand.displayName) is working")
@@ -211,15 +225,14 @@ private struct MeetingActionControls: View {
                 .buttonStyle(.glass)
                 .tint(.red)
                 .keyboardShortcut(".", modifiers: .command)
-                .disabled(model.isPerformingMeetingAction || model.phase == .idle || model.phase == .ended)
+                .disabled(!model.canStop)
                 .help("Stop and clear this meeting (Command-Period)")
                 .accessibilityLabel("Stop and Clear Meeting")
                 .accessibilityIdentifier("meeting.stop")
                 .paceNoteAssistiveControl(
                     label: "Stop and Clear Meeting",
                     identifier: "meeting.stop",
-                    isEnabled: !model.isPerformingMeetingAction && model.phase != .idle
-                        && model.phase != .ended
+                    isEnabled: model.canStop
                 ) {
                     Task { await model.stop() }
                 }
@@ -366,6 +379,7 @@ private struct BrownoutBanner: View {
 
 private struct TranscriptPane: View {
     let segments: [TranscriptSegment]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -400,8 +414,12 @@ private struct TranscriptPane: View {
                     }
                     .onChange(of: segments.last?.id) { _, id in
                         guard let id else { return }
-                        withAnimation(.easeOut(duration: 0.2)) {
+                        if reduceMotion {
                             proxy.scrollTo(id, anchor: .bottom)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(id, anchor: .bottom)
+                            }
                         }
                     }
                 }
@@ -443,6 +461,8 @@ private struct TranscriptRow: View {
 private struct SuggestionsPane: View {
     let quick: SuggestionCard?
     let deep: SuggestionCard?
+    let canDismiss: Bool
+    let dismiss: () -> Void
 
     var body: some View {
         ScrollView {
@@ -451,6 +471,27 @@ private struct SuggestionsPane: View {
                     Text("What to say")
                         .font(.title3.weight(.semibold))
                     Spacer()
+                    if quick != nil || deep != nil {
+                        Button(action: dismiss) {
+                            Label("Dismiss", systemImage: "xmark.circle")
+                        }
+                        .buttonStyle(.glass)
+                        .controlSize(.small)
+                        .keyboardShortcut("d", modifiers: [.command, .shift])
+                        .disabled(!canDismiss)
+                        .help("Stop this answer and clear its cards (Command-Shift-D)")
+                        .accessibilityLabel("Dismiss Current Suggestion")
+                        .accessibilityHint(
+                            "Stops this answer and clears its cards. Meeting capture and transcript continue."
+                        )
+                        .accessibilityIdentifier("meeting.dismiss-suggestion")
+                        .paceNoteAssistiveControl(
+                            label: "Dismiss Current Suggestion",
+                            identifier: "meeting.dismiss-suggestion",
+                            isEnabled: canDismiss,
+                            action: dismiss
+                        )
+                    }
                     Label("You stay in control", systemImage: "person.wave.2")
                         .font(.caption)
                         .foregroundStyle(.secondary)

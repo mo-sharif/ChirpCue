@@ -780,6 +780,100 @@ final class MeetingViewModelTests: XCTestCase {
         XCTAssertTrue(model.canCoachCurrentTurn)
     }
 
+    func testDismissForwardsDisplayedIdentityAndClearsOnlySuggestionCards() async throws {
+        let events = EventHarness()
+        let recorder = SuggestionDismissRecorder()
+        let listeningState = Self.sessionState(phase: .listening)
+        var actions = Self.actions(events: events)
+        actions.dismissSuggestion = { identity in
+            await recorder.record(identity)
+            await events.emit(.suggestionsCleared(identity))
+            await events.emit(.stateChanged(listeningState))
+        }
+        let model = MeetingViewModel(
+            actions: actions,
+            hasCompletedFirstRun: true,
+            microphoneEnabled: true,
+            outputEnabled: false
+        )
+        await model.bootstrap()
+        model.meetingConsent.participantPermission = true
+        model.meetingConsent.captureScopeConfirmed = true
+        model.meetingConsent.openAIProcessingConfirmed = true
+        await model.startMeeting()
+
+        let transcript = TranscriptSegment(
+            source: .them,
+            text: "How does the queue stay bounded?",
+            startedAt: 1,
+            endedAt: 2,
+            isFinal: true
+        )
+        let identity = TurnIdentity(meetingID: UUID(), generation: 7)
+        model.receiveTranscript([transcript])
+        model.receiveQuickSuggestion(
+            SuggestionCard(identity: identity, stage: .bridge, text: "Let me verify that.")
+        )
+        model.manualQuestion = "Keep this draft"
+
+        await model.dismissSuggestion()
+        try await Self.eventually {
+            model.quickSuggestion == nil && model.deepSuggestion == nil
+                && model.phase == .listening
+        }
+
+        let recordedIdentity = await recorder.identity()
+        XCTAssertEqual(recordedIdentity, identity)
+        XCTAssertEqual(model.transcript, [transcript])
+        XCTAssertEqual(model.manualQuestion, "Keep this draft")
+        XCTAssertTrue(model.isCaptureActive)
+        XCTAssertFalse(model.isDismissingSuggestion)
+        XCTAssertFalse(model.canDismissSuggestion)
+    }
+
+    func testDismissBlocksCoachAndPauseButKeepsStopAvailable() async {
+        let events = EventHarness()
+        let dismissBarrier = AsyncStopBarrier()
+        var actions = Self.actions(events: events)
+        actions.dismissSuggestion = { _ in await dismissBarrier.wait() }
+        let model = MeetingViewModel(
+            actions: actions,
+            hasCompletedFirstRun: true,
+            microphoneEnabled: true,
+            outputEnabled: false
+        )
+        await model.bootstrap()
+        model.meetingConsent.participantPermission = true
+        model.meetingConsent.captureScopeConfirmed = true
+        model.meetingConsent.openAIProcessingConfirmed = true
+        await model.startMeeting()
+        model.receiveQuickSuggestion(
+            SuggestionCard(
+                identity: TurnIdentity(meetingID: UUID(), generation: 1),
+                stage: .bridge,
+                text: "Let me verify that."
+            )
+        )
+
+        let dismissTask = Task { @MainActor in await model.dismissSuggestion() }
+        await dismissBarrier.waitUntilEntered()
+        XCTAssertTrue(model.isDismissingSuggestion)
+        XCTAssertFalse(model.canDismissSuggestion)
+        XCTAssertFalse(model.canCoach)
+        XCTAssertFalse(model.canPause)
+        XCTAssertTrue(model.canStop)
+
+        await model.stop()
+        XCTAssertEqual(model.phase, .ended)
+        XCTAssertFalse(model.isCaptureActive)
+        XCTAssertTrue(model.isDismissingSuggestion)
+
+        await dismissBarrier.release()
+        await dismissTask.value
+        XCTAssertFalse(model.isDismissingSuggestion)
+        XCTAssertFalse(model.canStop)
+    }
+
     func testCaptureIndicatorStaysActiveAcrossResponsePhasesAndTracksPauseResumeStop() async {
         let events = EventHarness()
         let model = MeetingViewModel(
@@ -1310,7 +1404,8 @@ final class MeetingViewModelTests: XCTestCase {
             pauseMeeting: {},
             resumeMeeting: {},
             stopMeeting: {},
-            coachCurrentTurn: { _ in }
+            coachCurrentTurn: { _ in },
+            dismissSuggestion: { _ in }
         )
     }
 
@@ -1530,6 +1625,16 @@ private actor SnapshotDiscardRecorder {
     }
 
     func ids() -> [UUID] { values }
+}
+
+private actor SuggestionDismissRecorder {
+    private var value: TurnIdentity?
+
+    func record(_ identity: TurnIdentity) {
+        value = identity
+    }
+
+    func identity() -> TurnIdentity? { value }
 }
 
 private actor StartRequestRecorder {

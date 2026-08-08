@@ -200,7 +200,8 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
     private var analysisTask: Task<Void, Never>?
     private var resultTask: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
-    private var originHostTime: HostTimestamp?
+    private var audioClockTimeline = SpeechAudioClockTimeline()
+    private var timingBlocked = false
     private var sessionID: UUID?
 
     public init(
@@ -260,7 +261,8 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
         transcriber = newTranscriber
         analyzerFormat = newAnalyzerFormat
         analyzerInput = inputBuffer
-        originHostTime = nil
+        audioClockTimeline.reset()
+        timingBlocked = false
         sessionID = newSessionID
 
         analysisTask = Task { [weak self] in
@@ -326,7 +328,8 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
         analyzerFormat = nil
         converter = nil
         converterInputFormat = nil
-        originHostTime = nil
+        audioClockTimeline.reset()
+        timingBlocked = false
         let eventContinuation = continuation
         continuation = nil
         eventContinuation?.yield(.stopped(lane))
@@ -346,18 +349,24 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
             guard chunk.lane == lane else { return }
             do {
                 try feed(chunk)
+            } catch is AudioClockPipelineError {
+                blockTiming(detectedAt: chunk.hostTime)
             } catch SpeechTranscriptionError.invalidAudioBuffer {
+                invalidateTiming()
                 yield(.failed(lane: lane, reason: .invalidAudioBuffer))
             } catch {
+                invalidateTiming()
                 yield(.failed(lane: lane, reason: .conversionFailed))
             }
 
         case .gap(let gap):
             guard gap.lane == lane else { return }
+            invalidateTiming()
             yield(.gap(gap))
 
         case .routeChanged(let previous, let current):
             guard previous.lane == lane else { return }
+            blockTiming(detectedAt: .now)
             yield(.routeChanged(previous: previous, current: current))
 
         case .stopped(let stoppedLane):
@@ -367,15 +376,24 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
     }
 
     private func feed(_ chunk: CapturedAudioChunk) throws {
-        guard let analyzerFormat, let analyzerInput else { return }
+        guard !timingBlocked, let analyzerFormat, let analyzerInput else { return }
         let source = try Self.makePCMBuffer(from: chunk)
         let converted = try convertedBuffer(source, to: analyzerFormat)
 
-        let origin = originHostTime ?? chunk.hostTime
-        originHostTime = origin
-        let relativeTime = CMTimeSubtract(chunk.hostTime.cmTime, origin.cmTime)
+        let schedule: AnalyzerInputSchedule
+        do {
+            schedule = try audioClockTimeline.schedule(
+                hostTime: chunk.hostTime,
+                sourceFrameCount: chunk.frameCount,
+                sourceSampleRate: chunk.format.sampleRate,
+                analyzerFrameCount: converted.frameLength,
+                analyzerSampleRate: converted.format.sampleRate
+            )
+        } catch {
+            throw AudioClockPipelineError.discontinuity
+        }
         let result = analyzerInput.yield(
-            AnalyzerInput(buffer: converted, bufferStartTime: relativeTime)
+            AnalyzerInput(buffer: converted, bufferStartTime: schedule.startTime)
         )
         if result == .droppedOldest {
             yield(
@@ -487,7 +505,7 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
         result: SpeechTranscriber.Result,
         sessionID: UUID
     ) {
-        guard self.sessionID == sessionID else { return }
+        guard self.sessionID == sessionID, !timingBlocked else { return }
         let text = String(result.text.characters)
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
@@ -498,7 +516,10 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
             confidenceValues.isEmpty
             ? nil
             : confidenceValues.reduce(0, +) / Double(confidenceValues.count)
-        let mappedRange = mapToHostTime(result.range)
+        guard let mappedRange = mapToHostTime(result.range) else {
+            blockTiming(detectedAt: .now)
+            return
+        }
         yield(
             .result(
                 ProgressiveTranscriptResult(
@@ -513,21 +534,29 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
     }
 
     private func mapToHostTime(_ range: CMTimeRange) -> HostTimeRange? {
-        guard let originHostTime,
-            range.isValid,
-            range.start.isValid,
-            range.duration.isValid
-        else {
-            return nil
-        }
-        let startTime = CMTimeAdd(originHostTime.cmTime, range.start)
-        let endTime = CMTimeAdd(startTime, range.duration)
-        guard let start = HostTimestamp.fromHostCMTime(startTime),
-            let end = HostTimestamp.fromHostCMTime(endTime)
-        else {
-            return nil
-        }
-        return HostTimeRange(start: start, end: end)
+        guard !timingBlocked else { return nil }
+        return try? audioClockTimeline.mapResultRangeToHostTime(range)
+    }
+
+    private func blockTiming(detectedAt: HostTimestamp) {
+        guard invalidateTiming() else { return }
+        yield(
+            .gap(
+                AudioGap(
+                    lane: lane,
+                    reason: .clockDiscontinuity,
+                    detectedAt: detectedAt
+                )
+            )
+        )
+    }
+
+    @discardableResult
+    private func invalidateTiming() -> Bool {
+        guard !timingBlocked else { return false }
+        timingBlocked = true
+        audioClockTimeline.reset()
+        return true
     }
 
     private func handleFailure(
@@ -541,6 +570,10 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
     private func yield(_ event: SpeechTranscriptionEvent) {
         _ = continuation?.yield(event)
     }
+}
+
+private enum AudioClockPipelineError: Error {
+    case discontinuity
 }
 
 private func makePaceNoteTranscriber(locale: Locale) -> SpeechTranscriber {

@@ -150,6 +150,12 @@ private struct PaceNoteCommands: Commands {
             .keyboardShortcut(.return, modifiers: [.command, .shift])
             .disabled(!model.canCoachCurrentTurn)
 
+            Button("Dismiss Suggestion") {
+                Task { await model.dismissSuggestion() }
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(!model.canDismissSuggestion)
+
             if model.phase == .paused {
                 Button("Resume Capture") {
                     Task { await model.resume() }
@@ -168,7 +174,7 @@ private struct PaceNoteCommands: Commands {
                 Task { await model.stop() }
             }
             .keyboardShortcut(".", modifiers: .command)
-            .disabled(model.isPerformingMeetingAction || model.phase == .idle || model.phase == .ended)
+            .disabled(!model.canStop)
 
             Divider()
 

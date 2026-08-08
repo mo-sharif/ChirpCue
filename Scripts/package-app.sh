@@ -32,7 +32,7 @@ bin_dir=$("$project_root/Scripts/toolchain.sh" swift build \
 
 rm -rf "$app_bundle"
 mkdir -p "$macos_dir" "$resources_dir"
-install -m 0755 "$bin_dir/PaceNote" "$macos_dir/PaceNote"
+install -m 0755 "$bin_dir/PrismCue" "$macos_dir/PrismCue"
 install -m 0644 "$plist_source" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$contents/Info.plist"

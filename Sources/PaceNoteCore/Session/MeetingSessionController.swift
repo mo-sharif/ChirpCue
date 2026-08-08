@@ -7,6 +7,11 @@ public actor MeetingSessionController {
         let hasLatestOutputObservation: Bool
     }
 
+    struct BridgeSpeechRetentionSnapshot: Equatable, Sendable {
+        let hasActiveHold: Bool
+        let hasQueuedDeep: Bool
+    }
+
     private struct AudioServiceTeardownFailure: Error, Sendable {
         let lanes: [AudioLane]
     }
@@ -19,6 +24,96 @@ public actor MeetingSessionController {
     private struct PendingMicrophoneObservation: Sendable {
         let id: UUID
         let observation: TranscriptObservation
+    }
+
+    private struct BridgeSpeechHold: Sendable {
+        let identity: TurnIdentity
+        let bridgeText: String
+    }
+
+    private struct QueuedDeepResponse: Sendable {
+        let identity: TurnIdentity
+        let response: BoundDeep
+    }
+
+    private struct ResponseCancellationOperation: Sendable {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private struct CleanupNeedleSnapshot: Sendable {
+        var needles: [Data]
+        let overflowed: Bool
+
+        mutating func clear() {
+            Self.zero(&needles)
+        }
+
+        private static func zero(_ needles: inout [Data]) {
+            for index in needles.indices {
+                needles[index].resetBytes(
+                    in: needles[index].startIndex..<needles[index].endIndex
+                )
+                needles[index].removeAll(keepingCapacity: false)
+            }
+            needles.removeAll(keepingCapacity: false)
+        }
+    }
+
+    private struct CleanupNeedleLedger: Sendable {
+        static let defaultCapacity = 2_048
+        static let maximumCapacity = 4_096
+        private static let maximumNeedleBytes = 128
+        private static let minimumNeedleBytes = 8
+
+        private let capacity: Int
+        private var needles: [Data] = []
+        private(set) var overflowed = false
+
+        init(capacity: Int = defaultCapacity) {
+            self.capacity = min(max(1, capacity), Self.maximumCapacity)
+            needles.reserveCapacity(min(self.capacity, 64))
+        }
+
+        mutating func register(_ text: String) {
+            guard !overflowed else { return }
+            let normalized = MeetingSessionController.normalized(text)
+            let fragment = Data(normalized.utf8.prefix(Self.maximumNeedleBytes))
+            guard fragment.count >= Self.minimumNeedleBytes,
+                !needles.contains(fragment)
+            else {
+                return
+            }
+            guard needles.count < capacity else {
+                overflowed = true
+                return
+            }
+            needles.append(fragment)
+        }
+
+        mutating func takeSnapshotAndClear() -> CleanupNeedleSnapshot {
+            let snapshot = CleanupNeedleSnapshot(
+                needles: needles.map { needle in
+                    var copy = Data(capacity: needle.count)
+                    copy.append(needle)
+                    return copy
+                },
+                overflowed: overflowed
+            )
+            clear()
+            return snapshot
+        }
+
+        mutating func clear() {
+            for index in needles.indices {
+                needles[index].resetBytes(
+                    in: needles[index].startIndex..<needles[index].endIndex
+                )
+                needles[index].removeAll(keepingCapacity: false)
+            }
+            needles.removeAll(keepingCapacity: false)
+            overflowed = false
+        }
     }
 
     private enum Lifecycle: Equatable {
@@ -53,6 +148,8 @@ public actor MeetingSessionController {
     private var suggestions: [SuggestionCard] = []
     private var brownouts: [MeetingBrownout]
     private var generation: UInt64 = 0
+    private var timingLedger = TimingLedger()
+    private var cleanupNeedleLedger: CleanupNeedleLedger
     private var currentIdentity: TurnIdentity?
     private var microphonePartialID: UUID?
     private var outputPartialID: UUID?
@@ -61,8 +158,11 @@ public actor MeetingSessionController {
     private var microphoneAttributionTask: Task<Void, Never>?
     private var boundaryTask: Task<Void, Never>?
     private var generationTask: Task<Void, Never>?
+    private var responseCancellationOperation: ResponseCancellationOperation?
     private var pendingMicrophoneObservation: PendingMicrophoneObservation?
     private var latestOutputObservation: TranscriptObservation?
+    private var bridgeSpeechHold: BridgeSpeechHold?
+    private var queuedDeepResponse: QueuedDeepResponse?
     private var continuation: AsyncStream<MeetingSessionEvent>.Continuation?
     private var preparationAttempt: UUID?
     private var preparationTask: Task<MeetingSessionState, Error>?
@@ -70,6 +170,9 @@ public actor MeetingSessionController {
     private var audioTransitionTask: Task<Void, Error>?
     private var stopTask: Task<MeetingSessionStopReport, Never>?
     private var lastStopReport: MeetingSessionStopReport?
+    #if DEBUG
+        private var responseEventTestHook: (@Sendable (ResponseCoordinatorEvent) async -> Void)?
+    #endif
 
     public init(
         configuration: MeetingSessionConfiguration,
@@ -81,7 +184,8 @@ public actor MeetingSessionController {
         responseCoordinatorConfiguration: ResponseCoordinatorConfiguration = .init(),
         resourceCleaner: any MeetingSessionResourceCleaning,
         time: any MeetingTimeProviding = HostMeetingTimeProvider(),
-        attributionResolver: TranscriptAttributionResolver = .init()
+        attributionResolver: TranscriptAttributionResolver = .init(),
+        cleanupNeedleCapacity: Int = 2_048
     ) {
         self.configuration = configuration
         self.audioServices = audioServices
@@ -95,6 +199,7 @@ public actor MeetingSessionController {
         self.resourceCleaner = resourceCleaner
         self.time = time
         self.attributionResolver = attributionResolver
+        self.cleanupNeedleLedger = CleanupNeedleLedger(capacity: cleanupNeedleCapacity)
         self.timeline = TranscriptTimeline(retention: configuration.transcriptRetention)
         self.turnDetector = TurnDetector(
             configuration: TurnDetectorConfiguration(
@@ -121,6 +226,8 @@ public actor MeetingSessionController {
         microphoneAttributionTask?.cancel()
         boundaryTask?.cancel()
         generationTask?.cancel()
+        responseCancellationOperation?.task.cancel()
+        cleanupNeedleLedger.clear()
         continuation?.finish()
     }
 
@@ -135,8 +242,20 @@ public actor MeetingSessionController {
         return pair.stream
     }
 
+    #if DEBUG
+        func setResponseEventTestHook(
+            _ hook: (@Sendable (ResponseCoordinatorEvent) async -> Void)?
+        ) {
+            responseEventTestHook = hook
+        }
+    #endif
+
     public func state() -> MeetingSessionState {
         makeState()
+    }
+
+    public func timingSnapshot() -> MeetingTimingSnapshot {
+        timingLedger.snapshot()
     }
 
     func delayedAttributionRetentionSnapshot() -> DelayedAttributionRetentionSnapshot {
@@ -144,6 +263,13 @@ public actor MeetingSessionController {
             hasAttributionTask: microphoneAttributionTask != nil,
             hasPendingMicrophoneObservation: pendingMicrophoneObservation != nil,
             hasLatestOutputObservation: latestOutputObservation != nil
+        )
+    }
+
+    func bridgeSpeechRetentionSnapshot() -> BridgeSpeechRetentionSnapshot {
+        BridgeSpeechRetentionSnapshot(
+            hasActiveHold: bridgeSpeechHold != nil,
+            hasQueuedDeep: queuedDeepResponse != nil
         )
     }
 
@@ -361,7 +487,10 @@ public actor MeetingSessionController {
         boundaryTask = nil
         let teardownFailure = await audioTeardownFailure()
         try requireAudioTransition(attempt)
-        await cancelCurrentGeneration(clearSuggestions: true)
+        await cancelCurrentGeneration(
+            clearSuggestions: true,
+            invalidation: .sessionPaused
+        )
         try requireAudioTransition(attempt)
         if let teardownFailure {
             throw transitionToIncompleteAudioTeardown(teardownFailure)
@@ -435,6 +564,7 @@ public actor MeetingSessionController {
         guard !normalized.isEmpty else {
             throw MeetingSessionFailure.emptyManualQuestion
         }
+        cleanupNeedleLedger.register(normalized)
 
         let now = time.now()
         let segment = TranscriptSegment(
@@ -460,6 +590,47 @@ public actor MeetingSessionController {
         await beginTurn(question: candidate.text, stableAt: candidate.stableAt)
     }
 
+    public func dismissSuggestion(identity expectedIdentity: TurnIdentity) async {
+        guard lifecycle == .running,
+            suggestions.contains(where: { $0.identity == expectedIdentity })
+        else {
+            return
+        }
+
+        let dismissedAt = time.now()
+        timingLedger.recordUserDismissed(
+            generation: expectedIdentity.generation,
+            at: dismissedAt
+        )
+
+        let ownsActiveGeneration = currentIdentity == expectedIdentity
+        var dismissedGenerationTask: Task<Void, Never>?
+        if ownsActiveGeneration {
+            timingLedger.invalidate(
+                generation: expectedIdentity.generation,
+                outcome: .userDismissed,
+                at: dismissedAt
+            )
+            dismissedGenerationTask = generationTask
+            dismissedGenerationTask?.cancel()
+            generationTask = nil
+            currentIdentity = nil
+        }
+        if bridgeSpeechHold?.identity == expectedIdentity {
+            bridgeSpeechHold = nil
+        }
+        if queuedDeepResponse?.identity == expectedIdentity {
+            queuedDeepResponse = nil
+        }
+        suggestions.removeAll { $0.identity == expectedIdentity }
+        emit(.suggestionsCleared(expectedIdentity))
+        updateOperationalPhase()
+        emitState()
+
+        guard ownsActiveGeneration else { return }
+        await cancelResponseWork(joining: dismissedGenerationTask)
+    }
+
     @discardableResult
     public func stop() async -> MeetingSessionStopReport {
         if let stopTask { return await stopTask.value }
@@ -469,11 +640,14 @@ public actor MeetingSessionController {
             return lastStopReport
         }
 
-        let sensitiveNeedles = cleanupNeedles()
+        registerRetainedCleanupContent()
         clearDelayedAttributionState()
         let preparationTask = self.preparationTask
         let audioTransitionTask = self.audioTransitionTask
         lifecycle = .stopping
+        boundaryTask?.cancel()
+        boundaryTask = nil
+        clearVisibleMeetingContentForStop()
         preparationTask?.cancel()
         audioTransitionTask?.cancel()
         let task: Task<MeetingSessionStopReport, Never>
@@ -487,32 +661,32 @@ public actor MeetingSessionController {
             task = Task {
                 if let preparationTask { _ = await preparationTask.result }
                 if let audioTransitionTask { _ = await audioTransitionTask.result }
-                return await self.performStop(sensitiveNeedles: sensitiveNeedles)
+                return await self.performStop()
             }
         }
         stopTask = task
         return await task.value
     }
 
-    private func performStop(sensitiveNeedles: [Data]) async -> MeetingSessionStopReport {
-        boundaryTask?.cancel()
-        boundaryTask = nil
+    private func performStop() async -> MeetingSessionStopReport {
         let audioTeardownFailureLane = await stopAudioServicesWithOneRetry()
-        await cancelCurrentGeneration(clearSuggestions: true)
+        await cancelCurrentGeneration(
+            clearSuggestions: false,
+            invalidation: .sessionStopped
+        )
+        registerRetainedCleanupContent()
+        var cleanupNeedleSnapshot = cleanupNeedleLedger.takeSnapshotAndClear()
+        defer { cleanupNeedleSnapshot.clear() }
+        let timingSnapshot = timingLedger.snapshot()
+        timingLedger.clear()
 
         let responseReport = await responseGenerator.shutdown()
         let resourceReport = await resourceCleaner.deleteResources(
             preserveCodexRecoveryState: !responseReport.failures.isEmpty
         )
 
-        timeline.clear()
-        microphonePartialID = nil
-        outputPartialID = nil
-        turnDetector.invalidate()
-        suggestions.removeAll(keepingCapacity: false)
         currentIdentity = nil
         runtime = nil
-        emit(.transcriptsCleared)
 
         var failures = resourceReport.failures
         if audioTeardownFailureLane != nil {
@@ -521,11 +695,14 @@ public actor MeetingSessionController {
         if !responseReport.failures.isEmpty {
             failures.append(.responseCleanup)
         }
+        if cleanupNeedleSnapshot.overflowed {
+            failures.append(.residualAudit)
+        }
 
         let residualFindingCount: Int
         do {
             residualFindingCount = try await resourceCleaner.residualFindingCount(
-                sensitiveNeedles: sensitiveNeedles
+                sensitiveNeedles: cleanupNeedleSnapshot.needles
             )
             if residualFindingCount > 0 {
                 failures.append(.residualData)
@@ -559,7 +736,8 @@ public actor MeetingSessionController {
             residualFindingCount: residualFindingCount,
             journalEntryRemoved: journalEntryRemoved,
             failures: Self.deduplicated(failures),
-            audioTeardownFailureLane: audioTeardownFailureLane
+            audioTeardownFailureLane: audioTeardownFailureLane,
+            timing: timingSnapshot
         )
         recordStop(report)
         return report
@@ -598,7 +776,8 @@ public actor MeetingSessionController {
             residualFindingCount: previous.residualFindingCount,
             journalEntryRemoved: journalEntryRemoved,
             failures: Self.deduplicated(failures),
-            audioTeardownFailureLane: audioTeardownFailureLane
+            audioTeardownFailureLane: audioTeardownFailureLane,
+            timing: previous.timing
         )
         recordStop(report)
         return report
@@ -857,13 +1036,19 @@ public actor MeetingSessionController {
             }
 
         case .gap(let gap):
-            await cancelCurrentGeneration(clearSuggestions: true)
+            await cancelCurrentGeneration(
+                clearSuggestions: true,
+                invalidation: .captureInterrupted
+            )
             activateBrownout(.init(reason: Self.lostReason(for: gap.lane), lane: gap.lane))
             phase = .brownout
             emitState()
 
         case .routeChanged(let previous, let current):
-            await cancelCurrentGeneration(clearSuggestions: true)
+            await cancelCurrentGeneration(
+                clearSuggestions: true,
+                invalidation: .captureInterrupted
+            )
             if current == nil {
                 activateBrownout(
                     .init(reason: Self.lostReason(for: previous.lane), lane: previous.lane)
@@ -878,7 +1063,10 @@ public actor MeetingSessionController {
             emitState()
 
         case .failed(let lane, let reason):
-            await cancelCurrentGeneration(clearSuggestions: true)
+            await cancelCurrentGeneration(
+                clearSuggestions: true,
+                invalidation: .captureInterrupted
+            )
             if reason == .assetUnavailable {
                 activateBrownout(.init(reason: .transcriberAssetMissing, lane: lane))
             } else {
@@ -889,7 +1077,10 @@ public actor MeetingSessionController {
             emitState()
 
         case .stopped(let lane):
-            await cancelCurrentGeneration(clearSuggestions: true)
+            await cancelCurrentGeneration(
+                clearSuggestions: true,
+                invalidation: .captureInterrupted
+            )
             activateBrownout(.init(reason: Self.lostReason(for: lane), lane: lane))
             phase = .brownout
             emitState()
@@ -897,6 +1088,7 @@ public actor MeetingSessionController {
     }
 
     private func handleMicrophoneResult(_ result: ProgressiveTranscriptResult) async {
+        cleanupNeedleLedger.register(result.text)
         let observation = TranscriptObservation(result: result, receivedAt: time.now())
         if let latestOutputObservation {
             let decision = attributionResolver.resolveMicrophone(
@@ -916,6 +1108,7 @@ public actor MeetingSessionController {
     }
 
     private func handleOutputResult(_ result: ProgressiveTranscriptResult) async {
+        cleanupNeedleLedger.register(result.text)
         let observation = TranscriptObservation(result: result, receivedAt: time.now())
         if let pending = pendingMicrophoneObservation {
             microphoneAttributionTask?.cancel()
@@ -1004,8 +1197,22 @@ public actor MeetingSessionController {
                 deactivateBrownout(reason: .speakerUncertain, lane: .microphone)
             }
             if attributedSource == .you, !speakerUncertain {
-                await cancelGenerationForLocalSpeech()
-                guard lifecycle == .running else { return }
+                if let currentIdentity {
+                    timingLedger.recordConfirmedLocalSpeech(
+                        generation: currentIdentity.generation,
+                        at: observation.result.hostTimeRange?.start.seconds
+                    )
+                }
+                if observation.result.stability == .volatile {
+                    holdDeepForLikelyBridgeSpeech(observation.result.text)
+                } else if completesDisplayedBridge(observation.result.text) {
+                    _ = ingest(observation.result, source: attributedSource)
+                    releaseQueuedDeepAfterBridge()
+                    return
+                } else {
+                    await cancelGenerationForLocalSpeech()
+                    guard lifecycle == .running else { return }
+                }
             }
             _ = ingest(observation.result, source: attributedSource)
         }
@@ -1020,6 +1227,7 @@ public actor MeetingSessionController {
         _ result: ProgressiveTranscriptResult,
         source: TranscriptSource
     ) -> TranscriptSegment {
+        cleanupNeedleLedger.register(result.text)
         let segment = makeSegment(result, source: source)
         timeline.upsert(segment)
         emit(.transcriptUpserted(segment))
@@ -1096,16 +1304,25 @@ public actor MeetingSessionController {
             generation: generation
         )
         let previousIdentity = currentIdentity
+        if let previousIdentity {
+            timingLedger.invalidate(
+                generation: previousIdentity.generation,
+                outcome: .newerTurn,
+                at: stableAt
+            )
+        }
+        timingLedger.beginTurn(generation: identity.generation, at: stableAt)
+        clearBridgeSpeechState()
         currentIdentity = identity
-        generationTask?.cancel()
+        let previousGenerationTask = generationTask
+        previousGenerationTask?.cancel()
         generationTask = nil
         suggestions.removeAll(keepingCapacity: true)
         emit(.suggestionsCleared(previousIdentity))
         phase = .candidateQuestion
         emitState()
 
-        await responseCoordinator.invalidate()
-        await responseGenerator.cancelActiveWork()
+        await cancelResponseWork(joining: previousGenerationTask)
         guard lifecycle == .running, currentIdentity == identity else { return }
 
         let turn = ConversationTurn(
@@ -1129,39 +1346,77 @@ public actor MeetingSessionController {
         generationTask = Task { [weak self] in
             for await event in responseEvents {
                 guard !Task.isCancelled else { return }
+                #if DEBUG
+                    await self?.waitBeforeHandlingResponseForTesting(event)
+                #endif
                 await self?.handleResponse(event, identity: identity)
             }
             await self?.generationFinished(identity: identity)
         }
     }
 
+    #if DEBUG
+        private func waitBeforeHandlingResponseForTesting(
+            _ event: ResponseCoordinatorEvent
+        ) async {
+            if let responseEventTestHook {
+                await responseEventTestHook(event)
+            }
+        }
+    #endif
+
     private func handleResponse(_ event: ResponseCoordinatorEvent, identity: TurnIdentity) {
-        guard lifecycle == .running, currentIdentity == identity else { return }
         switch event {
         case .cue(let cue):
-            guard cue.turnID == identity.turnID, cue.generation == identity.generation else { return }
+            cleanupNeedleLedger.register(cue.text)
+        case .deep(let deep):
+            registerCleanupContent(deep)
+        case .quickUnavailable, .deepUnavailable, .discardedStale:
+            break
+        }
+        guard lifecycle == .running, currentIdentity == identity else {
+            timingLedger.recordStaleDiscard(
+                generation: identity.generation,
+                at: time.now()
+            )
+            return
+        }
+        switch event {
+        case .cue(let cue):
+            guard cue.turnID == identity.turnID, cue.generation == identity.generation else {
+                timingLedger.recordStaleDiscard(
+                    generation: identity.generation,
+                    at: time.now()
+                )
+                return
+            }
             let stage: SuggestionStage = cue.isDeterministicBridge ? .bridge : .quick
             let card = SuggestionCard(identity: identity, stage: stage, text: cue.text)
             suggestions.removeAll { $0.identity == identity && $0.stage != .deep }
             suggestions.insert(card, at: 0)
+            if cue.isDeterministicBridge {
+                timingLedger.recordBridgeReady(
+                    generation: identity.generation,
+                    at: time.now()
+                )
+            }
             phase = .suggesting
             emit(.suggestionUpserted(card))
             emitState()
 
         case .deep(let deep):
-            guard deep.turnID == identity.turnID, deep.generation == identity.generation else { return }
-            let card = SuggestionCard(
-                identity: identity,
-                stage: .deep,
-                text: deep.composedText,
-                evidence: deep.basis,
-                deepKind: deep.kind
-            )
-            suggestions.removeAll { $0.identity == identity && $0.stage == .deep }
-            suggestions.append(card)
-            phase = .suggesting
-            emit(.suggestionUpserted(card))
-            emitState()
+            guard deep.turnID == identity.turnID, deep.generation == identity.generation else {
+                timingLedger.recordStaleDiscard(
+                    generation: identity.generation,
+                    at: time.now()
+                )
+                return
+            }
+            if bridgeSpeechHold?.identity == identity {
+                queuedDeepResponse = QueuedDeepResponse(identity: identity, response: deep)
+            } else {
+                displayDeep(deep, identity: identity)
+            }
 
         case .quickUnavailable:
             activateBrownout(.init(reason: .quickLimited))
@@ -1169,13 +1424,96 @@ public actor MeetingSessionController {
             emitState()
 
         case .deepUnavailable:
+            timingLedger.recordDeepUnavailable(
+                generation: identity.generation,
+                at: time.now()
+            )
             activateBrownout(.init(reason: .deepLimited))
             updateOperationalPhase()
             emitState()
 
         case .discardedStale:
-            break
+            timingLedger.recordStaleDiscard(
+                generation: identity.generation,
+                at: time.now()
+            )
         }
+    }
+
+    private func holdDeepForLikelyBridgeSpeech(_ text: String) {
+        guard bridgeSpeechHold == nil,
+            let reference = displayedBridgeReference(),
+            Self.isLikelyBridgeSpeech(text, bridgeText: reference.bridgeText)
+        else {
+            return
+        }
+        bridgeSpeechHold = reference
+    }
+
+    private func completesDisplayedBridge(_ text: String) -> Bool {
+        guard let reference = displayedBridgeReference() else { return false }
+        return Self.isCompletedBridgeSpeech(text, bridgeText: reference.bridgeText)
+    }
+
+    private func displayedBridgeReference() -> BridgeSpeechHold? {
+        guard let identity = currentIdentity else { return nil }
+        if let bridgeSpeechHold, bridgeSpeechHold.identity == identity {
+            return bridgeSpeechHold
+        }
+        guard
+            let card = suggestions.first(where: {
+                $0.identity == identity && $0.stage == .bridge
+            })
+        else {
+            return nil
+        }
+        return BridgeSpeechHold(identity: identity, bridgeText: card.text)
+    }
+
+    private func releaseQueuedDeepAfterBridge() {
+        let completedIdentity = bridgeSpeechHold?.identity ?? currentIdentity
+        bridgeSpeechHold = nil
+        guard let queuedDeepResponse else { return }
+        self.queuedDeepResponse = nil
+        guard lifecycle == .running,
+            currentIdentity == completedIdentity,
+            queuedDeepResponse.identity == completedIdentity
+        else {
+            return
+        }
+        displayDeep(queuedDeepResponse.response, identity: queuedDeepResponse.identity)
+    }
+
+    private func displayDeep(_ deep: BoundDeep, identity: TurnIdentity) {
+        registerCleanupContent(deep)
+        guard lifecycle == .running, currentIdentity == identity else {
+            timingLedger.recordStaleDiscard(
+                generation: identity.generation,
+                at: time.now()
+            )
+            return
+        }
+        let card = SuggestionCard(
+            identity: identity,
+            stage: .deep,
+            text: deep.composedText,
+            evidence: deep.basis,
+            deepKind: deep.kind
+        )
+        suggestions.removeAll { $0.identity == identity && $0.stage == .deep }
+        suggestions.append(card)
+        timingLedger.recordVerifiedDeepReady(
+            generation: identity.generation,
+            at: time.now()
+        )
+        phase = .suggesting
+        emit(.suggestionUpserted(card))
+        emitState()
+    }
+
+    private func clearBridgeSpeechState() {
+        bridgeSpeechHold = nil
+        queuedDeepResponse = nil
     }
 
     private func generationFinished(identity: TurnIdentity) {
@@ -1186,25 +1524,87 @@ public actor MeetingSessionController {
     }
 
     private func cancelGenerationForLocalSpeech() async {
-        guard generationTask != nil || (currentIdentity != nil && suggestions.isEmpty) else {
+        guard
+            generationTask != nil
+                || (currentIdentity != nil && suggestions.isEmpty)
+                || bridgeSpeechHold != nil
+                || queuedDeepResponse != nil
+        else {
             return
         }
-        await cancelCurrentGeneration(clearSuggestions: false)
+        await cancelCurrentGeneration(
+            clearSuggestions: false,
+            invalidation: .localSpeech
+        )
         updateOperationalPhase()
     }
 
-    private func cancelCurrentGeneration(clearSuggestions: Bool) async {
+    private func cancelCurrentGeneration(
+        clearSuggestions: Bool,
+        invalidation: MeetingTimingInvalidationOutcome
+    ) async {
         boundaryTask?.cancel()
         boundaryTask = nil
-        generationTask?.cancel()
+        let cancelledGenerationTask = generationTask
+        cancelledGenerationTask?.cancel()
         generationTask = nil
+        clearBridgeSpeechState()
         let previousIdentity = currentIdentity
+        if let previousIdentity {
+            timingLedger.invalidate(
+                generation: previousIdentity.generation,
+                outcome: invalidation,
+                at: time.now()
+            )
+        }
         currentIdentity = nil
-        await responseCoordinator.invalidate()
-        await responseGenerator.cancelActiveWork()
+        await cancelResponseWork(joining: cancelledGenerationTask)
         if clearSuggestions {
             suggestions.removeAll(keepingCapacity: false)
             emit(.suggestionsCleared(previousIdentity))
+        }
+    }
+
+    private func cancelResponseWork(joining generationConsumer: Task<Void, Never>?) async {
+        if let operation = responseCancellationOperation {
+            if let generationConsumer {
+                let operationID = UUID()
+                let task = Task {
+                    await operation.task.value
+                    await generationConsumer.value
+                }
+                responseCancellationOperation = ResponseCancellationOperation(
+                    id: operationID,
+                    task: task
+                )
+                await task.value
+                if responseCancellationOperation?.id == operationID {
+                    responseCancellationOperation = nil
+                }
+                return
+            }
+            await operation.task.value
+            if responseCancellationOperation?.id == operation.id {
+                responseCancellationOperation = nil
+            }
+            return
+        }
+
+        let operationID = UUID()
+        let responseCoordinator = self.responseCoordinator
+        let responseGenerator = self.responseGenerator
+        let task = Task {
+            await responseCoordinator.invalidate()
+            await responseGenerator.cancelActiveWork()
+            await generationConsumer?.value
+        }
+        responseCancellationOperation = ResponseCancellationOperation(
+            id: operationID,
+            task: task
+        )
+        await task.value
+        if responseCancellationOperation?.id == operationID {
+            responseCancellationOperation = nil
         }
     }
 
@@ -1336,21 +1736,45 @@ public actor MeetingSessionController {
         }
     }
 
-    private func cleanupNeedles() -> [Data] {
-        let transcriptNeedles = timeline.segments.map(\.text)
-        let suggestionNeedles = suggestions.map(\.text)
-        let delayedAttributionNeedles = [
-            pendingMicrophoneObservation?.observation.result.text,
-            latestOutputObservation?.result.text,
-        ].compactMap { $0 }
-        return Array(
-            Set(
-                (transcriptNeedles + suggestionNeedles + delayedAttributionNeedles)
-                    .map(Self.normalized)
-                    .filter { $0.utf8.count >= 8 }
-                    .map { Data($0.utf8) }
-            )
-        )
+    private func registerCleanupContent(_ deep: BoundDeep) {
+        cleanupNeedleLedger.register(deep.composedText)
+        for reference in deep.basis {
+            cleanupNeedleLedger.register(reference.claim)
+        }
+    }
+
+    private func registerRetainedCleanupContent() {
+        for segment in timeline.segments {
+            cleanupNeedleLedger.register(segment.text)
+        }
+        for suggestion in suggestions {
+            cleanupNeedleLedger.register(suggestion.text)
+            for reference in suggestion.evidence {
+                cleanupNeedleLedger.register(reference.claim)
+            }
+        }
+        if let pendingMicrophoneObservation {
+            cleanupNeedleLedger.register(pendingMicrophoneObservation.observation.result.text)
+        }
+        if let latestOutputObservation {
+            cleanupNeedleLedger.register(latestOutputObservation.result.text)
+        }
+        if let bridgeSpeechHold {
+            cleanupNeedleLedger.register(bridgeSpeechHold.bridgeText)
+        }
+        if let queuedDeepResponse {
+            registerCleanupContent(queuedDeepResponse.response)
+        }
+    }
+
+    private func clearVisibleMeetingContentForStop() {
+        timeline.clear()
+        microphonePartialID = nil
+        outputPartialID = nil
+        turnDetector.invalidate()
+        suggestions.removeAll(keepingCapacity: false)
+        emit(.transcriptsCleared)
+        emit(.suggestionsCleared(currentIdentity))
     }
 
     private func clearDelayedAttributionState() {
@@ -1358,6 +1782,7 @@ public actor MeetingSessionController {
         microphoneAttributionTask = nil
         pendingMicrophoneObservation = nil
         latestOutputObservation = nil
+        clearBridgeSpeechState()
     }
 
     private func makeState() -> MeetingSessionState {
@@ -1391,6 +1816,70 @@ public actor MeetingSessionController {
         text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    }
+
+    private static func isLikelyBridgeSpeech(
+        _ text: String,
+        bridgeText: String
+    ) -> Bool {
+        guard let candidate = boundedSpeechTokens(text),
+            let bridge = boundedSpeechTokens(bridgeText),
+            candidate.count >= 2,
+            candidate.count <= bridge.count
+        else {
+            return false
+        }
+        return isOrderedSubsequence(candidate, of: bridge)
+    }
+
+    private static func isCompletedBridgeSpeech(
+        _ text: String,
+        bridgeText: String
+    ) -> Bool {
+        guard let candidate = boundedSpeechTokens(text),
+            let bridge = boundedSpeechTokens(bridgeText)
+        else {
+            return false
+        }
+        if candidate == bridge { return true }
+        guard bridge.count > 1 else { return false }
+
+        let maximumOmissions = min(3, max(1, bridge.count / 3))
+        let minimumCandidateCount = max(2, bridge.count - maximumOmissions)
+        guard candidate.count >= minimumCandidateCount,
+            candidate.count < bridge.count
+        else {
+            return false
+        }
+        return isOrderedSubsequence(candidate, of: bridge)
+    }
+
+    private static func boundedSpeechTokens(_ text: String) -> [String]? {
+        let maximumTextBytes = 256
+        let maximumTokenCount = 32
+        guard text.utf8.count <= maximumTextBytes else { return nil }
+        let tokens = text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty, tokens.count <= maximumTokenCount else { return nil }
+        return tokens
+    }
+
+    private static func isOrderedSubsequence(
+        _ candidate: [String],
+        of reference: [String]
+    ) -> Bool {
+        var referenceIndex = reference.startIndex
+        for token in candidate {
+            while referenceIndex < reference.endIndex,
+                reference[referenceIndex] != token
+            {
+                reference.formIndex(after: &referenceIndex)
+            }
+            guard referenceIndex < reference.endIndex else { return false }
+            reference.formIndex(after: &referenceIndex)
+        }
+        return true
     }
 
     private static func lostReason(for lane: AudioLane) -> BrownoutReason {

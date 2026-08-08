@@ -8,8 +8,10 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Automated non-live Swift tests pass locally after the final release-hardening changes; opt-in subscription generation remains excluded.
 - [x] Debug and release builds complete after the final release-hardening changes with the Xcode 26 toolchain.
 - [x] Deterministic `.app` assembly, plist validation, ad hoc hardened-runtime signing, and code-signature verification pass after the final release-hardening changes.
+- [x] The shipped bundle, Finder display name, bundle name, executable product, and Mach-O filename are all `PrismCue`; migration-sensitive module, storage, and bundle identifiers remain internal.
 - [x] A clean-checkout test, lint, release build, package, and verification sequence passes at the final committed revision.
 - [x] Debug and release builds are confirmed warning-free from a clean checkout at the final committed revision.
+- [x] Grounding test fixtures use throwing XCTest teardown blocks, so an owned temporary repository that cannot be removed fails visibly instead of leaving silent residue.
 
 ## Codex subscription path
 
@@ -24,7 +26,7 @@ This is the completion contract for the personal production build. A checked ite
 - [ ] A zero-generation preflight proves the dedicated profile's account, model, permission, skill, thread create/delete, cleanup, and no-`auth.json` behavior.
 - [ ] Bounded real general and repository-grounded Deep generations pass on the target subscription, including strict schemas, visible trust labeling, evidence where required, latency capture, thread deletion, profile sanitization, and canary audit.
 - [ ] The Deep model route meets measured latency and quality targets on the target account.
-- [ ] A newer or unknown app-server version is accepted only after the compatibility suite passes.
+- [x] Newer and unknown app-server versions fail closed. Any future version-range expansion requires the compatibility, schema, lifecycle, permission, and cleanup suites to pass before the policy changes.
 
 ## Claude subscription path
 
@@ -37,8 +39,10 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Process coverage includes input, output, stderr, timeout, cancellation, termination, force-kill, and reaping limits without surfacing raw model or auth output in errors.
 - [x] Claude grounding is host-selected from the sealed snapshot under deterministic count, line, pack, path, hash, and freshness limits; displayed claims still pass the shared local evidence verifier.
 - [x] The auth-only smoke passes against the target Claude subscription without issuing a model request.
+- [x] A fail-closed paid-production smoke harness exists and is skipped by default. Its exact-value `PACENOTE_RUN_PAID_CLAUDE_PRODUCTION_SMOKE` gate permits only two one-turn launches in fixed general-then-grounded order, has no retries, uses synthetic canaries, records latency only, and audits runtime deletion plus opaque metadata for Claude session-state changes without retaining model or auth output.
 - [ ] One bounded paid general and one bounded paid repository-grounded Deep generation pass with tools/config leakage probes, latency capture, cancellation, runtime deletion, and no residual session state.
-- [ ] A newer Claude Code build is accepted only after the compatibility, safe-mode, auth, structured-output, process, and adversarial-isolation suites pass.
+  Run this only with other Claude Code sessions closed: `PACENOTE_RUN_PAID_CLAUDE_PRODUCTION_SMOKE=RUN_EXACTLY_TWO_PAID_CLAUDE_TURNS ./Scripts/toolchain.sh swift test --filter ClaudePaidProductionSmokeTests/testExactlyTwoPaidClaudeTurnsThenDeleteEveryOwnedRuntime`. A successful run spends exactly two Claude subscription or Agent SDK turns. Do not retry automatically; inspect the generic failure and cleanup state first.
+- [x] Newer and unknown Claude Code builds fail closed. Any future version-range expansion requires the compatibility, safe-mode, auth, structured-output, process, and adversarial-isolation suites to pass before the policy changes.
 
 ## Audio and transcription
 
@@ -48,7 +52,9 @@ This is the completion contract for the personal production build. A checked ite
 - [x] The system-audio permission probe retains and retries a tap whose destruction fails instead of silently dropping its handle.
 - [x] The current locale's speech-asset requirement is checked before capture.
 - [ ] Microphone and selected-process output capture work in the packaged app after TCC approval.
-- [ ] Global-output fallback excludes PrismCue output.
+- [x] Global-output fallback construction always adds PrismCue's current PID and bundle ID to the exclusion set; injected unit tests cover both bundle-present and bundle-absent paths.
+- [x] Both lanes maintain a bounded source-frame-to-Core-Audio-host-time transform around Speech input, feed Speech a contiguous non-overlapping source-frame timeline, map result ranges back to verified host time, fail closed with an explicit clock-discontinuity gap, and refuse receipt-time attribution when verified host ranges are missing. A deterministic logical 30-minute dual-clock fixture exercises the production mapping path, drift, and discontinuity behavior without claiming live hardware evidence.
+- [ ] A live global-output fallback confirms PrismCue output is absent from the captured lane.
 - [ ] Google Meet in Chrome and at least one native meeting app pass capture tests.
 - [ ] Headphone, speaker echo, browser-helper restart, device switch, permission denial, and permission revocation cases pass.
 - [ ] Two-lane host-clock skew stays within the specification target for 30 minutes.
@@ -62,6 +68,9 @@ This is the completion contract for the personal production build. A checked ite
 - [x] A repository Deep answer candidate must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation; each claim must contain at least two informative terms and copy one complete freshly verified source line, apart from a leading comment or list marker. Appended, combined, paraphrased, punctuation-changed, and negation-changed candidates fail closed.
 - [x] Strict Deep and evidence schemas reject unknown or malformed fields. Lower-level Quick and reconciliation schema fixtures remain compatibility tests, not production response paths.
 - [x] Deep completion, evidence rejection, rate-governor, turn-detector, gap, pause, route-loss, transcriber-failure, and user-interruption paths have fixture or controller coverage.
+- [x] Speaking the displayed bridge no longer cancels Deep. Volatile exact or omission-tolerant bridge speech freezes the visible card, queues a mid-speech Deep result, and releases it only after the final bridge transcript; a bridge plus substantive reply still invalidates stale work.
+- [x] A bounded content-free timing ledger measures turn-stable-to-controller-ready bridge latency, signed bridge-to-confirmed-speech margin, controller acceptance of verified Deep, stale outcomes, and user dismissals. Empty samples remain explicitly not evaluated, and Stop returns the snapshot before clearing live metrics. SwiftUI render acknowledgement and the distinct turn-boundary p95 remain live dogfood gates below.
+- [x] Dismiss clears only the identity-bound suggestion, cancels and joins its generation, leaves capture and transcript active, and remains independent from Stop. A bounded in-memory cleanup ledger retains normalized fragments from transcript, displayed, held, queued, dismissed, and late-arriving response content until Stop audits app-owned provider state; overflow and audit failure preserve the cleanup journal and fail closed.
 - [ ] A live meeting proves the bridge appears before the user replies and a later Deep continuation or clarification remains natural to speak.
 - [ ] Dogfood meets measured bridge-visibility, Deep, stale-card, and speakability targets.
 
@@ -95,17 +104,20 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Packaged first-run, meeting setup, main controls, settings tabs, and menu-bar controls expose named native accessibility roles, enabled states, values where applicable, and press actions. AppKit accessibility proxies cover the macOS 26 SwiftUI control-label regression.
 - [x] The packaged coaching window opts out of macOS window capture; capture-by-window-ID fails after packaging. The user must still verify the meeting application's sharing preview.
 - [x] The coaching window is configured to join every Space, remain available beside full-screen apps, stay visible when another app activates, and retain window-capture protection.
+- [x] Main-window and menu-bar status indicators derive from the capture ownership flag rather than response phase, so active capture remains red while thinking, suggesting, or in a brownout; model lifecycle tests cover the ownership transitions.
+- [x] Decorative banner transitions and transcript auto-scroll honor SwiftUI Reduce Motion, and the glass backdrop already honors Reduce Transparency.
 - [ ] Setup, transcript, bridge, Deep, degraded, paused, and ended states render correctly in the packaged app.
-- [ ] The capture indicator remains visible during listening, bridge, Deep, suggesting, and brownout states.
+- [ ] The packaged app visually confirms the capture indicator across listening, bridge, Deep, suggesting, and brownout states.
 - [ ] Keyboard navigation, VoiceOver labels, text scaling, contrast, reduced motion, and screen-share-safe behavior pass manual review.
 - [ ] Menu-bar controls and the floating window work across Spaces and meeting apps without stealing focus.
-- [ ] Manual observation confirms the app never auto-speaks, auto-pastes, or auto-sends.
+- [x] CI rejects production references to speech output, audio playback, clipboard mutation, UI automation, Apple Events, and ambient network clients. Packaged-app verification rejects Apple Events/debug entitlements and the app has no auto-speak, auto-paste, or auto-send control path.
 
 ## Distribution and ownership
 
 - [x] Private GitHub repository exists at `mo-sharif/PaceNote`.
 - [x] Current source, tests, and documentation are committed and pushed to `main`.
 - [x] Private-repository CI passes for the final pushed revision from a clean checkout.
+- [x] Repository Actions are limited to selected GitHub-owned actions and require full commit-SHA pinning; both workflows use the pinned checkout action.
 - [x] The local ad hoc build opens on the target Mac and its expected Gatekeeper behavior is documented.
 - [ ] Developer ID and notarization credentials are configured if distribution beyond this Mac is desired.
 - [ ] A Developer ID signed, notarized, stapled release and checksum are attached to a private GitHub release if distribution beyond this Mac is desired.

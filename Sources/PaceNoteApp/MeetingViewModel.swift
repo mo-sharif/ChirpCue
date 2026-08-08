@@ -404,6 +404,7 @@ struct MeetingActions: Sendable {
     var resumeMeeting: @Sendable () async throws -> Void
     var stopMeeting: @Sendable () async throws -> Void
     var coachCurrentTurn: @Sendable (String?) async throws -> Void
+    var dismissSuggestion: @Sendable (TurnIdentity) async -> Void
 
     static let unwired = unavailable(
         reason: "\(AppBrand.displayName)'s local service is not connected yet."
@@ -432,7 +433,8 @@ struct MeetingActions: Sendable {
             pauseMeeting: { throw PaceNoteActionError.safeMessage(reason) },
             resumeMeeting: { throw PaceNoteActionError.safeMessage(reason) },
             stopMeeting: { throw PaceNoteActionError.safeMessage(reason) },
-            coachCurrentTurn: { _ in throw PaceNoteActionError.safeMessage(reason) }
+            coachCurrentTurn: { _ in throw PaceNoteActionError.safeMessage(reason) },
+            dismissSuggestion: { _ in }
         )
     }
 }
@@ -489,6 +491,7 @@ final class MeetingViewModel {
     private(set) var repositoryState: RepositorySetupState = .none
     private(set) var isBootstrapping = false
     private(set) var isPerformingMeetingAction = false
+    private(set) var isDismissingSuggestion = false
     private(set) var hasIncompleteAudioTeardown = false
     private(set) var actionError: String?
     var presentedSheet: PaceNoteSheet?
@@ -586,7 +589,7 @@ final class MeetingViewModel {
 
     var canCoach: Bool {
         !hasIncompleteAudioTeardown && selectedProviderState.isReady && !isPerformingMeetingAction
-            && isMeetingActive && phase != .paused
+            && !isDismissingSuggestion && isMeetingActive && phase != .paused
     }
 
     var canCoachCurrentTurn: Bool {
@@ -619,11 +622,20 @@ final class MeetingViewModel {
     }
 
     var canPause: Bool {
-        guard !hasIncompleteAudioTeardown else { return false }
+        guard !hasIncompleteAudioTeardown, !isDismissingSuggestion else { return false }
         return switch phase {
         case .listening, .candidateQuestion, .thinking, .suggesting, .brownout: true
         default: false
         }
+    }
+
+    var canDismissSuggestion: Bool {
+        !hasIncompleteAudioTeardown && !isPerformingMeetingAction && !isDismissingSuggestion
+            && isMeetingActive && phase != .paused && displayedSuggestionIdentity != nil
+    }
+
+    var canStop: Bool {
+        !isPerformingMeetingAction && phase != .idle && phase != .ended
     }
 
     var setupBlockers: [String] {
@@ -1087,6 +1099,14 @@ final class MeetingViewModel {
         await requestCoaching(question: question)
     }
 
+    func dismissSuggestion() async {
+        guard canDismissSuggestion, let identity = displayedSuggestionIdentity else { return }
+        isDismissingSuggestion = true
+        actionError = nil
+        await actions.dismissSuggestion(identity)
+        isDismissingSuggestion = false
+    }
+
     func dismissActionError() {
         actionError = nil
     }
@@ -1416,6 +1436,10 @@ final class MeetingViewModel {
         case .listening, .candidateQuestion, .thinking, .suggesting, .paused, .brownout: true
         default: false
         }
+    }
+
+    private var displayedSuggestionIdentity: TurnIdentity? {
+        quickSuggestion?.identity ?? deepSuggestion?.identity
     }
 
     private func refreshReadyPhase() {

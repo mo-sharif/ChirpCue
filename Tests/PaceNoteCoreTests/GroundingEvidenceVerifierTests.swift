@@ -6,7 +6,7 @@ import XCTest
 final class GroundingEvidenceVerifierTests: XCTestCase {
     func testValidEvidenceReturnsOnlyTheVerifiedLineRange() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -32,7 +32,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
         let cases: [EvidenceFailureCase] = [.traversal, .alias, .hash, .line, .instructions, .claim]
         for failureCase in cases {
             let context = try await EvidenceFixture.make()
-            defer { context.remove() }
+            addTeardownBlock { try context.remove() }
             let verifier = EvidenceVerifier()
             let valid = try context.reference(
                 path: "Sources/Worker.swift",
@@ -109,7 +109,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testCitedSourceMutationInvalidatesEvidence() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -133,7 +133,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testUncitedSourceMutationStillInvalidatesRepositoryFingerprint() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -155,7 +155,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testSnapshotMutationInvalidatesEvidenceEvenWhenSourceIsUnchanged() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -178,7 +178,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testGroundingFingerprintMismatchFailsBeforeEvidenceDisplay() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -199,7 +199,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testEvidenceVerificationOverallDeadlineFailsClosed() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -225,7 +225,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testEvidenceVerificationScannedByteBudgetFailsClosed() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -248,7 +248,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testOneGenericSharedTermDoesNotSupportAClaim() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -271,7 +271,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testUnrelatedCandidateCannotRideOnVerifiedEvidence() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -295,7 +295,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testCandidateMateriallyBoundToVerifiedEvidencePasses() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 2,
@@ -316,7 +316,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testBasisClaimCannotAppendUnsupportedClause() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let supported = "The worker queue appends each job and isolates callers from retry latency."
         let reference = try context.reference(
             path: "Sources/Worker.swift",
@@ -340,7 +340,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testCandidateCannotAppendUnsupportedClauseToVerifiedClaim() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let supported = "The worker queue appends each job and isolates callers from retry latency."
         let reference = try context.reference(
             path: "Sources/Worker.swift",
@@ -362,7 +362,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testCandidateCannotInventRelationshipAcrossVerifiedClaims() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let workerClaim = "The worker queue appends each job and isolates callers from retry latency."
         let references = try [
             context.reference(
@@ -392,7 +392,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testClaimCannotDropNegationFromCitedLine() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 7,
@@ -415,7 +415,7 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
 
     func testClaimCannotChangeMeaningByDroppingPunctuation() async throws {
         let context = try await EvidenceFixture.make()
-        addTeardownBlock { context.remove() }
+        addTeardownBlock { try context.remove() }
         let reference = try context.reference(
             path: "Sources/Worker.swift",
             startLine: 8,
@@ -504,8 +504,8 @@ private struct EvidenceFixture: @unchecked Sendable {
         try Self.write(root: root, relativePath, contents)
     }
 
-    func remove() {
-        try? FileManager.default.removeItem(at: parent)
+    func remove() throws {
+        try FileManager.default.removeItem(at: parent)
     }
 
     private static func write(root: URL, _ relativePath: String, _ contents: String) throws {

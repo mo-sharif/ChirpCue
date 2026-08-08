@@ -248,6 +248,7 @@ public enum AudioGapReason: String, Codable, CaseIterable, Sendable {
     case oversizedBuffer
     case invalidFormat
     case invalidTimestamp
+    case clockDiscontinuity
     case routeChanged
     case captureFailed
 }

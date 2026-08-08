@@ -9,7 +9,7 @@ let package = Package(
     ],
     products: [
         .library(name: "PaceNoteCore", targets: ["PaceNoteCore"]),
-        .executable(name: "PaceNote", targets: ["PaceNoteApp"]),
+        .executable(name: "PrismCue", targets: ["PaceNoteApp"]),
     ],
     targets: [
         .target(

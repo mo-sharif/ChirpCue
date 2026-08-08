@@ -231,7 +231,7 @@ Meeting-output capture is required for speech-driven coaching. With output disab
 
 ### 6.3 Clock and route truth
 
-Map both AVAudioTime host timestamps into one mach continuous-time domain. Maintain a sliding clock transform per source, record discontinuities, and resample only when measured drift exceeds the evaluation threshold. A controlled loopback fixture supplies the same timed signal to both lanes and verifies long-run skew.
+Preserve both AVAudioTime host timestamps in the shared Core Audio host-time domain backed by mach absolute host ticks. Maintain a sliding clock transform per source, record discontinuities, and resample only when measured drift exceeds the evaluation threshold. A controlled loopback fixture supplies the same timed signal to both lanes and verifies long-run skew.
 
 Each lane has a callback, format, route-ID, and callback watchdog. A missing callback, route change, invalid format, or transfer failure creates a typed gap. The app does not use an inaudible canary and cannot prove that a global tap contains only meeting audio; the explicit source badge makes that scope visible to the user.
 

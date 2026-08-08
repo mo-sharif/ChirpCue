@@ -25,18 +25,16 @@ public struct TranscriptAttributionResolver: Sendable {
 
     public func resolveMicrophone(
         _ microphone: ProgressiveTranscriptResult,
-        receivedAt microphoneReceivedAt: TimeInterval,
+        receivedAt _: TimeInterval,
         against output: ProgressiveTranscriptResult,
-        receivedAt outputReceivedAt: TimeInterval
+        receivedAt _: TimeInterval
     ) -> TranscriptAttributionDecision {
         guard
-            isNearSynchronous(
-                microphone,
-                receivedAt: microphoneReceivedAt,
-                output,
-                receivedAt: outputReceivedAt
-            )
+            let isNearSynchronous = isNearSynchronous(microphone, output)
         else {
+            return .attribute(source: .unknown, speakerUncertain: true)
+        }
+        guard isNearSynchronous else {
             return .attribute(source: .you, speakerUncertain: false)
         }
 
@@ -51,22 +49,20 @@ public struct TranscriptAttributionResolver: Sendable {
 
     private func isNearSynchronous(
         _ lhs: ProgressiveTranscriptResult,
-        receivedAt lhsReceivedAt: TimeInterval,
-        _ rhs: ProgressiveTranscriptResult,
-        receivedAt rhsReceivedAt: TimeInterval
-    ) -> Bool {
-        if let lhsRange = lhs.hostTimeRange, let rhsRange = rhs.hostTimeRange {
-            let separation: TimeInterval
-            if lhsRange.end < rhsRange.start {
-                separation = rhsRange.start.seconds - lhsRange.end.seconds
-            } else if rhsRange.end < lhsRange.start {
-                separation = lhsRange.start.seconds - rhsRange.end.seconds
-            } else {
-                separation = 0
-            }
-            return separation <= nearSynchronousThreshold
+        _ rhs: ProgressiveTranscriptResult
+    ) -> Bool? {
+        guard let lhsRange = lhs.hostTimeRange, let rhsRange = rhs.hostTimeRange else {
+            return nil
         }
-        return abs(lhsReceivedAt - rhsReceivedAt) <= nearSynchronousThreshold
+        let separation: TimeInterval
+        if lhsRange.end < rhsRange.start {
+            separation = rhsRange.start.seconds - lhsRange.end.seconds
+        } else if rhsRange.end < lhsRange.start {
+            separation = lhsRange.start.seconds - rhsRange.end.seconds
+        } else {
+            separation = 0
+        }
+        return separation <= nearSynchronousThreshold
     }
 
     private static func similarity(_ lhs: String, _ rhs: String) -> Double {

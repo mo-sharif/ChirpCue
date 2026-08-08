@@ -36,6 +36,7 @@ public struct MeetingSessionStopReport: Equatable, Sendable {
     public let journalEntryRemoved: Bool
     public let failures: [MeetingSessionCleanupFailure]
     public let audioTeardownFailureLane: AudioLane?
+    public let timing: MeetingTimingSnapshot
 
     public init(
         deletedThreadCount: Int,
@@ -44,7 +45,8 @@ public struct MeetingSessionStopReport: Equatable, Sendable {
         residualFindingCount: Int,
         journalEntryRemoved: Bool,
         failures: [MeetingSessionCleanupFailure],
-        audioTeardownFailureLane: AudioLane? = nil
+        audioTeardownFailureLane: AudioLane? = nil,
+        timing: MeetingTimingSnapshot = .empty
     ) {
         self.deletedThreadCount = deletedThreadCount
         self.deletedSnapshotCount = deletedSnapshotCount
@@ -53,6 +55,7 @@ public struct MeetingSessionStopReport: Equatable, Sendable {
         self.journalEntryRemoved = journalEntryRemoved
         self.failures = failures
         self.audioTeardownFailureLane = audioTeardownFailureLane
+        self.timing = timing
     }
 
     public var cleanupSucceeded: Bool {

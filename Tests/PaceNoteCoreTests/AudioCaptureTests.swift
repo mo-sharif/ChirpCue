@@ -241,6 +241,30 @@ final class AudioCaptureTests: XCTestCase {
         XCTAssertEqual(status, .notDetermined)
     }
 
+    func testGlobalOutputAlwaysExcludesTheAppProcessAndBundle() {
+        let callerExclusion = AudioProcessTarget(bundleID: "com.example.meeting")
+        let exclusions = SystemAudioCaptureService.globalOutputExclusions(
+            requested: [callerExclusion],
+            ownProcessID: 4_242,
+            ownBundleID: "com.mosharif.pacenote"
+        )
+
+        XCTAssertTrue(exclusions.contains(callerExclusion))
+        XCTAssertTrue(exclusions.contains { $0.processID == 4_242 })
+        XCTAssertTrue(exclusions.contains { $0.bundleID == "com.mosharif.pacenote" })
+    }
+
+    func testGlobalOutputOwnProcessExclusionDoesNotRequireABundleIdentifier() {
+        let exclusions = SystemAudioCaptureService.globalOutputExclusions(
+            requested: [],
+            ownProcessID: 4_242,
+            ownBundleID: nil
+        )
+
+        XCTAssertEqual(exclusions.count, 1)
+        XCTAssertEqual(exclusions.first?.processID, 4_242)
+    }
+
     func testSystemAudioPermissionProbeRetriesFailedTapDestroyBeforeReportingGranted() async throws {
         let recorder = SystemAudioPermissionProbeRecorder()
         let probe = SystemAudioPermissionProbe(operations: recorder.operations)

@@ -11,7 +11,7 @@ struct MenuBarContent: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 9) {
                 Circle()
-                    .fill(model.phase.statusColor)
+                    .fill(model.isCaptureActive ? .red : model.phase.statusColor)
                     .frame(width: 10, height: 10)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
@@ -25,7 +25,9 @@ struct MenuBarContent: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
-                "\(AppBrand.displayName) status: \(model.phase.statusTitle). \(model.statusDetail)"
+                "\(AppBrand.displayName) status: \(model.phase.statusTitle). "
+                    + (model.isCaptureActive ? "Capture active. " : "Capture inactive. ")
+                    + model.statusDetail
             )
 
             VStack(alignment: .leading, spacing: 5) {
@@ -86,6 +88,23 @@ struct MenuBarContent: View {
                 Task { await model.coachCurrentTurn() }
             }
 
+            Button("Dismiss Suggestion") {
+                Task { await model.dismissSuggestion() }
+            }
+            .disabled(!model.canDismissSuggestion)
+            .accessibilityLabel("Dismiss Current Suggestion")
+            .accessibilityHint(
+                "Stops this answer and clears its cards. Meeting capture and transcript continue."
+            )
+            .accessibilityIdentifier("menu-bar.dismiss-suggestion")
+            .paceNoteAssistiveControl(
+                label: "Dismiss Current Suggestion",
+                identifier: "menu-bar.dismiss-suggestion",
+                isEnabled: model.canDismissSuggestion
+            ) {
+                Task { await model.dismissSuggestion() }
+            }
+
             if model.phase == .paused {
                 Button("Resume Capture") {
                     Task { await model.resume() }
@@ -135,14 +154,13 @@ struct MenuBarContent: View {
             Button("Stop and Clear", role: .destructive) {
                 Task { await model.stop() }
             }
-            .disabled(model.isPerformingMeetingAction || model.phase == .idle || model.phase == .ended)
+            .disabled(!model.canStop)
             .accessibilityLabel("Stop and Clear")
             .accessibilityIdentifier("menu-bar.stop-and-clear")
             .paceNoteAssistiveControl(
                 label: "Stop and Clear",
                 identifier: "menu-bar.stop-and-clear",
-                isEnabled: !model.isPerformingMeetingAction && model.phase != .idle
-                    && model.phase != .ended
+                isEnabled: model.canStop
             ) {
                 Task { await model.stop() }
             }

@@ -7,7 +7,7 @@ import XCTest
 final class GroundingSnapshotTests: XCTestCase {
     func testSnapshotIncludesTrackedAndNonignoredUntrackedFilesOnly() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("tracked.txt", "tracked\n")
         try fixture.git(["add", "tracked.txt"])
         try fixture.write("untracked.txt", "untracked\n")
@@ -32,7 +32,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testHardDeniedFilesCannotBeApprovedAndSoftFindingRequiresExactHashBoundApproval() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("Sources/App.swift", "let title = \"PaceNote\"\n")
         try fixture.write("Config.swift", "let api_key = \"fixture_secret_123456789\"\n")
         try fixture.write(".env.production", "API_KEY=must_never_leave\n")
@@ -79,7 +79,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testDefiniteSecretContentIsHardExcludedWithoutApprovalEscape() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         let payloads = [
             "Secrets/private.txt": "-----BEGIN PRIVATE KEY-----\nsynthetic-only\n-----END PRIVATE KEY-----\n",
             "Secrets/aws.txt": "AKIA0000000000000000\n",
@@ -126,7 +126,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testCommonAuthAndOAuthCredentialStorePathsAreHardExcluded() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         let paths = [
             "Config/auth.json",
             ".config/gh/hosts.yml",
@@ -150,7 +150,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testPerFileCountAndAggregateResourceLimitsFailClosed() async throws {
         let perFileFixture = try GitFixture()
-        defer { perFileFixture.remove() }
+        addTeardownBlock { try perFileFixture.remove() }
         try perFileFixture.write("large.txt", String(repeating: "x", count: 33))
         let perFileManager = GroundingManager(
             configuration: .init(
@@ -162,7 +162,7 @@ final class GroundingSnapshotTests: XCTestCase {
         }
 
         let countFixture = try GitFixture()
-        defer { countFixture.remove() }
+        addTeardownBlock { try countFixture.remove() }
         try countFixture.write("A.txt", "a")
         try countFixture.write("B.txt", "b")
         let countManager = GroundingManager(
@@ -175,7 +175,7 @@ final class GroundingSnapshotTests: XCTestCase {
         }
 
         let aggregateFixture = try GitFixture()
-        defer { aggregateFixture.remove() }
+        addTeardownBlock { try aggregateFixture.remove() }
         try aggregateFixture.write("A.txt", "12345678")
         try aggregateFixture.write("B.txt", "12345678")
         let aggregateManager = GroundingManager(
@@ -190,7 +190,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testExcludedSecretStillConsumesScannedByteBudget() async throws {
         let fixture = try GitFixture()
-        defer { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write(
             "secret-content.txt",
             "github_pat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
@@ -208,7 +208,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testScannedByteBudgetIsSharedAcrossSnapshotPhases() async throws {
         let fixture = try GitFixture()
-        defer { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("A.txt", "12345678")
         let manager = GroundingManager(
             configuration: .init(
@@ -224,7 +224,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testTraversalEntryAndOverallDeadlineLimitsFailClosed() async throws {
         let traversalFixture = try GitFixture()
-        defer { traversalFixture.remove() }
+        addTeardownBlock { try traversalFixture.remove() }
         try traversalFixture.write("Sources/A.swift", "struct A {}\n")
         let traversalManager = GroundingManager(
             configuration: .init(
@@ -236,7 +236,7 @@ final class GroundingSnapshotTests: XCTestCase {
         }
 
         let deadlineFixture = try GitFixture()
-        defer { deadlineFixture.remove() }
+        addTeardownBlock { try deadlineFixture.remove() }
         try deadlineFixture.write("A.txt", "deadline\n")
         let deadlineManager = GroundingManager(
             configuration: .init(
@@ -251,7 +251,7 @@ final class GroundingSnapshotTests: XCTestCase {
     func testResourceLimitsRemainEnforcedDuringCopyVerificationAndRebuild() async throws {
         for mutation in ResourceLimitMutation.allCases {
             let fixture = try GitFixture()
-            defer { fixture.remove() }
+            addTeardownBlock { try fixture.remove() }
             try fixture.write("A.txt", "small")
             let observer = ResourceLimitMutationObserver(root: fixture.root, mutation: mutation)
             let limits: GroundingResourceLimits =
@@ -330,7 +330,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testExtremePublicFileLimitDoesNotOverflowSizeConversion() throws {
         let fixture = try GitFixture()
-        defer { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("small.txt", "bounded")
 
         let bytes = try GroundingFileSecurity().secureRead(
@@ -344,7 +344,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testNestedAgentInstructionsUseOverrideAtTheSameScope() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("AGENTS.md", "root instructions\n")
         try fixture.write("Sources/AGENTS.md", "standard source instructions\n")
         try fixture.write("Sources/AGENTS.override.md", "override source instructions\n")
@@ -360,7 +360,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testStableSymbolicLinkIsRejectedWithoutReadingItsTarget() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         let outside = fixture.parent.appending(path: "outside-secret.txt")
         try Data("outside secret\n".utf8).write(to: outside)
         try FileManager.default.createSymbolicLink(
@@ -381,7 +381,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testHardLinkIsRejected() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("original.txt", "shared inode\n")
         let original = fixture.root.appending(path: "original.txt").path
         let alias = fixture.root.appending(path: "alias.txt").path
@@ -399,7 +399,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testFIFOIsRejectedWithoutBlockingOnRead() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         let fifo = fixture.root.appending(path: "input.pipe")
         XCTAssertEqual(Darwin.mkfifo(fifo.path, 0o600), 0)
 
@@ -415,7 +415,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testUnixSocketIsRejected() async throws {
         let fixture = try GitFixture(useShortPath: true)
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         let socketURL = fixture.root.appending(path: "agent.socket")
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         XCTAssertGreaterThanOrEqual(descriptor, 0)
@@ -457,7 +457,7 @@ final class GroundingSnapshotTests: XCTestCase {
     func testEditAddRenameAndDeleteDuringCopyNeverProduceAnAcceptedMixedSnapshot() async throws {
         for mutation in SnapshotMutation.allCases {
             let fixture = try GitFixture()
-            defer { fixture.remove() }
+            addTeardownBlock { try fixture.remove() }
             try fixture.write("Sources/A.swift", "let value = 1\n")
             try fixture.write("Sources/B.swift", "let other = 2\n")
             try fixture.git(["add", "."])
@@ -482,7 +482,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testBoundedRetriesReturnSnapshotBusyWhenSourceChangesEveryAttempt() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("Sources/A.swift", "let value = 1\n")
         let observer = MutatingSnapshotObserver(root: fixture.root, mutation: .edit, repeatEveryAttempt: true)
         let manager = GroundingManager(
@@ -501,7 +501,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
     func testRetryAcceptsOnlyTheLaterStableSourceState() async throws {
         let fixture = try GitFixture()
-        addTeardownBlock { fixture.remove() }
+        addTeardownBlock { try fixture.remove() }
         try fixture.write("Sources/A.swift", "let value = 1\n")
         let observer = MutatingSnapshotObserver(root: fixture.root, mutation: .edit, repeatEveryAttempt: false)
         let manager = GroundingManager(
@@ -683,8 +683,8 @@ private final class GitFixture: @unchecked Sendable {
             })
     }
 
-    func remove() {
-        try? FileManager.default.removeItem(at: parent)
+    func remove() throws {
+        try FileManager.default.removeItem(at: parent)
     }
 }
 
