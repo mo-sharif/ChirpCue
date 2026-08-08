@@ -873,28 +873,9 @@ public actor MeetingSessionController {
 
     private func startEnabledAudioServices(attempt: UUID) async throws {
         try requireAudioTransition(attempt)
-        if configuration.captureMode.capturesMicrophone {
-            guard let microphone = audioServices.microphone else {
-                throw MeetingSessionFailure.missingAudioServices(.microphone)
-            }
-            do {
-                try await startLane(microphone, attempt: attempt)
-                try requireAudioTransition(attempt)
-                deactivateBrownout(reason: .microphoneLost, lane: .microphone)
-            } catch let failure as MeetingSessionFailure {
-                throw failure
-            } catch let error as AudioCaptureError where error == .permissionDenied {
-                try requireAudioTransition(attempt)
-                activateBrownout(.init(reason: .microphoneLost, lane: .microphone))
-                throw MeetingSessionFailure.microphonePermissionDenied
-            } catch {
-                try requireAudioTransition(attempt)
-                activateBrownout(.init(reason: .microphoneLost, lane: .microphone))
-                throw MeetingSessionFailure.captureUnavailable(.microphone)
-            }
-        }
-
-        try requireAudioTransition(attempt)
+        // Creating the private Core Audio aggregate can notify AVAudioEngine instances about a
+        // hardware configuration change. Bring up output first so that notification cannot tear
+        // down a microphone engine that ChirpCue just started.
         if configuration.captureMode.capturesSystemOutput {
             guard let output = audioServices.systemOutput else {
                 throw MeetingSessionFailure.missingAudioServices(.output)
@@ -913,6 +894,28 @@ public actor MeetingSessionController {
                 try requireAudioTransition(attempt)
                 activateBrownout(.init(reason: .systemAudioLost, lane: .output))
                 throw MeetingSessionFailure.captureUnavailable(.output)
+            }
+        }
+
+        try requireAudioTransition(attempt)
+        if configuration.captureMode.capturesMicrophone {
+            guard let microphone = audioServices.microphone else {
+                throw MeetingSessionFailure.missingAudioServices(.microphone)
+            }
+            do {
+                try await startLane(microphone, attempt: attempt)
+                try requireAudioTransition(attempt)
+                deactivateBrownout(reason: .microphoneLost, lane: .microphone)
+            } catch let failure as MeetingSessionFailure {
+                throw failure
+            } catch let error as AudioCaptureError where error == .permissionDenied {
+                try requireAudioTransition(attempt)
+                activateBrownout(.init(reason: .microphoneLost, lane: .microphone))
+                throw MeetingSessionFailure.microphonePermissionDenied
+            } catch {
+                try requireAudioTransition(attempt)
+                activateBrownout(.init(reason: .microphoneLost, lane: .microphone))
+                throw MeetingSessionFailure.captureUnavailable(.microphone)
             }
         }
     }

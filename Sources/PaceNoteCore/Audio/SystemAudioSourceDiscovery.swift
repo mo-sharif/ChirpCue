@@ -11,6 +11,8 @@ public struct SystemAudioSource: Identifiable, Equatable, Hashable, Sendable {
     public let audioObjectID: AudioObjectID
     public let name: String
     public let isLikelyMeetingSource: Bool
+    public let owningApplicationBundleID: String?
+    public let owningApplicationName: String?
 
     public init(
         processID: Int32,
@@ -18,7 +20,9 @@ public struct SystemAudioSource: Identifiable, Equatable, Hashable, Sendable {
         processStartToken: String,
         audioObjectID: AudioObjectID,
         name: String,
-        isLikelyMeetingSource: Bool
+        isLikelyMeetingSource: Bool,
+        owningApplicationBundleID: String? = nil,
+        owningApplicationName: String? = nil
     ) {
         precondition(!processStartToken.isEmpty)
         self.id = "process:\(processID):\(audioObjectID):\(processStartToken)"
@@ -28,6 +32,8 @@ public struct SystemAudioSource: Identifiable, Equatable, Hashable, Sendable {
         self.audioObjectID = audioObjectID
         self.name = name
         self.isLikelyMeetingSource = isLikelyMeetingSource
+        self.owningApplicationBundleID = owningApplicationBundleID
+        self.owningApplicationName = owningApplicationName
     }
 
     public var captureTarget: AudioProcessTarget {
@@ -60,6 +66,7 @@ public actor SystemAudioSourceDiscovery: SystemAudioSourceDiscovering {
 
             let bundleID = try process.bundleID
             let application = NSRunningApplication(processIdentifier: processID)
+            let owningApplication = Self.owningApplication(for: processID)
             let name = Self.displayName(
                 localizedName: application?.localizedName,
                 bundleID: bundleID,
@@ -74,7 +81,9 @@ public actor SystemAudioSourceDiscovery: SystemAudioSourceDiscovering {
                 isLikelyMeetingSource: Self.isLikelyMeetingSource(
                     name: name,
                     bundleID: bundleID
-                )
+                ),
+                owningApplicationBundleID: owningApplication.bundleID,
+                owningApplicationName: owningApplication.name
             )
         }
     }
@@ -135,10 +144,53 @@ public actor SystemAudioSourceDiscovery: SystemAudioSourceDiscovering {
         if let bundleID, !bundleID.isEmpty { return bundleID }
         return "Audio process \(processID)"
     }
+
+    private static func owningApplication(
+        for processID: Int32
+    ) -> (bundleID: String?, name: String?) {
+        var currentProcessID = processID
+        var visited: Set<Int32> = []
+        for _ in 0..<8 {
+            guard currentProcessID > 1, visited.insert(currentProcessID).inserted else { break }
+            if let application = NSRunningApplication(processIdentifier: currentProcessID),
+                application.activationPolicy == .regular
+            {
+                let bundleID = application.bundleIdentifier?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                let name = application.localizedName?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if bundleID?.isEmpty == false || name?.isEmpty == false {
+                    return (bundleID, name)
+                }
+            }
+            guard
+                let parent = SystemProcessStartToken.parentProcessID(for: currentProcessID),
+                parent != currentProcessID
+            else {
+                break
+            }
+            currentProcessID = parent
+        }
+        return (nil, nil)
+    }
 }
 
 enum SystemProcessStartToken {
     static func value(for processID: Int32) -> String? {
+        guard let info = processInfo(for: processID) else { return nil }
+        return "\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)"
+    }
+
+    static func parentProcessID(for processID: Int32) -> Int32? {
+        guard let info = processInfo(for: processID), info.pbi_ppid <= UInt32(Int32.max) else {
+            return nil
+        }
+        return Int32(info.pbi_ppid)
+    }
+
+    private static func processInfo(for processID: Int32) -> proc_bsdinfo? {
         var info = proc_bsdinfo()
         let expectedSize = MemoryLayout<proc_bsdinfo>.stride
         let result = withUnsafeMutablePointer(to: &info) { pointer in
@@ -150,7 +202,6 @@ enum SystemProcessStartToken {
                 Int32(expectedSize)
             )
         }
-        guard result == Int32(expectedSize) else { return nil }
-        return "\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)"
+        return result == Int32(expectedSize) ? info : nil
     }
 }

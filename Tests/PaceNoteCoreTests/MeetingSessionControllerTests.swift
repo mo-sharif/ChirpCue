@@ -43,6 +43,20 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertEqual(outputStops, 0)
     }
 
+    func testCombinedCaptureStartsOutputBeforeMicrophone() async throws {
+        let startRecorder = AudioLaneStartRecorder()
+        let harness = makeHarness(
+            mode: .microphoneAndSystemOutput,
+            startRecorder: startRecorder
+        )
+
+        try await prepareAndStart(harness)
+
+        let lanes = await startRecorder.lanes
+        XCTAssertEqual(lanes, [.output, .microphone])
+        _ = await harness.controller.stop()
+    }
+
     func testManualOnlyCoachWorksWithoutMicrophoneOutputOrSpeechAssets() async throws {
         let harness = makeHarness(mode: .manualOnly)
         try await prepareAndStart(harness)
@@ -1736,18 +1750,21 @@ final class MeetingSessionControllerTests: XCTestCase {
         outputStopBarrier: AudioOperationBarrier? = nil,
         microphoneStopFailureCount: Int = 0,
         outputStopFailureCount: Int = 0,
-        cleanupNeedleCapacity: Int = 2_048
+        cleanupNeedleCapacity: Int = 2_048,
+        startRecorder: AudioLaneStartRecorder? = nil
     ) -> SessionHarness {
         let microphoneCapture = FakeSessionAudioCapture(
             lane: .microphone,
-            stopFailureCount: microphoneStopFailureCount
+            stopFailureCount: microphoneStopFailureCount,
+            startRecorder: startRecorder
         )
         let outputCapture = FakeSessionAudioCapture(
             lane: .output,
             startError: outputStartError,
             startBarrier: outputStartBarrier,
             stopBarrier: outputStopBarrier,
-            stopFailureCount: outputStopFailureCount
+            stopFailureCount: outputStopFailureCount,
+            startRecorder: startRecorder
         )
         let microphoneTranscriber = FakeSessionTranscriber(lane: .microphone)
         let outputTranscriber = FakeSessionTranscriber(lane: .output)
@@ -2130,11 +2147,20 @@ private actor FakeSessionMicrophonePermission: MicrophonePermissionProviding {
     }
 }
 
+private actor AudioLaneStartRecorder {
+    private(set) var lanes: [AudioLane] = []
+
+    func record(_ lane: AudioLane) {
+        lanes.append(lane)
+    }
+}
+
 private actor FakeSessionAudioCapture: AudioCapturing {
     nonisolated let lane: AudioLane
     let startError: AudioCaptureError?
     let startBarrier: AudioOperationBarrier?
     let stopBarrier: AudioOperationBarrier?
+    let startRecorder: AudioLaneStartRecorder?
     private var continuation: AsyncStream<AudioCaptureEvent>.Continuation?
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -2145,13 +2171,15 @@ private actor FakeSessionAudioCapture: AudioCapturing {
         startError: AudioCaptureError? = nil,
         startBarrier: AudioOperationBarrier? = nil,
         stopBarrier: AudioOperationBarrier? = nil,
-        stopFailureCount: Int = 0
+        stopFailureCount: Int = 0,
+        startRecorder: AudioLaneStartRecorder? = nil
     ) {
         precondition(stopFailureCount >= 0)
         self.lane = lane
         self.startError = startError
         self.startBarrier = startBarrier
         self.stopBarrier = stopBarrier
+        self.startRecorder = startRecorder
         self.stopFailuresRemaining = stopFailureCount
     }
 
@@ -2164,6 +2192,7 @@ private actor FakeSessionAudioCapture: AudioCapturing {
 
     func start() async throws {
         startCount += 1
+        await startRecorder?.record(lane)
         if let startBarrier { await startBarrier.suspendIfArmed() }
         if let startError { throw startError }
     }

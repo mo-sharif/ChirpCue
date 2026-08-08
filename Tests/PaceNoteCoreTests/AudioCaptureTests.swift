@@ -5,6 +5,37 @@ import XCTest
 @testable import PaceNoteCore
 
 final class AudioCaptureTests: XCTestCase {
+    func testSilentAvailableOutputRouteDoesNotReportAFalseDisconnect() {
+        XCTAssertFalse(
+            SystemAudioCaptureService.shouldReportMissingCallback(
+                callbackOverdue: true,
+                selectionIsAvailable: true,
+                consecutiveUnavailableChecks: 3
+            )
+        )
+        XCTAssertFalse(
+            SystemAudioCaptureService.shouldReportMissingCallback(
+                callbackOverdue: true,
+                selectionIsAvailable: false,
+                consecutiveUnavailableChecks: 2
+            )
+        )
+        XCTAssertTrue(
+            SystemAudioCaptureService.shouldReportMissingCallback(
+                callbackOverdue: true,
+                selectionIsAvailable: false,
+                consecutiveUnavailableChecks: 3
+            )
+        )
+        XCTAssertFalse(
+            SystemAudioCaptureService.shouldReportMissingCallback(
+                callbackOverdue: false,
+                selectionIsAvailable: false,
+                consecutiveUnavailableChecks: 3
+            )
+        )
+    }
+
     func testFakeCaptureEmitsExplicitLifecycleAndGapEvents() async throws {
         let capture = FakeAudioCapture(lane: .output)
         let stream = await capture.events()

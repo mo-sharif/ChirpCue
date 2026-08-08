@@ -3,6 +3,11 @@ import CryptoKit
 import Foundation
 import PaceNoteCore
 
+struct RuntimeOutputSourceGroup: Sendable {
+    let option: OutputSourceOption
+    let sources: [SystemAudioSource]
+}
+
 actor PaceNoteRuntime {
     private enum Lifecycle: Sendable {
         case open
@@ -60,7 +65,7 @@ actor PaceNoteRuntime {
     private let startSuspensionBarrier: (@Sendable () async -> Void)?
     private let providerOperationSuspensionBarrier: (@Sendable () async -> Void)?
 
-    private var outputSourcesByID: [String: SystemAudioSource] = [:]
+    private var outputSourcesByID: [String: [SystemAudioSource]] = [:]
     private var repositoryInspection: RepositoryInspectionContext?
     private var pendingMeeting: PendingMeetingContext?
     private var pendingMeetingCleanupBlocked = false
@@ -423,17 +428,55 @@ actor PaceNoteRuntime {
     func reloadOutputSources() async -> [OutputSourceOption] {
         do {
             let sources = try await sourceDiscovery.sources()
-            outputSourcesByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
-            return sources.map {
-                OutputSourceOption(
-                    id: $0.id,
-                    name: $0.name,
-                    detail: $0.bundleID
-                )
-            }
+            let groups = Self.groupedOutputSources(sources)
+            outputSourcesByID = Dictionary(
+                uniqueKeysWithValues: groups.map { ($0.option.id, $0.sources) }
+            )
+            return groups.map(\.option)
         } catch {
             outputSourcesByID = [:]
             return []
+        }
+    }
+
+    static func groupedOutputSources(
+        _ sources: [SystemAudioSource]
+    ) -> [RuntimeOutputSourceGroup] {
+        var sourcesByApplication: [String: [SystemAudioSource]] = [:]
+        for source in sources {
+            let applicationKey =
+                source.owningApplicationBundleID
+                ?? source.bundleID
+                ?? source.id
+            sourcesByApplication[applicationKey, default: []].append(source)
+        }
+
+        return sourcesByApplication.map { applicationKey, groupedSources in
+            let owningName = groupedSources.compactMap(\.owningApplicationName).first {
+                !$0.isEmpty
+            }
+            let mainProcessName = groupedSources.first {
+                $0.bundleID == applicationKey
+            }?.name
+            let name = owningName ?? mainProcessName ?? groupedSources[0].name
+            let detail =
+                groupedSources.compactMap(\.owningApplicationBundleID).first
+                ?? groupedSources.compactMap(\.bundleID).first
+            return RuntimeOutputSourceGroup(
+                option: OutputSourceOption(
+                    id: stableID(prefix: "output-source", value: [applicationKey]),
+                    name: name,
+                    detail: detail
+                ),
+                sources: groupedSources.sorted { $0.id < $1.id }
+            )
+        }.sorted { left, right in
+            let leftLikely = left.sources.contains(where: \.isLikelyMeetingSource)
+            let rightLikely = right.sources.contains(where: \.isLikelyMeetingSource)
+            if leftLikely != rightLikely { return leftLikely && !rightLikely }
+            let nameOrder = left.option.name.localizedCaseInsensitiveCompare(right.option.name)
+            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+            return left.option.id < right.option.id
         }
     }
 
@@ -623,6 +666,10 @@ actor PaceNoteRuntime {
             provider: request.provider
         )
         try requireCurrentStart(attemptID)
+        if request.outputEnabled, request.outputScope == .meetingApplication {
+            _ = await reloadOutputSources()
+            try requireCurrentStart(attemptID)
+        }
 
         let context: PendingMeetingContext
         if let snapshotID = request.sealedSnapshotID {
@@ -1053,13 +1100,14 @@ actor PaceNoteRuntime {
             switch request.outputScope {
             case .meetingApplication:
                 guard let sourceID = request.outputSourceID,
-                    let source = outputSourcesByID[sourceID]
+                    let sources = outputSourcesByID[sourceID],
+                    !sources.isEmpty
                 else {
                     throw PaceNoteActionError.safeMessage(
                         "The selected meeting application is no longer available. Reload the app list."
                     )
                 }
-                selection = .selected([source.captureTarget])
+                selection = .selected(sources.map(\.captureTarget))
             case .allSystemAudio:
                 selection = .global(excluding: [])
             }

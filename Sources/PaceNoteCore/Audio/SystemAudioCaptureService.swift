@@ -144,6 +144,7 @@ public actor SystemAudioCaptureService: AudioCapturing {
     private var watchdogTask: Task<Void, Never>?
     private var stopTask: Task<Void, Error>?
     private var missingCallbackReported = false
+    private var unavailableRouteCheckCount = 0
     private var startedAt: HostTimestamp?
 
     public init(
@@ -199,7 +200,7 @@ public actor SystemAudioCaptureService: AudioCapturing {
         switch selection {
         case .selected(let targets):
             guard !targets.isEmpty,
-                resolved.processes.count == targets.count
+                !resolved.processes.isEmpty
             else {
                 throw AudioCaptureError.sourceUnavailable
             }
@@ -299,6 +300,7 @@ public actor SystemAudioCaptureService: AudioCapturing {
             descriptor = newDescriptor
             startedAt = .now
             missingCallbackReported = false
+            unavailableRouteCheckCount = 0
             beginDrain(for: newRing)
             beginWatchdog(for: newRing)
             yield(.started(newDescriptor))
@@ -387,6 +389,7 @@ public actor SystemAudioCaptureService: AudioCapturing {
         descriptor = nil
         startedAt = nil
         missingCallbackReported = false
+        unavailableRouteCheckCount = 0
     }
 
     private func teardownPendingResources() throws {
@@ -423,23 +426,30 @@ public actor SystemAudioCaptureService: AudioCapturing {
             matches.reserveCapacity(selected.count)
             var matchedObjectIDs: Set<AudioObjectID> = []
             for target in selected {
-                guard
-                    let match = try available.first(where: { process in
+                var match: AudioHardwareProcess?
+                for process in available {
+                    do {
                         let processID = try process.pid
-                        return Self.selectedTargetMatches(
+                        if Self.selectedTargetMatches(
                             target,
                             processID: processID,
                             bundleID: try process.bundleID,
                             processStartToken: SystemProcessStartToken.value(for: processID),
                             audioObjectID: process.id
-                        )
-                    }),
-                    matchedObjectIDs.insert(match.id).inserted
-                else {
-                    throw AudioCaptureError.sourceUnavailable
+                        ) {
+                            match = process
+                            break
+                        }
+                    } catch {
+                        // Core Audio's process list can change while its properties are read.
+                        continue
+                    }
                 }
-                matches.append(match)
+                if let match, matchedObjectIDs.insert(match.id).inserted {
+                    matches.append(match)
+                }
             }
+            guard !matches.isEmpty else { throw AudioCaptureError.sourceUnavailable }
             return ResolvedSelection(
                 processes: matches,
                 bundleIDs: [],
@@ -640,7 +650,17 @@ public actor SystemAudioCaptureService: AudioCapturing {
     private func checkWatchdog(_ ring: RealtimeAudioRing) {
         guard let baseline = ring.lastCallbackHostTime() ?? startedAt else { return }
         let overdue = HostTimestamp.now.seconds - baseline.seconds > configuration.callbackTimeout
-        if overdue, !missingCallbackReported {
+        let selectionIsAvailable = overdue && (try? resolveSelection()) != nil
+        if !overdue || selectionIsAvailable {
+            unavailableRouteCheckCount = 0
+        } else {
+            unavailableRouteCheckCount = min(unavailableRouteCheckCount + 1, 3)
+        }
+        if Self.shouldReportMissingCallback(
+            callbackOverdue: overdue,
+            selectionIsAvailable: selectionIsAvailable,
+            consecutiveUnavailableChecks: unavailableRouteCheckCount
+        ), !missingCallbackReported {
             missingCallbackReported = true
             yield(
                 .gap(
@@ -654,6 +674,14 @@ public actor SystemAudioCaptureService: AudioCapturing {
         } else if !overdue {
             missingCallbackReported = false
         }
+    }
+
+    static func shouldReportMissingCallback(
+        callbackOverdue: Bool,
+        selectionIsAvailable: Bool,
+        consecutiveUnavailableChecks: Int
+    ) -> Bool {
+        callbackOverdue && !selectionIsAvailable && consecutiveUnavailableChecks >= 3
     }
 
     @discardableResult
