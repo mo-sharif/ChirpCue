@@ -729,6 +729,8 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let config = try String(contentsOf: runtime.configurationURL, encoding: .utf8)
         XCTAssertTrue(config.contains("cli_auth_credentials_store = \"keyring\""))
         XCTAssertTrue(config.contains("persistence = \"none\""))
+        XCTAssertTrue(config.contains("plugins = false"))
+        XCTAssertTrue(config.contains("remote_plugin = false"))
         XCTAssertTrue(config.contains("default_permissions = \"pacenote-readonly\""))
         XCTAssertTrue(config.contains("\":root\" = \"deny\""))
         XCTAssertTrue(config.contains("\".\" = \"read\""))

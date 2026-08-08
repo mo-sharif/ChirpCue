@@ -366,6 +366,7 @@ final class CodexAppServerClientTests: XCTestCase {
             "excludeTurns": true,
             "approvalPolicy": "never",
             "permissions": ":read-only",
+            "runtimeWorkspaceRoots": ["/tmp/pacenote-snapshot"],
             "model": "quick-model",
         ]
         let transport = FixtureTransport(exchanges: [
@@ -474,6 +475,7 @@ final class CodexAppServerClientTests: XCTestCase {
             "excludeTurns": true,
             "approvalPolicy": "never",
             "permissions": ":read-only",
+            "runtimeWorkspaceRoots": ["/tmp/pacenote-snapshot"],
             "model": "quick-model",
         ]
         var malformed = try XCTUnwrap(

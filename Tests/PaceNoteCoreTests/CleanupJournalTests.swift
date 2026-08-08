@@ -201,6 +201,67 @@ final class CleanupJournalTests: XCTestCase {
         XCTAssertEqual(remainingMeetingIDs, [meetingID])
     }
 
+    func testJanitorReconcilesAnAlreadyAbsentRecordedThread() async throws {
+        let fixture = try Fixture()
+        let snapshot = fixture.meetingRoot.appendingPathComponent(
+            "snapshot",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        let journal = try CleanupJournalStore(
+            journalURL: fixture.journalURL,
+            allowedRoot: fixture.root
+        )
+        let meetingID = UUID()
+        try await journal.begin(
+            CleanupJournalEntry(
+                meetingID: meetingID,
+                profileID: "personal",
+                privateRoot: fixture.meetingRoot,
+                snapshotRoots: [snapshot],
+                expectedThreadCwds: [fixture.meetingRoot],
+                threadIDs: ["ephemeral-thread"]
+            )
+        )
+        let client = MissingThreadCleanupClient()
+
+        let report = await CleanupJanitor(journal: journal).run(client: client)
+
+        XCTAssertTrue(report.failures.isEmpty)
+        XCTAssertEqual(report.deletedThreadCount, 0)
+        XCTAssertEqual(report.deletedSnapshotCount, 1)
+        let remainingEntries = try await journal.entries()
+        let deleteAttempts = await client.deleteAttempts
+        XCTAssertTrue(remainingEntries.isEmpty)
+        XCTAssertEqual(deleteAttempts, 1)
+    }
+
+    func testJanitorKeepsRecoveryBlockedWhenRejectedThreadIsStillPresent() async throws {
+        let fixture = try Fixture()
+        let journal = try CleanupJournalStore(
+            journalURL: fixture.journalURL,
+            allowedRoot: fixture.root
+        )
+        let meetingID = UUID()
+        try await journal.begin(
+            CleanupJournalEntry(
+                meetingID: meetingID,
+                profileID: "personal",
+                privateRoot: fixture.meetingRoot,
+                expectedThreadCwds: [fixture.meetingRoot],
+                threadIDs: ["persisted-thread"]
+            )
+        )
+
+        let report = await CleanupJanitor(journal: journal).run(
+            client: PresentRejectedThreadCleanupClient()
+        )
+
+        XCTAssertTrue(report.failures.contains { $0.resource == "thread" })
+        let remainingMeetingIDs = try await journal.entries().map(\.meetingID)
+        XCTAssertEqual(remainingMeetingIDs, [meetingID])
+    }
+
     func testPrivacyAuditReportsHashNotSensitiveNeedle() throws {
         let fixture = try Fixture()
         let file = fixture.root.appending(path: "state.log")
@@ -259,22 +320,45 @@ final class CleanupJournalTests: XCTestCase {
     func testStableProfileSanitizerDeletesOnlyObservedTransientState() throws {
         let fixture = try Fixture()
         let profile = fixture.root.appendingPathComponent("profile", isDirectory: true)
+        let sandboxMigration = profile.appendingPathComponent(
+            ".sandbox_migration",
+            isDirectory: false
+        )
+        let cache = profile.appendingPathComponent("cache", isDirectory: true)
+        let plugins = profile.appendingPathComponent("plugins", isDirectory: true)
+        let sessions = profile.appendingPathComponent("sessions", isDirectory: true)
+        let shellSnapshots = profile.appendingPathComponent("shell_snapshots", isDirectory: true)
         let skills = profile.appendingPathComponent("skills", isDirectory: true)
+        let threadWriterLocks = profile.appendingPathComponent(
+            "thread-writer-locks",
+            isDirectory: true
+        )
         let temporary = profile.appendingPathComponent("tmp", isDirectory: true)
-        try FileManager.default.createDirectory(at: skills, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        for directory in [
+            cache, plugins, sessions, shellSnapshots, skills, threadWriterLocks, temporary,
+        ] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try Data("v1".utf8).write(to: sandboxMigration)
         try Data("skill_extra_roots = [\"/private/meeting\"]".utf8).write(
             to: profile.appendingPathComponent("config.toml")
         )
         try Data("installation".utf8).write(to: profile.appendingPathComponent("installation_id"))
+        try Data("models".utf8).write(to: profile.appendingPathComponent("models_cache.json"))
         try Data("sqlite".utf8).write(to: profile.appendingPathComponent("state_5.sqlite"))
 
         let report = try CodexStableProfileSanitizer().cleanTransientState(
             profileRoot: profile
         )
 
-        XCTAssertEqual(report.deletedEntryCount, 3)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: skills.path))
+        XCTAssertEqual(report.deletedEntryCount, 10)
+        for directory in [
+            cache, plugins, sessions, shellSnapshots, skills, threadWriterLocks,
+        ] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sandboxMigration.path))
         XCTAssertTrue(
             FileManager.default.fileExists(
                 atPath: profile.appendingPathComponent("config.toml").path
@@ -292,6 +376,11 @@ final class CleanupJournalTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
         XCTAssertFalse(
             FileManager.default.fileExists(
+                atPath: profile.appendingPathComponent("models_cache.json").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
                 atPath: profile.appendingPathComponent("state_5.sqlite").path
             )
         )
@@ -302,21 +391,21 @@ final class CleanupJournalTests: XCTestCase {
         let profile = fixture.root.appendingPathComponent("profile", isDirectory: true)
         try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
         let state = profile.appendingPathComponent("state_5.sqlite")
-        let sessions = profile.appendingPathComponent("sessions", isDirectory: true)
+        let unknownState = profile.appendingPathComponent("unrecognized-state", isDirectory: true)
         try Data("sqlite".utf8).write(to: state)
-        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unknownState, withIntermediateDirectories: true)
 
         XCTAssertThrowsError(
             try CodexStableProfileSanitizer().cleanTransientState(profileRoot: profile)
         ) { error in
             XCTAssertEqual(
                 error as? CodexStableProfileCleanupError,
-                .unexpectedEntry("sessions")
+                .unexpectedEntry("unrecognized-state")
             )
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: state.path))
 
-        try FileManager.default.removeItem(at: sessions)
+        try FileManager.default.removeItem(at: unknownState)
         let auth = profile.appendingPathComponent("auth.json")
         try Data("credential-canary".utf8).write(to: auth)
         XCTAssertThrowsError(
@@ -491,6 +580,25 @@ private struct FailingThreadDiscoveryClient: ThreadCleanupClient {
     func threadIDs(cwd: URL) async throws -> [String] {
         throw CleanupJournalError.meetingNotFound
     }
+}
+
+private actor MissingThreadCleanupClient: ThreadCleanupClient {
+    private(set) var deleteAttempts = 0
+
+    func deleteThread(id: String) async throws {
+        deleteAttempts += 1
+        throw CodexClientError.requestFailed(method: "thread/delete", code: -32_600)
+    }
+
+    func threadIDs(cwd: URL) async throws -> [String] { [] }
+}
+
+private struct PresentRejectedThreadCleanupClient: ThreadCleanupClient {
+    func deleteThread(id: String) async throws {
+        throw CodexClientError.requestFailed(method: "thread/delete", code: -32_600)
+    }
+
+    func threadIDs(cwd: URL) async throws -> [String] { ["persisted-thread"] }
 }
 
 private final class Fixture {

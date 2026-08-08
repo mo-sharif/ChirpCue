@@ -187,6 +187,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                 let cleanupThreadIDs = unique(
                     Array(ownedThreadIDs.reversed()) + listedThreadIDs
                 )
+                var rejectedDeletionIDs: [String] = []
                 for threadID in cleanupThreadIDs {
                     do {
                         try await withTimeout(.seconds(20)) {
@@ -197,7 +198,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                             meetingID: fixture.meetingID
                         )
                     } catch {
-                        failures.append(.threadDeletion)
+                        rejectedDeletionIDs.append(threadID)
                     }
                 }
 
@@ -205,9 +206,27 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                     let residual = try await withTimeout(.seconds(20)) {
                         try await connected.listThreadIDs(cwd: fixture.workspaceRoot.path)
                     }
+                    let residualIDs = Set(residual)
+                    for threadID in rejectedDeletionIDs {
+                        guard !residualIDs.contains(threadID) else {
+                            failures.append(.threadDeletion)
+                            continue
+                        }
+                        do {
+                            try await fixture.journal.removeThread(
+                                threadID,
+                                meetingID: fixture.meetingID
+                            )
+                        } catch {
+                            failures.append(.threadDeletion)
+                        }
+                    }
                     threadsVerified = residual.isEmpty
                     if !threadsVerified { failures.append(.residualThreads) }
                 } catch {
+                    if !rejectedDeletionIDs.isEmpty {
+                        failures.append(.threadDeletion)
+                    }
                     failures.append(.residualThreadVerification)
                 }
             } catch {

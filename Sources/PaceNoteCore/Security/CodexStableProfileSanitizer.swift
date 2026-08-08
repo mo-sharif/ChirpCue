@@ -198,11 +198,16 @@ public struct CodexStableProfileSanitizer {
     // Evidence: these are the only top-level transient entries produced by the pinned
     // app-server after account/read, model, rate-limit, permission, and skill preflight
     // calls with zero generations.
-    private static let transientDirectoryNames: Set<String> = [".tmp", "skills", "tmp"]
+    private static let transientDirectoryNames: Set<String> = [
+        ".tmp", "cache", "plugins", "sessions", "shell_snapshots", "skills",
+        "thread-writer-locks", "tmp",
+    ]
     private static let transientFileNames: Set<String> = [
+        ".sandbox_migration",
         "goals_1.sqlite", "goals_1.sqlite-shm", "goals_1.sqlite-wal",
         "logs_2.sqlite", "logs_2.sqlite-shm", "logs_2.sqlite-wal",
         "memories_1.sqlite", "memories_1.sqlite-shm", "memories_1.sqlite-wal",
+        "models_cache.json",
         "state_5.sqlite", "state_5.sqlite-shm", "state_5.sqlite-wal",
     ]
     private static let persistentDirectoryNames: Set<String> = []

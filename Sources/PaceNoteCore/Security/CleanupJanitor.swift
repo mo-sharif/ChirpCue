@@ -66,7 +66,33 @@ public actor CleanupJanitor {
                     report.deletedThreadCount += 1
                     try await journal.removeThread(threadID, meetingID: entry.meetingID)
                 } catch {
-                    report.failures.append(.init(resource: "thread", reason: Self.safe(error)))
+                    // Ephemeral forks can disappear when their originating app-server exits.
+                    // Current Codex reports an error if a later cleanup client deletes that
+                    // already-absent ID, so reconcile against every sealed meeting cwd before
+                    // keeping the journal blocked.
+                    let absenceConfirmed: Bool
+                    do {
+                        absenceConfirmed = try await Self.threadIsAbsent(
+                            threadID,
+                            expectedCwds: entry.expectedThreadCwds,
+                            client: client
+                        )
+                    } catch {
+                        absenceConfirmed = false
+                    }
+                    guard absenceConfirmed else {
+                        report.failures.append(
+                            .init(resource: "thread", reason: Self.safe(error))
+                        )
+                        continue
+                    }
+                    do {
+                        try await journal.removeThread(threadID, meetingID: entry.meetingID)
+                    } catch {
+                        report.failures.append(
+                            .init(resource: "cleanup-journal", reason: Self.safe(error))
+                        )
+                    }
                 }
             }
 
@@ -99,6 +125,18 @@ public actor CleanupJanitor {
             }
         }
         return report
+    }
+
+    private static func threadIsAbsent(
+        _ threadID: String,
+        expectedCwds: [URL],
+        client: any ThreadCleanupClient
+    ) async throws -> Bool {
+        guard !expectedCwds.isEmpty else { return false }
+        for cwd in expectedCwds where try await client.threadIDs(cwd: cwd).contains(threadID) {
+            return false
+        }
+        return true
     }
 
     private static func isContained(_ child: URL, inside root: URL) -> Bool {

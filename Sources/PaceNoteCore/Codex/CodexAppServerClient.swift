@@ -503,6 +503,10 @@ public actor CodexAppServerClient {
             "approvalPolicy": "never",
             // Repeat the profile explicitly. This is not reliably inherited by forks.
             "permissions": .string(configuration.permissionProfileID),
+            // Current app-server versions retain only the primary cwd unless every sealed
+            // read-only root is repeated on the fork. A dropped packaged-skill root would make
+            // the fork fail the same workspace invariant that protects meeting turns.
+            "runtimeWorkspaceRoots": .array(base.runtimeWorkspaceRoots.map(JSONValue.string)),
         ]
         if let model { params["model"] = .string(model) }
 

@@ -172,6 +172,8 @@ public enum CodexIsolatedRuntimeBuilder {
         [features]
         hooks = false
         memories = false
+        plugins = false
+        remote_plugin = false
         browser_use = false
         browser_use_external = false
         browser_use_full_cdp_access = false
