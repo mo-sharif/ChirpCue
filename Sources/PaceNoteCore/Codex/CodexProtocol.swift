@@ -101,7 +101,7 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
         case .unsupportedPlatform:
             "This Codex app-server target is not macOS."
         case .profileMismatch:
-            "Codex did not activate the dedicated PrismCue profile."
+            "Codex did not activate the dedicated ChirpCue profile."
         case .missingCapability(let capability):
             "The installed Codex binary is missing \(CodexSafeLabel.capability(capability))."
         case .permissionProfileUnavailable(let profile):
@@ -113,7 +113,7 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
         case .turnAlreadyStarting:
             "A Codex turn is already starting for this thread."
         case .serverRequestRejected(let method, _, _, _):
-            "PrismCue rejected an unexpected Codex server request: \(CodexSafeLabel.method(method))."
+            "ChirpCue rejected an unexpected Codex server request: \(CodexSafeLabel.method(method))."
         }
     }
 }

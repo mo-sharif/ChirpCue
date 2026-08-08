@@ -15,7 +15,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
     func testDedicatedProfileZeroGenerationLifecycleThenSanitize() async throws {
         guard ProcessInfo.processInfo.environment[Self.optInEnvironmentKey] == "1" else {
             throw XCTSkip(
-                "Set \(Self.optInEnvironmentKey)=1 after signing in through PaceNote to run the dedicated-profile zero-generation lifecycle smoke."
+                "Set \(Self.optInEnvironmentKey)=1 after signing in through ChirpCue to run the dedicated-profile zero-generation lifecycle smoke."
             )
         }
 
@@ -121,7 +121,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                         fixture.packagedSkillRoot.path,
                     ],
                     model: model,
-                    baseInstructions: "PaceNote zero-generation lifecycle smoke. Do not start a turn."
+                    baseInstructions: "ChirpCue zero-generation lifecycle smoke. Do not start a turn."
                 )
             }
             ownedThreadIDs.append(base.id)

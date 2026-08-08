@@ -11,13 +11,13 @@ public enum ClaudeBinaryCompatibilityError: Error, Equatable, LocalizedError, Se
     public var errorDescription: String? {
         switch self {
         case .invalidUserHome:
-            "PrismCue could not resolve the signed-in macOS user's home directory."
+            "ChirpCue could not resolve the signed-in macOS user's home directory."
         case .launcherUnavailable:
             "The official user-local Claude launcher is unavailable."
         case .untrustedExecutable:
             "The installed Claude executable could not be verified as an official Anthropic build."
         case .incompatibleBinaryVersion:
-            "The installed Claude version is outside PrismCue's tested compatibility range."
+            "The installed Claude version is outside ChirpCue's tested compatibility range."
         }
     }
 }

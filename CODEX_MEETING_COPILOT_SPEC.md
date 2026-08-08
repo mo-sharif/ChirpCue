@@ -1,4 +1,4 @@
-# PrismCue: Subscription Meeting Coach
+# ChirpCue: Subscription Meeting Coach
 
 Status: Release candidate; live subscription, audio, UI, latency, and optional distribution gates remain
 Date: 2026-08-08
@@ -35,14 +35,14 @@ For a personal Mac app, this is the simplest credible architecture:
 2. AVAudioEngine captures the microphone.
 3. Apple's on-device Speech framework creates two timestamped transcript lanes.
 4. A local turn detector decides when the other party has probably asked a question.
-5. For every eligible turn, PrismCue immediately shows one fixed local bridge while Deep runs. Codex uses a deny-by-default permission profile over an empty private context or sanitized repo/skill snapshot. Claude uses no tools and receives only an empty general payload or bounded exact lines selected locally from the sealed snapshot. The production coordinator never invokes model Quick.
+5. For every eligible turn, ChirpCue immediately shows one fixed local bridge while Deep runs. Codex uses a deny-by-default permission profile over an empty private context or sanitized repo/skill snapshot. Claude uses no tools and receives only an empty general payload or bounded exact lines selected locally from the sealed snapshot. The production coordinator never invokes model Quick.
 6. The UI keeps the bridge and the later visibly unverified general guidance, verified repository continuation, or fixed local clarification or hold state separate.
 
 This avoids the cost and latency of sending continuous audio to a realtime API. It also avoids pretending that a Codex subscription is a general-purpose OpenAI API allowance.
 
 ### 2.1 Product wedge
 
-Transcription and generic meeting summaries are not the wedge. PrismCue is differentiated by:
+Transcription and generic meeting summaries are not the wedge. ChirpCue is differentiated by:
 
 - repo-aware technical answers, with AGENTS.md and reviewed skill support limited to Codex;
 - useful general guidance when no repository is attached, explicitly labeled as unverified;
@@ -483,7 +483,7 @@ Every connection must complete initialize and receive its response, then send in
 
 ### 9.4 Claude subscription route
 
-Claude is a parallel provider, not a Codex app-server adapter. PrismCue accepts only the official user-local Claude launcher resolving to a versioned executable owned by the current user, not writable by group or world, signed by Anthropic Team ID `Q6L2SF6YDW` with identifier `com.anthropic.claude-code`, and inside the tested `2.1.218..<2.2.0` range. Its file identity and signature are revalidated before launch.
+Claude is a parallel provider, not a Codex app-server adapter. ChirpCue accepts only the official user-local Claude launcher resolving to a versioned executable owned by the current user, not writable by group or world, signed by Anthropic Team ID `Q6L2SF6YDW` with identifier `com.anthropic.claude-code`, and inside the tested `2.1.218..<2.2.0` range. Its file identity and signature are revalidated before launch.
 
 Authentication accepts only `loggedIn=true`, `authMethod=claude.ai`, `apiProvider=firstParty`, a normalized identity, and a personal Pro or Max subscription. Team and Enterprise status fail closed because server-managed policy can override command-line isolation. Endpoint-managed macOS preferences, system managed-settings files and drop-ins, and managed MCP configuration are rechecked and rejected before every Claude process launch. Console, API-key, gateway, Bedrock, Vertex, Foundry, and inherited cloud credentials also fail closed. macOS `HOME`, `USER`, and `LOGNAME` come from the current OS account so Keychain lookup works; meeting data never enters arguments, environment values, or the working-directory path.
 
@@ -491,7 +491,7 @@ Each Deep turn runs `claude -p` in safe mode from an empty private directory wit
 
 Claude cannot open the sealed snapshot. A host-side builder re-reads and hash-checks it, excludes control and skill paths, ranks at most 12 exact lines under a 16 KiB pack limit, and sends only those lines. Every displayed repository answer must cite one supplied line and pass the same local freshness, path, hash, fingerprint, claim, and exact-answer verification as Codex. Account changes require explicit confirmation and clear provider-processing consent.
 
-Anthropic currently treats programmatic subscription use as a separate Agent SDK credit pool; plan limits and extra-usage terms may apply. PrismCue does not claim it consumes the normal interactive allowance or can never incur extra usage.
+Anthropic currently treats programmatic subscription use as a separate Agent SDK credit pool; plan limits and extra-usage terms may apply. ChirpCue does not claim it consumes the normal interactive allowance or can never incur extra usage.
 
 ### 9.5 Codex app-server methods needed
 
@@ -682,7 +682,7 @@ Provenance and evidence validation are never silently removed to save time.
 | OAuth credential | macOS Keychain through Codex keyring storage. |
 | Saved notes or transcript | Out of scope until separately designed and explicitly enabled. |
 
-When Codex is selected, transcript slices, repo excerpts, tool output, AGENTS.md instructions, and selected skill content leave the Mac and are processed by OpenAI through the user's Codex account. When Claude is selected, transcript slices and bounded host-selected exact lines are processed by Anthropic through the user's Claude.ai subscription; instruction files, skills, tools, and tool output are excluded. Hard-denied and unresolved soft-suspicious files are never added to the model-readable snapshot. A user-approved soft false positive is treated as included only for that meeting and only at its approved content hash. Provider-side handling follows the user's account and plan policies. PrismCue must not claim server-side zero retention.
+When Codex is selected, transcript slices, repo excerpts, tool output, AGENTS.md instructions, and selected skill content leave the Mac and are processed by OpenAI through the user's Codex account. When Claude is selected, transcript slices and bounded host-selected exact lines are processed by Anthropic through the user's Claude.ai subscription; instruction files, skills, tools, and tool output are excluded. Hard-denied and unresolved soft-suspicious files are never added to the model-readable snapshot. A user-approved soft false positive is treated as included only for that meeting and only at its approved content hash. Provider-side handling follows the user's account and plan policies. ChirpCue must not claim server-side zero retention.
 
 “Memory only” describes intentional app persistence, not an absolute hardware guarantee. M0 must audit swap, crash-report, app-server, unified-log, and diagnostic paths; sensitive buffers should use locked memory where practical and must never be copied into crash metadata.
 
@@ -862,7 +862,7 @@ Expected focused effort for a useful personal MVP, including M0: roughly 4 to 6 
 
 ## 16. Core verification harness
 
-The project includes text-only and Swift test harnesses alongside the native app. Before PrismCue is called production-ready, those harnesses must prove the common response invariants and the provider-specific Codex and Claude boundaries documented above:
+The project includes text-only and Swift test harnesses alongside the native app. Before ChirpCue is called production-ready, those harnesses must prove the common response invariants and the provider-specific Codex and Claude boundaries documented above:
 
 Input:
 
@@ -896,7 +896,7 @@ Resolve these through the M0 and M1 evaluations:
 2. At what exact silence and stability thresholds does Google Meet feel responsive without cutting people off?
 3. Does Terra medium meet technical quality for narrow lookups, or should every repo question route to Sol high for this personal, low-volume use?
 4. Which read-only skills materially improve answers within the Deep latency budget?
-5. Can the system-output tap reliably exclude PrismCue across output-route changes?
+5. Can the system-output tap reliably exclude ChirpCue across output-route changes?
 6. Which content-free metrics are sufficient for tuning without creating a sensitive derived meeting log?
 
 ## 18. Sources and verified platform facts

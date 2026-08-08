@@ -3,9 +3,9 @@
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-app_bundle=${1:-"$project_root/dist/PrismCue.app"}
+app_bundle=${1:-"$project_root/dist/ChirpCue.app"}
 plist="$app_bundle/Contents/Info.plist"
-executable="$app_bundle/Contents/MacOS/PrismCue"
+executable="$app_bundle/Contents/MacOS/ChirpCue"
 skill_root="$app_bundle/Contents/Resources/PaceNote_PaceNoteCore.bundle/Resources/Skills/pacenote-meeting-coach"
 
 test -d "$app_bundle"
@@ -25,10 +25,11 @@ bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 expected_version=$(tr -d '[:space:]' < "$project_root/VERSION")
 
 test "$bundle_id" = "com.mosharif.pacenote"
-test "$display_name" = "PrismCue"
-test "$bundle_name" = "PrismCue"
-test "$bundle_executable" = "PrismCue"
+test "$display_name" = "ChirpCue"
+test "$bundle_name" = "ChirpCue"
+test "$bundle_executable" = "ChirpCue"
 test ! -e "$app_bundle/Contents/MacOS/PaceNote"
+test ! -e "$app_bundle/Contents/MacOS/PrismCue"
 test "$minimum_os" = "26.0"
 test -n "$microphone_reason"
 test -n "$audio_reason"
@@ -46,8 +47,8 @@ test -f "$skill_root/agents/openai.yaml"
 
 skill_hash=$(shasum -a 256 "$skill_root/SKILL.md" | awk '{print $1}')
 metadata_hash=$(shasum -a 256 "$skill_root/agents/openai.yaml" | awk '{print $1}')
-test "$skill_hash" = "bd28c282bcc2021b1495d23c16e377557b13a5699005c7df47f15308f88d5db6"
-test "$metadata_hash" = "0cb4fd04ec760d0aa274ac3b499826bd8a4d4782a02674b94b49912815552b4c"
+test "$skill_hash" = "de2dc79d93855b07bf30689e3fdc35a8c65457436e5f154c891d17dfe4091688"
+test "$metadata_hash" = "66b0d0648153cfcaf53ee8c6088e0cec1c50599f91cdf0118233630f19ecf94f"
 
 codesign --verify --strict --verbose=2 "$app_bundle"
 codesign -d --verbose=4 "$app_bundle" 2>&1 \

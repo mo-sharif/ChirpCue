@@ -16,7 +16,7 @@ final class CodexPermissionProfileAdversarialSmokeTests: XCTestCase {
     func testPinnedPermissionProfileRejectsAdversarialMatrixThenZeroizes() async throws {
         guard ProcessInfo.processInfo.environment[Self.optInEnvironmentKey] == "1" else {
             throw XCTSkip(
-                "Set \(Self.optInEnvironmentKey)=1 after PaceNote ChatGPT sign-in for seven paid low-effort probes plus one disabled-skill request expected to reject before generation; a policy regression could consume the eighth turn before failure."
+                "Set \(Self.optInEnvironmentKey)=1 after ChirpCue ChatGPT sign-in for seven paid low-effort probes plus one disabled-skill request expected to reject before generation; a policy regression could consume the eighth turn before failure."
             )
         }
 

@@ -108,7 +108,7 @@ final class PaceNoteRuntimeShutdownTests: XCTestCase {
         } catch let error as PaceNoteActionError {
             XCTAssertEqual(
                 error.errorDescription,
-                "PrismCue is shutting down. Reopen it before starting another meeting."
+                "ChirpCue is shutting down. Reopen it before starting another meeting."
             )
         }
     }

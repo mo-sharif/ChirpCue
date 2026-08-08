@@ -1,4 +1,4 @@
-# PrismCue production-readiness ledger
+# ChirpCue production-readiness ledger
 
 This is the completion contract for the personal production build. A checked item has current local evidence. Opt-in subscription generation, signed-app audio, visual review, real-meeting latency, and distribution checks are intentionally separate from automated fixture coverage.
 
@@ -8,7 +8,7 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Automated non-live Swift tests pass locally after the final release-hardening changes; opt-in subscription generation remains excluded.
 - [x] Debug and release builds complete after the final release-hardening changes with the Xcode 26 toolchain.
 - [x] Deterministic `.app` assembly, plist validation, ad hoc hardened-runtime signing, and code-signature verification pass after the final release-hardening changes.
-- [x] The shipped bundle, Finder display name, bundle name, executable product, and Mach-O filename are all `PrismCue`; migration-sensitive module, storage, and bundle identifiers remain internal.
+- [x] The shipped bundle, Finder display name, bundle name, executable product, and Mach-O filename are all `ChirpCue`; migration-sensitive module, storage, and bundle identifiers remain internal.
 - [x] A clean-checkout test, lint, release build, package, and verification sequence passes at the final committed revision.
 - [x] Debug and release builds are confirmed warning-free from a clean checkout at the final committed revision.
 - [x] Grounding test fixtures use throwing XCTest teardown blocks, so an owned temporary repository that cannot be removed fails visibly instead of leaving silent residue.
@@ -19,10 +19,10 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Version and schema preflight subprocesses have timeout, output-cap, cancellation, force-kill, process-reaping, no-follow regular-file, and schema-size coverage.
 - [x] The JSONL client, strict output decoding, handshake ordering, cancellation, process shutdown, and malformed-output paths have fixture coverage.
 - [x] Required app-server methods, generated schema, and a zero-generation read-only lifecycle have been probed on the development environment.
-- [x] The dedicated PrismCue profile enforces Keychain credential storage, `history.persistence = "none"`, a scrubbed environment, restrictive features, and rejection of plaintext credential files.
+- [x] The dedicated ChirpCue profile enforces Keychain credential storage, `history.persistence = "none"`, a scrubbed environment, restrictive features, and rejection of plaintext credential files.
 - [x] Codex subprocesses keep the authoritative macOS `HOME` so Security.framework can resolve the default Keychain while `CODEX_HOME` remains isolated; inherited `HOME` values and profile-as-home regressions are covered.
 - [x] Deep model routing is capability-discovered rather than assuming permanent model availability.
-- [ ] One-time ChatGPT sign-in is completed in the dedicated PrismCue profile on the target Mac.
+- [ ] One-time ChatGPT sign-in is completed in the dedicated ChirpCue profile on the target Mac.
 - [ ] A zero-generation preflight proves the dedicated profile's account, model, permission, skill, thread create/delete, cleanup, and no-`auth.json` behavior.
 - [ ] Bounded real general and repository-grounded Deep generations pass on the target subscription, including strict schemas, visible trust labeling, evidence where required, latency capture, thread deletion, profile sanitization, and canary audit.
 - [ ] The Deep model route meets measured latency and quality targets on the target account.
@@ -52,9 +52,9 @@ This is the completion contract for the personal production build. A checked ite
 - [x] The system-audio permission probe retains and retries a tap whose destruction fails instead of silently dropping its handle.
 - [x] The current locale's speech-asset requirement is checked before capture.
 - [ ] Microphone and selected-process output capture work in the packaged app after TCC approval.
-- [x] Global-output fallback construction always adds PrismCue's current PID and bundle ID to the exclusion set; injected unit tests cover both bundle-present and bundle-absent paths.
+- [x] Global-output fallback construction always adds ChirpCue's current PID and bundle ID to the exclusion set; injected unit tests cover both bundle-present and bundle-absent paths.
 - [x] Both lanes maintain a bounded source-frame-to-Core-Audio-host-time transform around Speech input, feed Speech a contiguous non-overlapping source-frame timeline, map result ranges back to verified host time, fail closed with an explicit clock-discontinuity gap, and refuse receipt-time attribution when verified host ranges are missing. A deterministic logical 30-minute dual-clock fixture exercises the production mapping path, drift, and discontinuity behavior without claiming live hardware evidence.
-- [ ] A live global-output fallback confirms PrismCue output is absent from the captured lane.
+- [ ] A live global-output fallback confirms ChirpCue output is absent from the captured lane.
 - [ ] Google Meet in Chrome and at least one native meeting app pass capture tests.
 - [ ] Headphone, speaker echo, browser-helper restart, device switch, permission denial, and permission revocation cases pass.
 - [ ] Two-lane host-clock skew stays within the specification target for 30 minutes.
@@ -114,7 +114,7 @@ This is the completion contract for the personal production build. A checked ite
 
 ## Distribution and ownership
 
-- [x] Private GitHub repository exists at `mo-sharif/PaceNote`.
+- [x] Private GitHub repository exists at `mo-sharif/ChirpCue`.
 - [x] Current source, tests, and documentation are committed and pushed to `main`.
 - [x] Private-repository CI passes for the final pushed revision from a clean checkout.
 - [x] Repository Actions are limited to selected GitHub-owned actions and require full commit-SHA pinning; both workflows use the pinned checkout action.

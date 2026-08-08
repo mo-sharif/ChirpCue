@@ -193,7 +193,7 @@ final class PaceNoteRuntimeStartOwnershipTests: XCTestCase {
         ) { error in
             XCTAssertEqual(
                 (error as? PaceNoteActionError)?.errorDescription,
-                "The dedicated PrismCue Codex profile is already in use. Quit PrismCue and any live probe before trying again."
+                "The dedicated ChirpCue Codex profile is already in use. Quit ChirpCue and any live probe before trying again."
             )
         }
 
@@ -355,7 +355,7 @@ final class PaceNoteRuntimeStartOwnershipTests: XCTestCase {
         let blockedMessage = await staleSourceFailureMessage(from: runtime)
         XCTAssertEqual(
             blockedMessage,
-            "Private meeting cleanup is incomplete. Quit and reopen PrismCue before starting another meeting."
+            "Private meeting cleanup is incomplete. Quit and reopen ChirpCue before starting another meeting."
         )
         let entriesWhileBlocked = try await fixture.journalEntries()
         XCTAssertEqual(removalCounter.value, 1)

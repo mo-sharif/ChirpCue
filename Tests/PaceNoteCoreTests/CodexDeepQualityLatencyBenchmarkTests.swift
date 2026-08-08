@@ -167,7 +167,7 @@ final class CodexDeepQualityLatencyBenchmarkTests: XCTestCase {
                 \(sampleText)
                 """
         )
-        attachment.name = "PaceNote Deep quality and latency benchmark"
+        attachment.name = "ChirpCue Deep quality and latency benchmark"
         attachment.lifetime = .keepAlways
         add(attachment)
 

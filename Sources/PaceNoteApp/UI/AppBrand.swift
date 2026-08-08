@@ -2,11 +2,12 @@ import AppKit
 import SwiftUI
 
 enum AppBrand {
-    static let displayName = "PrismCue"
-    static let tagline = "A clear, consent-first speaking coach for meetings on your Mac."
+    static let displayName = "ChirpCue"
+    static let tagline = "Your quiet conversation sidekick for the moments you need the right words."
 
-    static let cyan = Color(red: 0.13, green: 0.73, blue: 0.96)
-    static let violet = Color(red: 0.48, green: 0.36, blue: 0.96)
+    static let cyan = Color(red: 0.16, green: 0.86, blue: 0.94)
+    static let chartreuse = Color(red: 0.49, green: 0.96, blue: 0.30)
+    static let gold = Color(red: 1.00, green: 0.78, blue: 0.20)
 }
 
 @MainActor
@@ -31,9 +32,10 @@ struct AppBrandBackdrop: View {
             if !reduceTransparency {
                 LinearGradient(
                     colors: [
-                        AppBrand.cyan.opacity(0.10),
+                        AppBrand.chartreuse.opacity(0.10),
                         .clear,
-                        AppBrand.violet.opacity(0.08),
+                        AppBrand.cyan.opacity(0.08),
+                        AppBrand.gold.opacity(0.04),
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing

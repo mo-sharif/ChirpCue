@@ -1,8 +1,8 @@
-# PrismCue contributor guide
+# ChirpCue contributor guide
 
 ## Product boundaries
 
-- PrismCue is a consent-first personal meeting coach. Never add covert capture, automatic speaking, automatic sending, or interview-assessment evasion.
+- ChirpCue is a consent-first personal meeting coach. Never add covert capture, automatic speaking, automatic sending, or interview-assessment evasion.
 - Meeting audio and transcripts are ephemeral by default.
 - Repository access is read-only and limited to a sealed snapshot. Never give a model ambient access to the live working tree or credentials.
 - Inference must use either the ChatGPT-authenticated Codex app-server or first-party Claude.ai subscription authentication. Never add API-key, Console, gateway, or cloud-provider billing without an explicit product decision.

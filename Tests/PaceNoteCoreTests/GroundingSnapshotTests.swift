@@ -33,7 +33,7 @@ final class GroundingSnapshotTests: XCTestCase {
     func testHardDeniedFilesCannotBeApprovedAndSoftFindingRequiresExactHashBoundApproval() async throws {
         let fixture = try GitFixture()
         addTeardownBlock { try fixture.remove() }
-        try fixture.write("Sources/App.swift", "let title = \"PaceNote\"\n")
+        try fixture.write("Sources/App.swift", "let title = \"ChirpCue\"\n")
         try fixture.write("Config.swift", "let api_key = \"fixture_secret_123456789\"\n")
         try fixture.write(".env.production", "API_KEY=must_never_leave\n")
         try fixture.git(["add", "."])

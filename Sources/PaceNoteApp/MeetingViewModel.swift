@@ -1497,7 +1497,7 @@ final class MeetingViewModel {
             model.repositoryState = .sealed(
                 SealedRepositorySummary(
                     snapshotID: UUID(uuidString: "11111111-1111-1111-1111-111111111111") ?? UUID(),
-                    repositoryAlias: "PaceNote",
+                    repositoryAlias: "ChirpCue",
                     branch: "main",
                     revision: "9d31b2a",
                     includedFileCount: 84,
@@ -1546,7 +1546,7 @@ final class MeetingViewModel {
                 confidence: 0.93,
                 evidence: [
                     EvidenceReference(
-                        repoAlias: "PaceNote",
+                        repoAlias: "ChirpCue",
                         relativePath: "Sources/PaceNoteCore/Grounding/GroundingManager.swift",
                         startLine: 35,
                         endLine: 46,
@@ -1592,7 +1592,7 @@ final class MeetingViewModel {
             let model = previewSetup
             model.repositoryState = .review(
                 GroundingReviewSummary(
-                    repositoryAlias: "PaceNote",
+                    repositoryAlias: "ChirpCue",
                     branch: "main",
                     revision: "9d31b2a",
                     includedFileCount: 84,

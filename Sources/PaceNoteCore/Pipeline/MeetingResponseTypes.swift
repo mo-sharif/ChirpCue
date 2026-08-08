@@ -69,13 +69,13 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
         case .credentialStoreUnavailable:
             "The selected provider cannot read its subscription credentials from the OS credential store."
         case .accountMismatch:
-            "The signed-in provider account does not match the account confirmed for PrismCue."
+            "The signed-in provider account does not match the account confirmed for ChirpCue."
         case .protocolUnsupported:
-            "The installed provider client cannot prove PrismCue's required read-only protocol."
+            "The installed provider client cannot prove ChirpCue's required read-only protocol."
         case .runtimeUnavailable:
             "The selected provider's isolated local runtime is unavailable."
         case .notPrepared:
-            "PrismCue's response runtime is not ready."
+            "ChirpCue's response runtime is not ready."
         case .quickRateLimited:
             "Fast suggestions are temporarily rate limited."
         case .deepRateLimited:
@@ -87,11 +87,11 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
         case .groundingMismatch:
             "The grounded answer did not match the current sealed repository snapshot."
         case .skillPolicyMismatch:
-            "The effective Codex skill set did not match PrismCue's explicit allowlist."
+            "The effective Codex skill set did not match ChirpCue's explicit allowlist."
         case .invalidOutput:
-            "The selected provider returned a response that did not pass PrismCue's strict output checks."
+            "The selected provider returned a response that did not pass ChirpCue's strict output checks."
         case .cleanupFailed:
-            "PrismCue could not confirm deletion of all transcript-bearing inference work."
+            "ChirpCue could not confirm deletion of all transcript-bearing inference work."
         }
     }
 }

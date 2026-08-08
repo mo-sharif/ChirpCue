@@ -5,7 +5,7 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 sources="$project_root/Sources"
 
-# PrismCue displays text for the user to choose and speak. Production code must not gain
+# ChirpCue displays text for the user to choose and speak. Production code must not gain
 # direct speech output, clipboard mutation, UI automation, Apple Events, or an ambient
 # network client without an explicit product-boundary review.
 forbidden_runtime_apis='NSSpeechSynthesizer|AVSpeechSynthesizer|AVAudioPlayer|AVPlayer|AVQueuePlayer|NSSound|AudioServicesPlaySystemSound|AudioQueueNewOutput|NSPasteboard|CGEvent|AXUIElement|IOHIDEventSystemClient|IOHIDPostEvent|NSAppleScript|ScriptingBridge|SBApplication|NSAppleEventDescriptor|/usr/bin/(say|pbcopy|osascript|curl)|URLSession|NSURLConnection|NWConnection|NWBrowser|NWListener|CFHTTP|CFStreamCreatePairWithSocketToHost|import[[:space:]]+(Network|CFNetwork)'

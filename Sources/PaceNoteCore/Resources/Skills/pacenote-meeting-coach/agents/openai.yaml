@@ -1,5 +1,5 @@
 interface:
-  display_name: "PaceNote Meeting Coach"
+  display_name: "ChirpCue Meeting Coach"
   short_description: "Turn meeting questions into natural replies"
   default_prompt: "Use $pacenote-meeting-coach to draft a concise sentence I can say, using sealed evidence when it is attached."
 policy:

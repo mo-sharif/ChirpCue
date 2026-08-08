@@ -146,7 +146,7 @@ public struct MeetingBrownout: Identifiable, Equatable, Sendable {
         case .accountMismatch:
             "The active AI-provider account does not match this profile."
         case .protocolUnsupported:
-            "The selected provider version is not compatible with PrismCue."
+            "The selected provider version is not compatible with ChirpCue."
         case .appServerCrashed:
             "The selected provider process stopped unexpectedly."
         case .quickLimited:
@@ -259,9 +259,9 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
         case .responseSignInRequired:
             "Sign in to the selected AI provider before starting."
         case .responseAccountMismatch:
-            "The selected provider account does not match the confirmed PrismCue profile."
+            "The selected provider account does not match the confirmed ChirpCue profile."
         case .responseProtocolUnsupported:
-            "The installed provider version is not compatible with PrismCue."
+            "The installed provider version is not compatible with ChirpCue."
         case .responseUnavailable:
             "The selected provider response runtime could not be prepared."
         case .captureUnavailable(let lane):
@@ -269,7 +269,7 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
         case .captureTeardownFailed(let lane):
             "The \(lane.rawValue) audio route could not be fully stopped. Retry Stop before starting or resuming."
         case .systemAudioPermissionDenied:
-            "System audio capture permission is denied. Allow PrismCue in System Settings, then try again."
+            "System audio capture permission is denied. Allow ChirpCue in System Settings, then try again."
         case .noCandidateQuestion:
             "No recent question from the other party is available to coach yet."
         case .emptyManualQuestion:

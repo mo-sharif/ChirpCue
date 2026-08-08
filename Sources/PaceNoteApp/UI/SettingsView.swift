@@ -260,7 +260,7 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "PrismCue will bind future meetings to the currently signed-in Claude subscription. Provider-processing consent will be cleared and must be confirmed again."
+                "ChirpCue will bind future meetings to the currently signed-in Claude subscription. Provider-processing consent will be cleared and must be confirmed again."
             )
         }
     }

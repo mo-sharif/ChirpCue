@@ -26,9 +26,9 @@ public enum ClaudeSubscriptionError: Error, Equatable, LocalizedError, Sendable 
         case .signedOut:
             "Sign in to Claude Code with a Claude subscription."
         case .unsupportedAuthentication:
-            "PrismCue requires first-party Claude.ai subscription authentication."
+            "ChirpCue requires first-party Claude.ai subscription authentication."
         case .unsupportedSubscription:
-            "PrismCue's personal Claude path supports only first-party Pro or Max subscriptions."
+            "ChirpCue's personal Claude path supports only first-party Pro or Max subscriptions."
         case .missingIdentity:
             "The signed-in Claude account did not provide a verifiable identity."
         case .invalidStatus:

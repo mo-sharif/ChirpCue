@@ -11,7 +11,7 @@ if [[ ! -f "$SOURCE_PNG" ]]; then
   exit 1
 fi
 
-ICON_BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/prismcue-icon.XXXXXX")"
+ICON_BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/chirpcue-icon.XXXXXX")"
 ICONSET="$ICON_BUILD_ROOT/AppIcon.iconset"
 
 cleanup() {

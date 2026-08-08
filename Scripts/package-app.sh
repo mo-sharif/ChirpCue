@@ -4,7 +4,7 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dist_root="$project_root/dist"
-app_bundle="$dist_root/PrismCue.app"
+app_bundle="$dist_root/ChirpCue.app"
 contents="$app_bundle/Contents"
 macos_dir="$contents/MacOS"
 resources_dir="$contents/Resources"
@@ -15,7 +15,7 @@ version=$(tr -d '[:space:]' < "$project_root/VERSION")
 build_number=${PACE_NOTE_BUILD_NUMBER:-1}
 
 case "$app_bundle" in
-    "$project_root"/dist/PrismCue.app) ;;
+    "$project_root"/dist/ChirpCue.app) ;;
     *) printf '%s\n' "Refusing unsafe app bundle path: $app_bundle" >&2; exit 1 ;;
 esac
 
@@ -32,7 +32,7 @@ bin_dir=$("$project_root/Scripts/toolchain.sh" swift build \
 
 rm -rf "$app_bundle"
 mkdir -p "$macos_dir" "$resources_dir"
-install -m 0755 "$bin_dir/PrismCue" "$macos_dir/PrismCue"
+install -m 0755 "$bin_dir/ChirpCue" "$macos_dir/ChirpCue"
 install -m 0644 "$plist_source" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$contents/Info.plist"

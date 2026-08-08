@@ -5,19 +5,19 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>PrismCue</string>
+    <string>ChirpCue</string>
     <key>CFBundleExecutable</key>
-    <string>PrismCue</string>
+    <string>ChirpCue</string>
     <key>CFBundleIdentifier</key>
     <string>com.mosharif.pacenote</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>PrismCue</string>
+    <string>ChirpCue</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.2.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -29,11 +29,11 @@
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Mo Sharif. All rights reserved.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>PrismCue uses your microphone only after you start a coaching session, so it can distinguish your side of the conversation.</string>
+    <string>ChirpCue uses your microphone only after you start a coaching session, so it can distinguish your side of the conversation.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>PrismCue captures meeting audio routed through this Mac only after you start a coaching session.</string>
+    <string>ChirpCue captures meeting audio routed through this Mac only after you start a coaching session.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>PrismCue transcribes approved meeting audio on this Mac only after you start a coaching session.</string>
+    <string>ChirpCue transcribes approved meeting audio on this Mac only after you start a coaching session.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSSupportsAutomaticTermination</key>

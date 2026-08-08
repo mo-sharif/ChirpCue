@@ -214,7 +214,7 @@ final class ClaudeIsolatedRuntimeTests: XCTestCase {
 
     func testManagedPolicyValidatorRejectsEveryEndpointManagedSource() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("prismcue-claude-policy-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("chirpcue-claude-policy-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 

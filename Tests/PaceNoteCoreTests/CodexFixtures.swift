@@ -5,7 +5,7 @@ import Foundation
 enum CodexFixtures {
     static let initializeParams = #"""
         {
-          "clientInfo": {"name":"pacenote","title":"PrismCue","version":"0.1.0"},
+          "clientInfo": {"name":"pacenote","title":"ChirpCue","version":"0.1.0"},
           "capabilities": {"experimentalApi":true,"requestAttestation":false}
         }
         """#

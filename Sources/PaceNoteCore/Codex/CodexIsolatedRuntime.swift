@@ -34,19 +34,19 @@ public enum CodexIsolatedRuntimeError: Error, Equatable, LocalizedError, Sendabl
     public var errorDescription: String? {
         switch self {
         case .invalidProfileRoot:
-            "The PrismCue Codex profile root is invalid."
+            "The ChirpCue Codex profile root is invalid."
         case .invalidTemporaryRoot:
-            "The PrismCue Codex temporary directory is invalid."
+            "The ChirpCue Codex temporary directory is invalid."
         case .invalidUserHome:
-            "PrismCue could not resolve the signed-in macOS user's home directory for Keychain access."
+            "ChirpCue could not resolve the signed-in macOS user's home directory for Keychain access."
         case .invalidPermissionProfile:
-            "The PrismCue Codex permission profile name is invalid."
+            "The ChirpCue Codex permission profile name is invalid."
         case .unsafeExistingConfiguration:
-            "The PrismCue Codex configuration path is not a regular private file."
+            "The ChirpCue Codex configuration path is not a regular private file."
         case .credentialMaterialPresent:
-            "The PrismCue Codex profile contains credential material outside the OS credential store."
+            "The ChirpCue Codex profile contains credential material outside the OS credential store."
         case .cannotPrepareProfile:
-            "PrismCue could not prepare its isolated Codex profile."
+            "ChirpCue could not prepare its isolated Codex profile."
         }
     }
 }
@@ -187,7 +187,7 @@ public enum CodexIsolatedRuntimeBuilder {
         inherit = "none"
 
         [permissions.\(permissionProfileID)]
-        description = "PrismCue sealed snapshot read-only"
+        description = "ChirpCue sealed snapshot read-only"
 
         [permissions.\(permissionProfileID).filesystem]
         ":root" = "deny"

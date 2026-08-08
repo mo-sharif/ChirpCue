@@ -60,7 +60,7 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
             let latencyAttachment = XCTAttachment(
                 string: "deep_ms=\(Self.milliseconds(deepLatency))"
             )
-            latencyAttachment.name = "PaceNote subscription smoke latency"
+            latencyAttachment.name = "ChirpCue subscription smoke latency"
             latencyAttachment.lifetime = .keepAlways
             add(latencyAttachment)
         } catch {

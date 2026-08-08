@@ -22,7 +22,7 @@ final class ClaudeSubscriptionAuthSmokeTests: XCTestCase {
         let runtimeRoot =
             temporaryRoot
             .appendingPathComponent(
-                "PrismCue-Claude-Auth-Smoke-\(UUID().uuidString)",
+                "ChirpCue-Claude-Auth-Smoke-\(UUID().uuidString)",
                 isDirectory: true
             )
             .standardizedFileURL

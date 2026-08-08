@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class MeetingViewModelTests: XCTestCase {
     func testUnavailableRuntimeSurfacesItsSafeStartupReason() async {
-        let reason = "The dedicated PaceNote Codex profile is already in use."
+        let reason = "The dedicated ChirpCue Codex profile is already in use."
         let model = MeetingViewModel(
             actions: .unavailable(reason: reason),
             hasCompletedFirstRun: true
