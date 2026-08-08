@@ -22,9 +22,11 @@ final class ResponseCoordinatorTests: XCTestCase {
         let deep = try XCTUnwrap(events.compactMap(\.deep).first)
 
         XCTAssertTrue(cue.isDeterministicBridge)
-        XCTAssertEqual(cue.text, "Let me verify the exact implementation before I answer that.")
+        XCTAssertEqual(cue.text, "Let me think through that carefully for a second.")
         XCTAssertEqual(deep.cueID, cue.id)
         XCTAssertEqual(deep.cueHash, cue.textHash)
+        XCTAssertEqual(deep.kind, .generalAnswer)
+        XCTAssertTrue(deep.basis.isEmpty)
         XCTAssertEqual(deep.sayNext, generator.deepText)
         XCTAssertLessThanOrEqual(deep.composedText.split(separator: " ").count, 40)
     }
@@ -47,7 +49,7 @@ final class ResponseCoordinatorTests: XCTestCase {
         let deep = try XCTUnwrap(events.compactMap(\.deep).first)
 
         XCTAssertTrue(cue.isDeterministicBridge)
-        XCTAssertEqual(cue.text, "Let me verify the exact implementation before I answer that.")
+        XCTAssertEqual(cue.text, "Let me think through that carefully for a second.")
         XCTAssertEqual(deep.cueHash, cue.textHash)
     }
 
@@ -142,6 +144,58 @@ final class ResponseCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(deep.sayNext, "I need one more detail before I can verify that.")
         XCTAssertFalse(deep.composedText.contains("retries three times"))
+    }
+
+    func testGroundedTurnRejectsGeneralAnswerKind() async {
+        let turn = makeTurn(generation: 1)
+        let generator = ScriptedGenerator(
+            quickDelay: .milliseconds(1),
+            deepDelay: .milliseconds(1),
+            quickText: "Let me verify that.",
+            turn: turn,
+            deepKind: .generalAnswer
+        )
+        let coordinator = ResponseCoordinator(generator: generator)
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+
+        XCTAssertTrue(events.compactMap(\.deep).isEmpty)
+        XCTAssertEqual(events.compactMap(\.deepUnavailable).count, 1)
+    }
+
+    func testUngroundedTurnRejectsEvidenceAnswerKind() async {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let generator = ScriptedGenerator(
+            quickDelay: .milliseconds(1),
+            deepDelay: .milliseconds(1),
+            quickText: "Let me think about that.",
+            turn: turn,
+            deepKind: .answer
+        )
+        let coordinator = ResponseCoordinator(generator: generator)
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+
+        XCTAssertTrue(events.compactMap(\.deep).isEmpty)
+        XCTAssertEqual(events.compactMap(\.deepUnavailable).count, 1)
+    }
+
+    func testUngroundedTurnRejectsUnsupportedOrganizationClaim() async {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let generator = ScriptedGenerator(
+            quickDelay: .milliseconds(1),
+            deepDelay: .milliseconds(1),
+            quickText: "Let me think about that.",
+            turn: turn,
+            deepKind: .generalAnswer,
+            deepText: "Our system uses Kafka for every asynchronous workflow."
+        )
+        let coordinator = ResponseCoordinator(generator: generator)
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+
+        XCTAssertTrue(events.compactMap(\.deep).isEmpty)
+        XCTAssertEqual(events.compactMap(\.deepUnavailable).count, 1)
     }
 
     func testNewerTurnCancelsAndInvalidatesOlderResult() async throws {
@@ -298,6 +352,10 @@ private extension ResponseCoordinatorEvent {
     var discardedStale: TurnIdentity? {
         if case .discardedStale(let value) = self { value } else { nil }
     }
+
+    var deepUnavailable: String? {
+        if case .deepUnavailable(let value) = self { value } else { nil }
+    }
 }
 
 private struct TimedEvents: Sendable {
@@ -338,8 +396,8 @@ private struct ScriptedGenerator: ResponseGenerating {
         turn: ConversationTurn,
         alternateTurn: ConversationTurn? = nil,
         quickNeedsDeep: Bool = true,
-        deepKind: DeepDraftKind = .answer,
-        deepText: String = "The queued boundary isolates callers from retries and downstream outages."
+        deepKind: DeepDraftKind? = nil,
+        deepText: String? = nil
     ) {
         self.quickDelay = quickDelay
         self.deepDelay = deepDelay
@@ -347,8 +405,14 @@ private struct ScriptedGenerator: ResponseGenerating {
         self.turn = turn
         self.alternateTurn = alternateTurn
         self.quickNeedsDeep = quickNeedsDeep
-        self.deepKind = deepKind
-        self.deepText = deepText
+        self.deepKind =
+            deepKind
+            ?? (turn.groundingFingerprint == nil ? .generalAnswer : .answer)
+        self.deepText =
+            deepText
+            ?? (turn.groundingFingerprint == nil
+                ? "I would isolate callers from retries and downstream outages with a queued boundary."
+                : "The queued boundary isolates callers from retries and downstream outages.")
     }
 
     func generateQuick(for requestedTurn: ConversationTurn) async throws -> QuickModelOutput {
@@ -424,19 +488,23 @@ private struct HangingGenerator: ResponseGenerating {
             turnID: requestedTurn.identity.turnID,
             generation: requestedTurn.identity.generation,
             groundingFingerprint: requestedTurn.groundingFingerprint,
-            kind: .answer,
-            candidateSayNext: "The queued boundary isolates downstream work from the caller.",
+            kind: requestedTurn.groundingFingerprint == nil ? .generalAnswer : .answer,
+            candidateSayNext: requestedTurn.groundingFingerprint == nil
+                ? "I would isolate downstream work from the caller with a queued boundary."
+                : "The queued boundary isolates downstream work from the caller.",
             confidence: 0.9,
-            basis: [
-                EvidenceReference(
-                    repoAlias: requestedTurn.repoAlias ?? "sample",
-                    relativePath: "Sources/Pipeline.swift",
-                    startLine: 10,
-                    endLine: 18,
-                    fileHash: "file-hash",
-                    claim: "The boundary queues downstream work."
-                )
-            ]
+            basis: requestedTurn.groundingFingerprint == nil
+                ? []
+                : [
+                    EvidenceReference(
+                        repoAlias: requestedTurn.repoAlias ?? "sample",
+                        relativePath: "Sources/Pipeline.swift",
+                        startLine: 10,
+                        endLine: 18,
+                        fileHash: "file-hash",
+                        claim: "The boundary queues downstream work."
+                    )
+                ]
         )
     }
 

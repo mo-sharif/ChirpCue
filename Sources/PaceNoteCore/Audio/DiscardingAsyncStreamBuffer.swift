@@ -131,6 +131,20 @@ final class DiscardingAsyncStreamBuffer<Element: Sendable>: @unchecked Sendable 
         for waiter in waiters { waiter.continuation.resume(returning: nil) }
     }
 
+    /// Scrubs queued values without ending the stream. This keeps a terminal
+    /// lifecycle event deliverable after a failed teardown is retried.
+    func discardQueued() {
+        var discarded: [Element] = []
+
+        lock.lock()
+        discarded = state.values
+        state.values.removeAll(keepingCapacity: false)
+        state.discardedCount += discarded.count
+        lock.unlock()
+
+        for index in discarded.indices { discard(&discarded[index]) }
+    }
+
     func queuedCount() -> Int {
         lock.lock()
         defer { lock.unlock() }

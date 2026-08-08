@@ -84,6 +84,215 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         _ = await generator.shutdown()
     }
 
+    func testMalformedBaseIsJournaledBeforeValidationAndDeletionRetriesOnShutdown() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            invalidBaseCwd: true,
+            deletionFailuresRemaining: 1
+        )
+        let generator = fixture.generator(client: client)
+
+        await XCTAssertThrowsMeetingError(.protocolUnsupported) {
+            _ = try await generator.prepare()
+        }
+
+        let entriesBeforeShutdown = try await fixture.journal.entries()
+        let attemptsBeforeShutdown = await client.deleteAttemptCount()
+        XCTAssertEqual(entriesBeforeShutdown.first?.threadIDs, ["base-1"])
+        XCTAssertEqual(attemptsBeforeShutdown, 1)
+
+        let report = await generator.shutdown()
+        let attemptsAfterShutdown = await client.deleteAttemptCount()
+        let deletedThreadIDs = await client.deletedThreadIDs()
+        let entriesAfterShutdown = try await fixture.journal.entries()
+
+        XCTAssertEqual(attemptsAfterShutdown, 2)
+        XCTAssertEqual(deletedThreadIDs, ["base-1"])
+        XCTAssertEqual(entriesAfterShutdown.first?.threadIDs, [])
+        XCTAssertTrue(report.failures.contains(.deleteThread))
+    }
+
+    func testShutdownWaitsForLateBaseThenJournalsAndDeletesIt() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let baseGate = SuspendedCallGate()
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            baseCreationGate: baseGate
+        )
+        let generator = fixture.generator(client: client)
+
+        let preparation = Task { try await generator.prepare() }
+        await baseGate.waitUntilSuspended()
+
+        let completion = CompletionProbe()
+        let shutdown = Task {
+            let report = await generator.shutdown()
+            await completion.markCompleted()
+            return report
+        }
+        for _ in 0..<100 { await Task.yield() }
+        let completedBeforeRelease = await completion.isCompleted()
+        XCTAssertFalse(completedBeforeRelease)
+
+        await baseGate.release()
+        let report = await shutdown.value
+        await XCTAssertThrowsCancellation { _ = try await preparation.value }
+
+        let deleted = await client.deletedThreadIDs()
+        let entries = try await fixture.journal.entries()
+        let shutdownCount = await client.shutdownCallCount()
+        XCTAssertEqual(deleted, ["base-1"])
+        XCTAssertEqual(entries.first?.threadIDs, [])
+        XCTAssertEqual(report.failures, [])
+        XCTAssertEqual(shutdownCount, 1)
+        await XCTAssertThrowsMeetingError(.notPrepared) {
+            _ = try await generator.prepare()
+        }
+    }
+
+    func testShutdownWaitsForLateForkThenJournalsAndDeletesIt() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.turn(generation: 1)
+        let forkGate = SuspendedCallGate()
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            quickOutputs: [
+                try Self.json(
+                    QuickModelOutput(
+                        turnID: turn.identity.turnID,
+                        generation: 1,
+                        sayNow: "Let me verify the exact path.",
+                        needsDeep: true,
+                        confidence: 0.5,
+                        reason: "technical"
+                    )
+                )
+            ],
+            forkCreationGate: forkGate
+        )
+        let generator = fixture.generator(client: client)
+        _ = try await generator.prepare()
+
+        let generation = Task { try await generator.generateQuick(for: turn) }
+        await forkGate.waitUntilSuspended()
+
+        let completion = CompletionProbe()
+        let shutdown = Task {
+            let report = await generator.shutdown()
+            await completion.markCompleted()
+            return report
+        }
+        for _ in 0..<100 { await Task.yield() }
+        let completedBeforeRelease = await completion.isCompleted()
+        XCTAssertFalse(completedBeforeRelease)
+
+        await forkGate.release()
+        let report = await shutdown.value
+        await XCTAssertThrowsCancellation { _ = try await generation.value }
+
+        let deleted = await client.deletedThreadIDs()
+        let quickTurnCount = await client.quickTurnCount()
+        let entries = try await fixture.journal.entries()
+        XCTAssertEqual(Set(deleted), Set(["base-1", "base-2", "fork-1"]))
+        XCTAssertEqual(quickTurnCount, 0)
+        XCTAssertEqual(entries.first?.threadIDs, [])
+        XCTAssertEqual(report.deletedThreadCount, 2)
+        XCTAssertEqual(report.failures, [])
+    }
+
+    func testCancelActiveWorkWaitsForLateForkThenReopensPreparedGenerator() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.turn(generation: 1)
+        let forkGate = SuspendedCallGate()
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            forkCreationGate: forkGate
+        )
+        let generator = fixture.generator(client: client)
+        let preparedRuntime = try await generator.prepare()
+
+        let generation = Task { try await generator.generateQuick(for: turn) }
+        await forkGate.waitUntilSuspended()
+
+        let completion = CompletionProbe()
+        let cancellation = Task {
+            await generator.cancelActiveWork()
+            await completion.markCompleted()
+        }
+        for _ in 0..<100 { await Task.yield() }
+        let completedBeforeRelease = await completion.isCompleted()
+        XCTAssertFalse(completedBeforeRelease)
+
+        await forkGate.release()
+        await cancellation.value
+        await XCTAssertThrowsCancellation { _ = try await generation.value }
+
+        let runtimeAfterCancellation = try await generator.prepare()
+        let deleted = await client.deletedThreadIDs()
+        let entries = try await fixture.journal.entries()
+        XCTAssertEqual(runtimeAfterCancellation, preparedRuntime)
+        XCTAssertTrue(deleted.contains("fork-1"))
+        XCTAssertEqual(Set(entries.first?.threadIDs ?? []), Set(["base-1", "base-2"]))
+        _ = await generator.shutdown()
+    }
+
+    func testCoalescedShutdownWaitsForLateDeepTurnHandleBeforeReportingClean() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.turn(generation: 1)
+        let startTurnGate = SuspendedCallGate()
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            turnOutputs: [try Self.json(fixture.deepDraft(for: turn))],
+            startTurnGate: startTurnGate
+        )
+        let generator = fixture.generator(client: client)
+        _ = try await generator.prepare()
+
+        let generation = Task { try await generator.generateDeep(for: turn) }
+        await startTurnGate.waitUntilSuspended()
+
+        let firstCompletion = CompletionProbe()
+        let secondCompletion = CompletionProbe()
+        let firstShutdown = Task {
+            let report = await generator.shutdown()
+            await firstCompletion.markCompleted()
+            return report
+        }
+        let secondShutdown = Task {
+            let report = await generator.shutdown()
+            await secondCompletion.markCompleted()
+            return report
+        }
+        for _ in 0..<100 { await Task.yield() }
+        let firstCompletedBeforeRelease = await firstCompletion.isCompleted()
+        let secondCompletedBeforeRelease = await secondCompletion.isCompleted()
+        XCTAssertFalse(firstCompletedBeforeRelease)
+        XCTAssertFalse(secondCompletedBeforeRelease)
+
+        await startTurnGate.release()
+        let firstReport = await firstShutdown.value
+        let secondReport = await secondShutdown.value
+        await XCTAssertThrowsCancellation { _ = try await generation.value }
+
+        let interrupted = await client.interruptedThreadIDs()
+        let deleted = await client.deletedThreadIDs()
+        let entries = try await fixture.journal.entries()
+        let shutdownCount = await client.shutdownCallCount()
+        XCTAssertEqual(interrupted, ["fork-1"])
+        XCTAssertEqual(Set(deleted), Set(["base-1", "base-2", "fork-1"]))
+        XCTAssertEqual(entries.first?.threadIDs, [])
+        XCTAssertEqual(firstReport, secondReport)
+        XCTAssertEqual(firstReport.deletedThreadCount, 2)
+        XCTAssertEqual(firstReport.failures, [])
+        XCTAssertEqual(shutdownCount, 1)
+    }
+
     func testRealtimeQuickRejectsAdditionalJSONKeys() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
@@ -116,9 +325,12 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         _ = try await generator.prepare()
 
         let task = Task { try await generator.generateQuick(for: turn) }
-        for _ in 0..<100 where await client.quickTurnCount() == 0 {
+        for _ in 0..<1_000 {
+            if await client.quickTurnCount() > 0 { break }
             await Task.yield()
         }
+        let startedQuickCount = await client.quickTurnCount()
+        XCTAssertEqual(startedQuickCount, 1)
         task.cancel()
         do {
             _ = try await task.value
@@ -152,6 +364,160 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         }
         let deleted = await client.deletedThreadIDs()
         XCTAssertTrue(deleted.contains("fork-1"))
+        _ = await generator.shutdown()
+    }
+
+    func testRepositoryFreeDeepReturnsClearlyGeneralAnswerWithoutEvidenceVerification() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.generalTurn(generation: 1)
+        let draft = fixture.generalDraft(for: turn)
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            turnOutputs: [try Self.json(draft)],
+            ambientSkillEnabled: true
+        )
+        let verifier = FakeMeetingEvidenceVerifier()
+        let generator = fixture.generator(
+            client: client,
+            verifier: verifier,
+            includeGrounding: false
+        )
+
+        _ = try await generator.prepare()
+        let generated = try await generator.generateDeep(for: turn)
+
+        XCTAssertEqual(generated, draft)
+        XCTAssertEqual(generated.kind, .generalAnswer)
+        XCTAssertNil(generated.groundingFingerprint)
+        XCTAssertTrue(generated.basis.isEmpty)
+        let verificationCount = await verifier.verificationCount()
+        let skillWrites = await client.skillWrites()
+        XCTAssertEqual(verificationCount, 0)
+        XCTAssertTrue(
+            skillWrites.contains(where: {
+                $0.name == "ambient-skill" && !$0.enabled
+            })
+        )
+        _ = await generator.shutdown()
+    }
+
+    func testRepositoryFreeDeepRejectsEvidenceAnswerKind() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.generalTurn(generation: 1)
+        let invalid = DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .answer,
+            candidateSayNext: "The service definitely retries every request.",
+            confidence: 0.9,
+            basis: []
+        )
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            turnOutputs: [try Self.json(invalid)]
+        )
+        let generator = fixture.generator(client: client, includeGrounding: false)
+        _ = try await generator.prepare()
+
+        await XCTAssertThrowsMeetingError(.invalidOutput) {
+            _ = try await generator.generateDeep(for: turn)
+        }
+        _ = await generator.shutdown()
+    }
+
+    func testRepositoryFreeDeepRejectsUnsupportedOrganizationClaim() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.generalTurn(generation: 1)
+        let invalid = DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext: "Our system uses Kafka for every asynchronous workflow.",
+            confidence: 0.9,
+            basis: []
+        )
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            turnOutputs: [try Self.json(invalid)]
+        )
+        let generator = fixture.generator(client: client, includeGrounding: false)
+        _ = try await generator.prepare()
+
+        await XCTAssertThrowsMeetingError(.invalidOutput) {
+            _ = try await generator.generateDeep(for: turn)
+        }
+        _ = await generator.shutdown()
+    }
+
+    func testRepositoryFreeDeepRejectsClosedGrammarBypassCorpus() async throws {
+        let rejected = [
+            "I would validate latency as acme leaks patient records.",
+            "I would add monitoring after acme leaked patient records.",
+            "I would validate latency or acme leaks patient records.",
+            "I would compare latency between queues and acme leaks patient records.",
+            "We should assess acme leaked patient records.",
+            "I would treat acme compromised accounts as resolved.",
+            "We should document our-system-leaks-patient-records.",
+            "We can use patient records without consent.",
+        ]
+
+        for candidate in rejected {
+            let fixture = try ResponseGeneratorFixture()
+            defer { fixture.cleanup() }
+            let turn = fixture.generalTurn(generation: 1)
+            let invalid = DeepDraft(
+                turnID: turn.identity.turnID,
+                generation: turn.identity.generation,
+                groundingFingerprint: nil,
+                kind: .generalAnswer,
+                candidateSayNext: candidate,
+                confidence: 0.9,
+                basis: []
+            )
+            let client = FakeMeetingCodexClient(
+                realtime: false,
+                turnOutputs: [try Self.json(invalid)]
+            )
+            let generator = fixture.generator(client: client, includeGrounding: false)
+            _ = try await generator.prepare()
+
+            await XCTAssertThrowsMeetingError(.invalidOutput) {
+                _ = try await generator.generateDeep(for: turn)
+            }
+            let deleted = await client.deletedThreadIDs()
+            XCTAssertTrue(deleted.contains("fork-1"), candidate)
+            _ = await generator.shutdown()
+        }
+    }
+
+    func testGroundedDeepRejectsGeneralAnswerKind() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.turn(generation: 1)
+        let invalid = DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: turn.groundingFingerprint,
+            kind: .generalAnswer,
+            candidateSayNext: "Broadly, I would separate the immediate path from retries.",
+            confidence: 0.8,
+            basis: []
+        )
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            turnOutputs: [try Self.json(invalid)]
+        )
+        let generator = fixture.generator(client: client)
+        _ = try await generator.prepare()
+
+        await XCTAssertThrowsMeetingError(.invalidOutput) {
+            _ = try await generator.generateDeep(for: turn)
+        }
         _ = await generator.shutdown()
     }
 
@@ -395,6 +761,7 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let isolated = try CodexIsolatedRuntimeBuilder.prepare(profileRoot: root)
         let client = try await CodexAppServerClient.connect(
             configuration: .init(
+                expectedCodexHome: isolated.profileRoot,
                 clientVersion: "0.1.0",
                 permissionProfileID: isolated.permissionProfileID,
                 processArguments: isolated.processArguments,
@@ -439,9 +806,22 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
             supportRoot
             .appendingPathComponent("PaceNote/Profiles/personal", isDirectory: true)
             .standardizedFileURL
+        let profileLease = try CodexProfileLease.acquire(profileRoot: profileRoot)
+        defer { withExtendedLifetime(profileLease) {} }
+        let applicationRoot = profileRoot.deletingLastPathComponent().deletingLastPathComponent()
+        let cleanupJournal = try CleanupJournalStore(
+            journalURL:
+                applicationRoot
+                .appendingPathComponent("State/cleanup-journal.json", isDirectory: false),
+            allowedRoot: applicationRoot
+        )
+        guard try await cleanupJournal.entries().isEmpty else {
+            throw StableProfileInspectionError.pendingCleanupExists
+        }
         let isolated = try CodexIsolatedRuntimeBuilder.prepare(profileRoot: profileRoot)
         let client = try await CodexAppServerClient.connect(
             configuration: .init(
+                expectedCodexHome: isolated.profileRoot,
                 clientVersion: "0.1.0",
                 permissionProfileID: isolated.permissionProfileID,
                 processArguments: isolated.processArguments,
@@ -476,6 +856,10 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return try XCTUnwrap((attributes[.posixPermissions] as? NSNumber)?.intValue) & 0o777
     }
+}
+
+private enum StableProfileInspectionError: Error {
+    case pendingCleanupExists
 }
 
 private struct ResponseGeneratorFixture {
@@ -553,7 +937,8 @@ private struct ResponseGeneratorFixture {
     func generator(
         client: FakeMeetingCodexClient,
         verifier: any MeetingEvidenceVerifying = FakeMeetingEvidenceVerifier(),
-        configurationRecorder: CodexConfigurationRecorder? = nil
+        configurationRecorder: CodexConfigurationRecorder? = nil,
+        includeGrounding: Bool = true
     ) -> CodexMeetingResponseGenerator {
         CodexMeetingResponseGenerator(
             configuration: .init(
@@ -562,7 +947,7 @@ private struct ResponseGeneratorFixture {
                 codexProfileRoot: profileRoot,
                 clientVersion: "0.1.0",
                 expectedAccountIdentityHash: expectedAccountIdentityHash,
-                groundingSnapshot: snapshot,
+                groundingSnapshot: includeGrounding ? snapshot : nil,
                 quickPerMinute: quickPerMinute
             ),
             journal: journal,
@@ -593,6 +978,23 @@ private struct ResponseGeneratorFixture {
         )
     }
 
+    func generalTurn(generation: UInt64) -> ConversationTurn {
+        ConversationTurn(
+            identity: .init(meetingID: UUID(), generation: generation),
+            question: "How should I explain the tradeoff?",
+            recentTranscript: [
+                .init(
+                    source: .them,
+                    text: "How should I explain the tradeoff?",
+                    startedAt: 0,
+                    endedAt: 1,
+                    isFinal: true,
+                    confidence: 0.98
+                )
+            ]
+        )
+    }
+
     func deepDraft(for turn: ConversationTurn) -> DeepDraft {
         DeepDraft(
             turnID: turn.identity.turnID,
@@ -611,6 +1013,18 @@ private struct ResponseGeneratorFixture {
                     claim: "The queue isolates slow work."
                 )
             ]
+        )
+    }
+
+    func generalDraft(for turn: ConversationTurn) -> DeepDraft {
+        DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext: "I would separate the immediate decision from implementation details.",
+            confidence: 0.72,
+            basis: []
         )
     }
 
@@ -667,6 +1081,52 @@ private actor FakeMeetingEvidenceVerifier: MeetingEvidenceVerifying {
     func verifiedCandidates() -> [String] { candidates }
 }
 
+private actor SuspendedCallGate {
+    private var suspended = false
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async {
+        suspended = true
+        let waiters = suspensionWaiters
+        suspensionWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilSuspended() async {
+        guard !suspended else { return }
+        await withCheckedContinuation { continuation in
+            suspensionWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        suspended = false
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
+private actor CompletionProbe {
+    private var completed = false
+
+    func markCompleted() {
+        completed = true
+    }
+
+    func isCompleted() -> Bool {
+        completed
+    }
+}
+
 private actor FakeMeetingCodexClient: CodexMeetingClient {
     nonisolated let runtimeCapabilities: CodexRuntimeCapabilities
 
@@ -681,6 +1141,11 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     private var ambientSkillEnabled: Bool
     private let hangQuick: Bool
     private let signedIn: Bool
+    private let invalidBaseCwd: Bool
+    private let baseCreationGate: SuspendedCallGate?
+    private let forkCreationGate: SuspendedCallGate?
+    private let startTurnGate: SuspendedCallGate?
+    private var deletionFailuresRemaining: Int
     private var nextBase = 1
     private var nextFork = 1
     private var deleted: [String] = []
@@ -690,6 +1155,8 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     private var realtimeStops = 0
     private var loginStarts = 0
     private var accountReads = 0
+    private var deleteAttempts = 0
+    private var shutdownCalls = 0
     private var hangingContinuations: [String: AsyncThrowingStream<CodexTurnEvent, any Error>.Continuation] = [:]
 
     init(
@@ -698,7 +1165,12 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         turnOutputs: [String] = [],
         ambientSkillEnabled: Bool = false,
         hangQuick: Bool = false,
-        signedIn: Bool = true
+        signedIn: Bool = true,
+        invalidBaseCwd: Bool = false,
+        baseCreationGate: SuspendedCallGate? = nil,
+        forkCreationGate: SuspendedCallGate? = nil,
+        startTurnGate: SuspendedCallGate? = nil,
+        deletionFailuresRemaining: Int = 0
     ) {
         runtimeCapabilities = .init(realtimeTextV3: realtime)
         self.quickOutputs = quickOutputs
@@ -706,6 +1178,11 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         self.ambientSkillEnabled = ambientSkillEnabled
         self.hangQuick = hangQuick
         self.signedIn = signedIn
+        self.invalidBaseCwd = invalidBaseCwd
+        self.baseCreationGate = baseCreationGate
+        self.forkCreationGate = forkCreationGate
+        self.startTurnGate = startTurnGate
+        self.deletionFailuresRemaining = deletionFailuresRemaining
     }
 
     func account(refreshToken: Bool) async throws -> CodexAccountReadResult {
@@ -800,6 +1277,9 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     ) async throws -> CodexBaseThread {
         let id = "base-\(nextBase)"
         nextBase += 1
+        if let baseCreationGate {
+            await baseCreationGate.suspend()
+        }
         let sources =
             cwd.contains("quick-context")
             ? []
@@ -808,7 +1288,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
             id: id,
             model: model,
             permissionProfileID: "pacenote-readonly",
-            cwd: cwd,
+            cwd: invalidBaseCwd ? cwd + "/unexpected" : cwd,
             runtimeWorkspaceRoots: runtimeWorkspaceRoots,
             instructionSources: sources
         )
@@ -819,6 +1299,9 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     {
         let id = "fork-\(nextFork)"
         nextFork += 1
+        if let forkCreationGate {
+            await forkCreationGate.suspend()
+        }
         return CodexEphemeralThread(
             id: id,
             baseThreadID: base.id,
@@ -831,6 +1314,11 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     }
 
     func deleteThread(id: String) async throws {
+        deleteAttempts += 1
+        if deletionFailuresRemaining > 0 {
+            deletionFailuresRemaining -= 1
+            throw CodexClientError.transportUnavailable
+        }
         deleted.append(id)
         hangingContinuations.removeValue(forKey: id)?.finish(throwing: CancellationError())
     }
@@ -866,7 +1354,11 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         outputSchema: JSONValue?,
         skills: [CodexSkillInvocation]
     ) async throws -> CodexTurnSession {
-        Self.completedTurn(threadID: threadID, output: turnOutputs.removeFirst())
+        let session = Self.completedTurn(threadID: threadID, output: turnOutputs.removeFirst())
+        if let startTurnGate {
+            await startTurnGate.suspend()
+        }
+        return session
     }
 
     func interruptTurn(threadID: String, turnID: String) async throws {
@@ -875,7 +1367,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     }
 
     func stopRealtimeText(threadID: String) async throws { realtimeStops += 1 }
-    func shutdown() async {}
+    func shutdown() async { shutdownCalls += 1 }
 
     func skillWrites() -> [SkillWrite] { writes }
     func deletedThreadIDs() -> [String] { deleted }
@@ -886,6 +1378,8 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     func accountReadCount() -> Int { accountReads }
     func baseCount() -> Int { nextBase - 1 }
     func forkCount() -> Int { nextFork - 1 }
+    func deleteAttemptCount() -> Int { deleteAttempts }
+    func shutdownCallCount() -> Int { shutdownCalls }
 
     private static func completedTurn(threadID: String, output: String) -> CodexTurnSession {
         let pair = AsyncThrowingStream<CodexTurnEvent, any Error>.makeStream()
@@ -932,5 +1426,19 @@ private func XCTAssertThrowsMeetingError<T>(
         XCTAssertEqual(error, expected, file: file, line: line)
     } catch {
         XCTFail("Expected MeetingResponseError, received \(error).", file: file, line: line)
+    }
+}
+
+private func XCTAssertThrowsCancellation<T>(
+    operation: () async throws -> T,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await operation()
+        XCTFail("Expected cancellation.", file: file, line: line)
+    } catch is CancellationError {
+    } catch {
+        XCTFail("Expected CancellationError, received \(error).", file: file, line: line)
     }
 }

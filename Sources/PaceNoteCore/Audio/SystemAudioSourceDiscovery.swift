@@ -7,24 +7,36 @@ public struct SystemAudioSource: Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public let processID: Int32
     public let bundleID: String?
+    public let processStartToken: String
+    public let audioObjectID: AudioObjectID
     public let name: String
     public let isLikelyMeetingSource: Bool
 
     public init(
         processID: Int32,
         bundleID: String?,
+        processStartToken: String,
+        audioObjectID: AudioObjectID,
         name: String,
         isLikelyMeetingSource: Bool
     ) {
-        self.id = "pid:\(processID)"
+        precondition(!processStartToken.isEmpty)
+        self.id = "process:\(processID):\(audioObjectID):\(processStartToken)"
         self.processID = processID
         self.bundleID = bundleID
+        self.processStartToken = processStartToken
+        self.audioObjectID = audioObjectID
         self.name = name
         self.isLikelyMeetingSource = isLikelyMeetingSource
     }
 
     public var captureTarget: AudioProcessTarget {
-        AudioProcessTarget(processID: processID, bundleID: bundleID)
+        AudioProcessTarget(
+            processID: processID,
+            bundleID: bundleID,
+            processStartToken: processStartToken,
+            audioObjectID: audioObjectID
+        )
     }
 }
 
@@ -42,6 +54,9 @@ public actor SystemAudioSourceDiscovery: SystemAudioSourceDiscovering {
         return Self.resilientlyResolve(try system.processes) { process in
             let processID = try process.pid
             guard processID > 0, processID != ownProcessID else { return nil }
+            guard let processStartToken = SystemProcessStartToken.value(for: processID) else {
+                return nil
+            }
 
             let bundleID = try process.bundleID
             let application = NSRunningApplication(processIdentifier: processID)
@@ -53,6 +68,8 @@ public actor SystemAudioSourceDiscovery: SystemAudioSourceDiscovering {
             return SystemAudioSource(
                 processID: processID,
                 bundleID: bundleID,
+                processStartToken: processStartToken,
+                audioObjectID: process.id,
                 name: name,
                 isLikelyMeetingSource: Self.isLikelyMeetingSource(
                     name: name,
@@ -117,5 +134,23 @@ public actor SystemAudioSourceDiscovery: SystemAudioSourceDiscovering {
         }
         if let bundleID, !bundleID.isEmpty { return bundleID }
         return "Audio process \(processID)"
+    }
+}
+
+enum SystemProcessStartToken {
+    static func value(for processID: Int32) -> String? {
+        var info = proc_bsdinfo()
+        let expectedSize = MemoryLayout<proc_bsdinfo>.stride
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            proc_pidinfo(
+                processID,
+                PROC_PIDTBSDINFO,
+                0,
+                pointer,
+                Int32(expectedSize)
+            )
+        }
+        guard result == Int32(expectedSize) else { return nil }
+        return "\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)"
     }
 }

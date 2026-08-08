@@ -311,7 +311,7 @@ public protocol AudioCapturing: Sendable {
     var lane: AudioLane { get }
     func events() async -> AsyncStream<AudioCaptureEvent>
     func start() async throws
-    func stop() async
+    func stop() async throws
 }
 
 public enum AudioPermissionStatus: String, Codable, Sendable {

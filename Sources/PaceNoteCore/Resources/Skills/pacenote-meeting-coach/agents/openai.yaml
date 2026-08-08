@@ -1,6 +1,6 @@
 interface:
   display_name: "PaceNote Meeting Coach"
-  short_description: "Turn verified code facts into natural replies"
-  default_prompt: "Use $pacenote-meeting-coach to draft a concise, evidence-backed sentence I can say in a technical meeting."
+  short_description: "Turn meeting questions into natural replies"
+  default_prompt: "Use $pacenote-meeting-coach to draft a concise sentence I can say, using sealed evidence when it is attached."
 policy:
   allow_implicit_invocation: false

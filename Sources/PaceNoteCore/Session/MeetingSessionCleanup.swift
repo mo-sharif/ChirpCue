@@ -1,6 +1,7 @@
 import Foundation
 
 public enum MeetingSessionCleanupFailure: String, Codable, CaseIterable, Sendable {
+    case audioCaptureTeardown
     case responseCleanup
     case snapshotDeletion
     case temporaryRootDeletion
@@ -34,6 +35,7 @@ public struct MeetingSessionStopReport: Equatable, Sendable {
     public let residualFindingCount: Int
     public let journalEntryRemoved: Bool
     public let failures: [MeetingSessionCleanupFailure]
+    public let audioTeardownFailureLane: AudioLane?
 
     public init(
         deletedThreadCount: Int,
@@ -41,7 +43,8 @@ public struct MeetingSessionStopReport: Equatable, Sendable {
         deletedTemporaryRootCount: Int,
         residualFindingCount: Int,
         journalEntryRemoved: Bool,
-        failures: [MeetingSessionCleanupFailure]
+        failures: [MeetingSessionCleanupFailure],
+        audioTeardownFailureLane: AudioLane? = nil
     ) {
         self.deletedThreadCount = deletedThreadCount
         self.deletedSnapshotCount = deletedSnapshotCount
@@ -49,6 +52,7 @@ public struct MeetingSessionStopReport: Equatable, Sendable {
         self.residualFindingCount = residualFindingCount
         self.journalEntryRemoved = journalEntryRemoved
         self.failures = failures
+        self.audioTeardownFailureLane = audioTeardownFailureLane
     }
 
     public var cleanupSucceeded: Bool {

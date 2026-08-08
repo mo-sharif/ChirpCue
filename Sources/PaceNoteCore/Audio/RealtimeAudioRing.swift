@@ -1,4 +1,5 @@
 import CoreAudio
+import Darwin
 import Foundation
 import Synchronization
 
@@ -40,6 +41,8 @@ final class RealtimeAudioRing: @unchecked Sendable {
     private let oversizedCount = Atomic<UInt64>(0)
     private let invalidTimestampCount = Atomic<UInt64>(0)
     private let latestCallbackTicks = Atomic<UInt64>(0)
+    private let acceptsWrites = Atomic<Bool>(true)
+    private let writerIsActive = Atomic<Bool>(false)
 
     init(
         lane: AudioLane,
@@ -103,6 +106,11 @@ final class RealtimeAudioRing: @unchecked Sendable {
         frameCount: UInt32,
         hostTime: HostTimestamp
     ) -> Bool {
+        guard acceptsWrites.load(ordering: .acquiring) else { return false }
+        writerIsActive.store(true, ordering: .releasing)
+        defer { writerIsActive.store(false, ordering: .releasing) }
+        guard acceptsWrites.load(ordering: .acquiring) else { return false }
+
         latestCallbackTicks.store(hostTime.ticks, ordering: .relaxed)
 
         let buffers = UnsafeMutableAudioBufferListPointer(
@@ -215,6 +223,16 @@ final class RealtimeAudioRing: @unchecked Sendable {
         invalidTimestampCount.store(0, ordering: .releasing)
         latestCallbackTicks.store(0, ordering: .releasing)
         scrubStorage()
+    }
+
+    /// Permanently closes this ring to the realtime writer, waits for the one
+    /// bounded in-flight copy to leave, and then overwrites all sensitive bytes.
+    func sealAndClear() {
+        acceptsWrites.store(false, ordering: .releasing)
+        while writerIsActive.load(ordering: .acquiring) {
+            sched_yield()
+        }
+        clear()
     }
 
     private func scrubStorage() {

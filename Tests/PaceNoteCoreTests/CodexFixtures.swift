@@ -153,7 +153,7 @@ enum CodexFixtures {
         {
           "method":"item/commandExecution/requestApproval",
           "id":77,
-          "params":{"threadId":"fork-thread","turnId":"turn-1","reason":"/Users/private/repository"}
+          "params":{"threadId":"fork-thread","turnId":"turn-1","itemId":"command-item","reason":"/Users/private/repository"}
         }
         """#
 

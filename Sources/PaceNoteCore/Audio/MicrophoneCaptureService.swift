@@ -4,10 +4,19 @@ import Foundation
 public actor MicrophoneCaptureService: AudioCapturing {
     public nonisolated let lane: AudioLane = .microphone
 
+    private enum Lifecycle: Equatable {
+        case idle
+        case starting(UUID)
+        case running
+        case stopping(UUID)
+    }
+
     private let permissionProvider: any MicrophonePermissionProviding
     private let configuration: AudioCaptureConfiguration
     private let history: BoundedAudioBuffer
+    private let teardownSuspension: (@Sendable () async -> Void)?
 
+    private var lifecycle: Lifecycle = .idle
     private var eventBuffer: DiscardingAsyncStreamBuffer<AudioCaptureEvent>?
     private var engine: AVAudioEngine?
     private var ring: RealtimeAudioRing?
@@ -17,6 +26,7 @@ public actor MicrophoneCaptureService: AudioCapturing {
     private var routeObserver: (any NSObjectProtocol)?
     private var missingCallbackReported = false
     private var startedAt: HostTimestamp?
+    private var teardownWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         permissionProvider: any MicrophonePermissionProviding = SystemMicrophonePermissionProvider(),
@@ -25,9 +35,22 @@ public actor MicrophoneCaptureService: AudioCapturing {
         self.permissionProvider = permissionProvider
         self.configuration = configuration
         self.history = BoundedAudioBuffer(limits: configuration.historyLimits)
+        self.teardownSuspension = nil
     }
 
-    public func events() -> AsyncStream<AudioCaptureEvent> {
+    init(
+        permissionProvider: any MicrophonePermissionProviding,
+        configuration: AudioCaptureConfiguration = .init(),
+        teardownSuspension: @escaping @Sendable () async -> Void
+    ) {
+        self.permissionProvider = permissionProvider
+        self.configuration = configuration
+        self.history = BoundedAudioBuffer(limits: configuration.historyLimits)
+        self.teardownSuspension = teardownSuspension
+    }
+
+    public func events() async -> AsyncStream<AudioCaptureEvent> {
+        await waitForTeardownCompletion()
         eventBuffer?.finish()
         let buffer = DiscardingAsyncStreamBuffer<AudioCaptureEvent>(
             maximumCount: 64,
@@ -39,61 +62,80 @@ public actor MicrophoneCaptureService: AudioCapturing {
     }
 
     public func start() async throws {
-        guard engine == nil else { throw AudioCaptureError.alreadyRunning(.microphone) }
-
-        switch await permissionProvider.status() {
-        case .notDetermined:
-            throw AudioCaptureError.permissionRequired
-        case .denied:
-            throw AudioCaptureError.permissionDenied
-        case .granted:
-            break
+        await waitForTeardownCompletion()
+        guard lifecycle == .idle, engine == nil else {
+            throw AudioCaptureError.alreadyRunning(.microphone)
         }
 
-        let newEngine = AVAudioEngine()
-        let input = newEngine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        let formatDescription = AudioFormatDescription(format)
-        guard formatDescription.isUsablePCM else {
-            throw AudioCaptureError.invalidFormat(.microphone)
-        }
-
-        let newRing = RealtimeAudioRing(lane: .microphone, format: formatDescription)
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, time in
-            guard let hostTime = HostTimestamp(audioTime: time) else {
-                newRing.noteInvalidTimestamp()
-                return
-            }
-            _ = newRing.write(
-                buffer.audioBufferList,
-                frameCount: buffer.frameLength,
-                hostTime: hostTime
-            )
-        }
+        let attempt = UUID()
+        lifecycle = .starting(attempt)
 
         do {
-            newEngine.prepare()
-            try newEngine.start()
+            let permissionStatus = await permissionProvider.status()
+            guard lifecycle == .starting(attempt) else {
+                throw AudioCaptureError.sourceUnavailable
+            }
+            switch permissionStatus {
+            case .notDetermined:
+                throw AudioCaptureError.permissionRequired
+            case .denied:
+                throw AudioCaptureError.permissionDenied
+            case .granted:
+                break
+            }
+
+            let newEngine = AVAudioEngine()
+            let input = newEngine.inputNode
+            let format = input.outputFormat(forBus: 0)
+            let formatDescription = AudioFormatDescription(format)
+            guard formatDescription.isUsablePCM else {
+                throw AudioCaptureError.invalidFormat(.microphone)
+            }
+
+            let newRing = RealtimeAudioRing(lane: .microphone, format: formatDescription)
+            input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, time in
+                guard let hostTime = HostTimestamp(audioTime: time) else {
+                    newRing.noteInvalidTimestamp()
+                    return
+                }
+                _ = newRing.write(
+                    buffer.audioBufferList,
+                    frameCount: buffer.frameLength,
+                    hostTime: hostTime
+                )
+            }
+
+            do {
+                newEngine.prepare()
+                try newEngine.start()
+            } catch {
+                input.removeTap(onBus: 0)
+                newRing.sealAndClear()
+                throw error
+            }
+
+            let newDescriptor = AudioRouteDescriptor(
+                lane: .microphone,
+                scope: .defaultMicrophone,
+                format: formatDescription
+            )
+            engine = newEngine
+            ring = newRing
+            descriptor = newDescriptor
+            startedAt = .now
+            missingCallbackReported = false
+            lifecycle = .running
+
+            installRouteObserver(for: newEngine)
+            beginDrain(for: newRing)
+            beginWatchdog(for: newRing)
+            yield(.started(newDescriptor))
         } catch {
-            input.removeTap(onBus: 0)
+            if lifecycle == .starting(attempt) {
+                lifecycle = .idle
+            }
             throw error
         }
-
-        let newDescriptor = AudioRouteDescriptor(
-            lane: .microphone,
-            scope: .defaultMicrophone,
-            format: formatDescription
-        )
-        engine = newEngine
-        ring = newRing
-        descriptor = newDescriptor
-        startedAt = .now
-        missingCallbackReported = false
-
-        installRouteObserver(for: newEngine)
-        beginDrain(for: newRing)
-        beginWatchdog(for: newRing)
-        yield(.started(newDescriptor))
     }
 
     public func stop() async {
@@ -109,35 +151,68 @@ public actor MicrophoneCaptureService: AudioCapturing {
     }
 
     private func stop(emitStoppedEvent: Bool) async {
-        let drainTask = self.drainTask
-        let watchdogTask = self.watchdogTask
-        drainTask?.cancel()
-        watchdogTask?.cancel()
+        if case .stopping = lifecycle {
+            await waitForTeardownCompletion()
+            return
+        }
+
+        let teardown = UUID()
+        lifecycle = .stopping(teardown)
+
+        let stoppedDrainTask = drainTask
+        let stoppedWatchdogTask = watchdogTask
+        stoppedDrainTask?.cancel()
+        stoppedWatchdogTask?.cancel()
         self.drainTask = nil
         self.watchdogTask = nil
 
-        if let routeObserver {
-            NotificationCenter.default.removeObserver(routeObserver)
-            self.routeObserver = nil
+        let stoppedRouteObserver = routeObserver
+        routeObserver = nil
+        if let stoppedRouteObserver {
+            NotificationCenter.default.removeObserver(stoppedRouteObserver)
         }
 
-        if let engine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
+        let stoppedEngine = engine
         engine = nil
-        await drainTask?.value
-        await watchdogTask?.value
-        ring?.clear()
+        if let stoppedEngine {
+            stoppedEngine.inputNode.removeTap(onBus: 0)
+            stoppedEngine.stop()
+        }
+
+        let stoppedRing = ring
         ring = nil
+        stoppedRing?.sealAndClear()
         descriptor = nil
         startedAt = nil
         missingCallbackReported = false
-        await history.clear()
 
-        let terminalEvent: AudioCaptureEvent? = emitStoppedEvent ? .stopped(.microphone) : nil
-        eventBuffer?.finish(delivering: terminalEvent)
+        let stoppedEventBuffer = eventBuffer
         eventBuffer = nil
+        stoppedEventBuffer?.discardQueued()
+
+        await stoppedDrainTask?.value
+        await stoppedWatchdogTask?.value
+        if let teardownSuspension { await teardownSuspension() }
+        await history.clear()
+        let terminalEvent: AudioCaptureEvent? = emitStoppedEvent ? .stopped(.microphone) : nil
+        stoppedEventBuffer?.finish(delivering: terminalEvent)
+
+        guard lifecycle == .stopping(teardown) else { return }
+        lifecycle = .idle
+        let waiters = teardownWaiters
+        teardownWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func waitForTeardownCompletion() async {
+        guard case .stopping = lifecycle else { return }
+        await withCheckedContinuation { continuation in
+            if case .stopping = lifecycle {
+                teardownWaiters.append(continuation)
+            } else {
+                continuation.resume()
+            }
+        }
     }
 
     private func installRouteObserver(for engine: AVAudioEngine) {

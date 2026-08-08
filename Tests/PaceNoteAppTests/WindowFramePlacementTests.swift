@@ -4,6 +4,25 @@ import XCTest
 @testable import PaceNoteApp
 
 final class WindowFramePlacementTests: XCTestCase {
+    @MainActor
+    func testCoachingWindowIsShareProtectedAndAvailableAcrossSpaces() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.sharingType = .readOnly
+        window.hidesOnDeactivate = true
+
+        CoachingWindowBehavior.apply(to: window)
+
+        XCTAssertEqual(window.sharingType, .none)
+        XCTAssertFalse(window.hidesOnDeactivate)
+        XCTAssertTrue(window.collectionBehavior.contains(.canJoinAllSpaces))
+        XCTAssertTrue(window.collectionBehavior.contains(.fullScreenAuxiliary))
+    }
+
     func testClampsRestoredFrameFullyInsideVisibleScreen() {
         let visibleFrame = NSRect(x: 0, y: 0, width: 1_920, height: 1_050)
         let restoredFrame = NSRect(x: 1_216, y: -108, width: 980, height: 720)

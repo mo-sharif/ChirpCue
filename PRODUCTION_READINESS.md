@@ -5,11 +5,11 @@ This is the completion contract for the personal production build. A checked ite
 ## Build and code health
 
 - [x] SwiftPM project targets macOS 26 with Swift 6 strict concurrency.
-- [x] Automated non-live Swift tests pass locally; opt-in subscription generation remains excluded.
-- [x] Debug and release builds complete with the Xcode 26 toolchain.
-- [x] Deterministic `.app` assembly, plist validation, ad hoc hardened-runtime signing, and code-signature verification run locally.
-- [x] A clean-checkout test, lint, release build, package, and verification sequence passes.
-- [x] Debug and release builds are confirmed warning-free from a clean checkout.
+- [x] Automated non-live Swift tests pass locally after the final release-hardening changes; opt-in subscription generation remains excluded.
+- [x] Debug and release builds complete after the final release-hardening changes with the Xcode 26 toolchain.
+- [x] Deterministic `.app` assembly, plist validation, ad hoc hardened-runtime signing, and code-signature verification pass after the final release-hardening changes.
+- [ ] A clean-checkout test, lint, release build, package, and verification sequence passes at the final committed revision.
+- [ ] Debug and release builds are confirmed warning-free from a clean checkout at the final committed revision.
 
 ## Codex subscription path
 
@@ -21,7 +21,7 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Deep model routing is capability-discovered rather than assuming permanent model availability.
 - [ ] One-time ChatGPT sign-in is completed in the dedicated PaceNote profile on the target Mac.
 - [ ] A zero-generation preflight proves the dedicated profile's account, model, permission, skill, thread create/delete, cleanup, and no-`auth.json` behavior.
-- [ ] A bounded real Deep generation passes on the target subscription, including strict schema, evidence, latency capture, thread deletion, profile sanitization, and canary audit.
+- [ ] Bounded real general and repository-grounded Deep generations pass on the target subscription, including strict schemas, visible trust labeling, evidence where required, latency capture, thread deletion, profile sanitization, and canary audit.
 - [ ] The Deep model route meets measured latency and quality targets on the target account.
 - [ ] A newer or unknown app-server version is accepted only after the compatibility suite passes.
 
@@ -29,6 +29,8 @@ This is the completion contract for the personal production build. A checked ite
 
 - [x] Core Audio process taps, AVAudioEngine, SpeechAnalyzer, and SpeechTranscriber compile against the target SDK.
 - [x] Raw-audio history is capped at 5 seconds and 8 MiB per lane; eviction, overflow, stop, and clear paths have automated zeroization coverage.
+- [x] Core Audio teardown is staged, retryable, and idempotent; failed setup and Stop retain exact handle ownership, seal realtime writers, scrub queued and historical buffers, preserve the failed lane, and block every meeting action except retrying Stop.
+- [x] The system-audio permission probe retains and retries a tap whose destruction fails instead of silently dropping its handle.
 - [x] The current locale's speech-asset requirement is checked before capture.
 - [ ] Microphone and selected-process output capture work in the packaged app after TCC approval.
 - [ ] Global-output fallback excludes PaceNote output.
@@ -41,7 +43,8 @@ This is the completion contract for the personal production build. A checked ite
 
 - [x] Every eligible production turn immediately shows the exact deterministic local bridge, keeps it immutable, and starts automatic Deep without invoking a classifier, model Quick, model reconciliation, or a model-controlled `needsDeep` value.
 - [x] Cue-bound Deep results, word budgets, TTL, stale-generation cancellation, and proof that lower-level Quick and reconciliation stubs are not invoked by the production coordinator have automated coverage.
-- [x] A Deep answer candidate must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation; each claim must contain at least two informative terms and copy one complete freshly verified source line, apart from a leading comment or list marker. Appended, combined, paraphrased, punctuation-changed, and negation-changed candidates fail closed.
+- [x] Repository-free Deep uses a distinct `general_answer` kind from an empty private context, requires a null grounding fingerprint and empty basis, rejects repository-answer kinds and explicit local codebase or production-state claims, and reaches the UI with an explicit unverified-guidance label.
+- [x] A repository Deep answer candidate must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation; each claim must contain at least two informative terms and copy one complete freshly verified source line, apart from a leading comment or list marker. Appended, combined, paraphrased, punctuation-changed, and negation-changed candidates fail closed.
 - [x] Strict Deep and evidence schemas reject unknown or malformed fields. Lower-level Quick and reconciliation schema fixtures remain compatibility tests, not production response paths.
 - [x] Deep completion, evidence rejection, rate-governor, turn-detector, gap, pause, route-loss, transcriber-failure, and user-interruption paths have fixture or controller coverage.
 - [ ] A live meeting proves the bridge appears before the user replies and a later Deep continuation or clarification remains natural to speak.
@@ -63,6 +66,8 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Product privacy and security contracts document ChatGPT processing, consent, retention limits, and failure boundaries.
 - [x] Transcript-bearing model work is designed as ephemeral forks; base threads are transcript-free and journaled for deletion.
 - [x] Automated cleanup tests cover journal recovery, expected-cwd lookup, thread deletion, snapshot and private-root deletion, stable-profile sanitization, residual scanning, and fail-closed reports.
+- [x] The dedicated stable Codex profile has an exclusive cross-process lease outside the sanitizer root; runtime and opt-in profile probes reject concurrent ownership.
+- [x] Packaged signed-out preflight followed by graceful Quit removes all transient stable-profile databases, while unit coverage preserves them whenever an active, pending, or journal recovery owner remains.
 - [x] The canonical dedicated-profile configuration disables history persistence, analytics, memories, agents, apps, hooks, browser, and computer-use surfaces.
 - [x] First-run and per-meeting consent UI is manually reviewed in the packaged app; every consent control exposes a nonempty label, checkbox value, enabled state, stable identifier, and press action without activating consent during review.
 - [ ] Pause, Stop, crash, relaunch janitor, logout, and Sign Out and Forget Profile pass in the packaged app with the real dedicated profile.
@@ -74,6 +79,7 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Restored window frames are clamped into the visible display; focused placement tests and a packaged-app bad-frame relaunch prove the main window remains fully reachable.
 - [x] Packaged first-run, meeting setup, main controls, settings tabs, and menu-bar controls expose named native accessibility roles, enabled states, values where applicable, and press actions. AppKit accessibility proxies cover the macOS 26 SwiftUI control-label regression.
 - [x] The packaged coaching window opts out of macOS window capture; capture-by-window-ID fails after packaging. The user must still verify the meeting application's sharing preview.
+- [x] The coaching window is configured to join every Space, remain available beside full-screen apps, stay visible when another app activates, and retain window-capture protection.
 - [ ] Setup, transcript, bridge, Deep, degraded, paused, and ended states render correctly in the packaged app.
 - [ ] The capture indicator remains visible during listening, bridge, Deep, suggesting, and brownout states.
 - [ ] Keyboard navigation, VoiceOver labels, text scaling, contrast, reduced motion, and screen-share-safe behavior pass manual review.
@@ -83,8 +89,8 @@ This is the completion contract for the personal production build. A checked ite
 ## Distribution and ownership
 
 - [x] Private GitHub repository exists at `mo-sharif/PaceNote`.
-- [x] Current source, tests, documentation, and CI are committed and pushed to `main`.
-- [x] Private-repository CI passes from a clean checkout.
+- [ ] Current source, tests, and documentation are committed and pushed to `main`.
+- [ ] Private-repository CI passes for the final pushed revision from a clean checkout.
 - [x] The local ad hoc build opens on the target Mac and its expected Gatekeeper behavior is documented.
 - [ ] Developer ID and notarization credentials are configured if distribution beyond this Mac is desired.
 - [ ] A Developer ID signed, notarized, stapled release and checksum are attached to a private GitHub release if distribution beyond this Mac is desired.

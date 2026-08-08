@@ -34,7 +34,12 @@ public struct CodexServerNotification: Equatable, Sendable {
 
 public enum CodexTransportEvent: Equatable, Sendable {
     case notification(CodexServerNotification)
-    case rejectedServerRequest(method: String)
+    case rejectedServerRequest(
+        method: String,
+        threadID: String?,
+        turnID: String?,
+        itemID: String?
+    )
     case disconnected
 }
 
@@ -58,12 +63,18 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
     case notInitialized
     case alreadyInitialized
     case unsupportedPlatform
+    case profileMismatch
     case missingCapability(String)
     case permissionProfileUnavailable(String)
     case permissionProfileMismatch
     case threadInvariantFailed
     case turnAlreadyStarting
-    case serverRequestRejected(method: String)
+    case serverRequestRejected(
+        method: String,
+        threadID: String?,
+        turnID: String?,
+        itemID: String?
+    )
 
     public var errorDescription: String? {
         switch self {
@@ -89,6 +100,8 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
             "The Codex client is already initialized."
         case .unsupportedPlatform:
             "This Codex app-server target is not macOS."
+        case .profileMismatch:
+            "Codex did not activate the dedicated PaceNote profile."
         case .missingCapability(let capability):
             "The installed Codex binary is missing \(CodexSafeLabel.capability(capability))."
         case .permissionProfileUnavailable(let profile):
@@ -99,7 +112,7 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
             "Codex returned a thread that failed local safety checks."
         case .turnAlreadyStarting:
             "A Codex turn is already starting for this thread."
-        case .serverRequestRejected(let method):
+        case .serverRequestRejected(let method, _, _, _):
             "PaceNote rejected an unexpected Codex server request: \(CodexSafeLabel.method(method))."
         }
     }

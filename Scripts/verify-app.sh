@@ -18,6 +18,8 @@ microphone_reason=$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescript
 audio_reason=$(/usr/libexec/PlistBuddy -c 'Print :NSAudioCaptureUsageDescription' "$plist")
 speech_reason=$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$plist")
 icon_file=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")
+bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")
+expected_version=$(tr -d '[:space:]' < "$project_root/VERSION")
 
 test "$bundle_id" = "com.mosharif.pacenote"
 test "$minimum_os" = "26.0"
@@ -25,14 +27,16 @@ test -n "$microphone_reason"
 test -n "$audio_reason"
 test -n "$speech_reason"
 test "$icon_file" = "AppIcon"
+test -n "$expected_version"
+test "$bundle_version" = "$expected_version"
 test -f "$app_bundle/Contents/Resources/AppIcon.icns"
 test -f "$skill_root/SKILL.md"
 test -f "$skill_root/agents/openai.yaml"
 
 skill_hash=$(shasum -a 256 "$skill_root/SKILL.md" | awk '{print $1}')
 metadata_hash=$(shasum -a 256 "$skill_root/agents/openai.yaml" | awk '{print $1}')
-test "$skill_hash" = "79d00fac8c5c01f1c0e9216e7864355a88a2e6db4b970e98ce4f041935db3269"
-test "$metadata_hash" = "42d8729a9b32fa85b97845efbfa1dc6e5359780bec5161680b858b7fdeada4aa"
+test "$skill_hash" = "bd28c282bcc2021b1495d23c16e377557b13a5699005c7df47f15308f88d5db6"
+test "$metadata_hash" = "0cb4fd04ec760d0aa274ac3b499826bd8a4d4782a02674b94b49912815552b4c"
 
 codesign --verify --strict --verbose=2 "$app_bundle"
 codesign -d --entitlements - "$app_bundle" 2>&1 \

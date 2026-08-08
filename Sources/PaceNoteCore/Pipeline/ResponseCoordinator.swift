@@ -22,7 +22,7 @@ public struct ResponseCoordinatorConfiguration: Sendable {
     public init(
         quickDeadline: Duration = .seconds(2),
         resultTTL: Duration = .seconds(20),
-        bridgeText: String = "Let me verify the exact implementation before I answer that."
+        bridgeText: String = "Let me think through that carefully for a second."
     ) {
         self.quickDeadline = quickDeadline
         self.resultTTL = resultTTL
@@ -151,6 +151,7 @@ public actor ResponseCoordinator {
                     cueHash: cue.textHash,
                     deepDraftHash: try BoundDeep.draftHash(draft),
                     groundingFingerprint: draft.groundingFingerprint,
+                    kind: draft.kind,
                     relationship: reconciliation.relationship,
                     transition: Self.limitWords(reconciliation.transition, maximum: 7),
                     sayNext: Self.safeSayNext(for: draft),
@@ -201,6 +202,8 @@ public actor ResponseCoordinator {
             switch draft.kind {
             case .answer:
                 return Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+            case .generalAnswer:
+                return Reconciliation(relationship: .continueAnswer, transition: "Broadly speaking,")
             case .clarification:
                 return Reconciliation(relationship: .clarify, transition: "The detail I need is:")
             case .abstention:
@@ -285,8 +288,16 @@ public actor ResponseCoordinator {
             return false
         }
 
-        if draft.kind == .answer, turn.groundingFingerprint != nil {
-            return !draft.basis.isEmpty
+        let isGrounded = turn.repoAlias != nil || turn.groundingFingerprint != nil
+        guard (turn.repoAlias != nil) == (turn.groundingFingerprint != nil) else { return false }
+        if isGrounded {
+            guard draft.kind != .generalAnswer else { return false }
+            if draft.kind == .answer { return !draft.basis.isEmpty }
+            return draft.basis.isEmpty
+        }
+        guard draft.kind != .answer, draft.basis.isEmpty else { return false }
+        if draft.kind == .generalAnswer {
+            return GeneralGuidancePolicy.accepts(draft.candidateSayNext)
         }
         return true
     }
@@ -299,10 +310,16 @@ public actor ResponseCoordinator {
         switch draft.kind {
         case .answer:
             limitWords(draft.candidateSayNext, maximum: 33)
+        case .generalAnswer:
+            limitWords(draft.candidateSayNext, maximum: 33)
         case .clarification:
-            "I need one more detail before I can verify that."
+            draft.groundingFingerprint == nil
+                ? "Could you clarify which system or constraint you mean?"
+                : "I need one more detail before I can verify that."
         case .abstention:
-            "I cannot verify that from the available repository evidence."
+            draft.groundingFingerprint == nil
+                ? "I do not have enough context to answer that safely."
+                : "I cannot verify that from the available repository evidence."
         }
     }
 

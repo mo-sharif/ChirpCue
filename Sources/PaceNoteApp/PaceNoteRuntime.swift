@@ -4,6 +4,17 @@ import Foundation
 import PaceNoteCore
 
 actor PaceNoteRuntime {
+    private enum Lifecycle: Sendable {
+        case open
+        case closing
+        case closed
+    }
+
+    private struct StartOperation: Sendable {
+        let attemptID: UUID
+        let task: Task<Void, any Error>
+    }
+
     private struct RepositoryInspectionContext: Sendable {
         let selectedURL: URL
         let inspection: GroundingInspection
@@ -33,28 +44,48 @@ actor PaceNoteRuntime {
     private let applicationRoot: URL
     private let meetingsRoot: URL
     private let codexProfileRoot: URL
+    private let codexProfileLease: CodexProfileLease
     private let journal: CleanupJournalStore
     private let codexExecutableURL: URL
     private let microphonePermission = SystemMicrophonePermissionProvider()
     private let systemAudioPermission = SystemAudioPermissionProbe()
     private let sourceDiscovery = SystemAudioSourceDiscovery()
+    private let preverifiedSubscription: VerifiedMeetingSubscription?
+    private let startSuspensionBarrier: (@Sendable () async -> Void)?
 
     private var outputSourcesByID: [String: SystemAudioSource] = [:]
     private var repositoryInspection: RepositoryInspectionContext?
     private var pendingMeeting: PendingMeetingContext?
+    private var pendingMeetingCleanupBlocked = false
     private var activeMeeting: ActiveMeetingContext?
     private var eventContinuations: [UUID: AsyncStream<MeetingSessionEvent>.Continuation] = [:]
     private var startupCleanupAttempted = false
     private var startupCleanupHealthy = false
+    private var lifecycle = Lifecycle.open
+    private var startOperation: StartOperation?
+    private var shutdownTask: Task<Bool, Never>?
 
-    init(fileManager: FileManager = .default) throws {
+    init(
+        fileManager: FileManager = .default,
+        applicationSupportRoot: URL? = nil,
+        preverifiedSubscription: (planType: String?, identityHash: String)? = nil,
+        startSuspensionBarrier: (@Sendable () async -> Void)? = nil
+    ) throws {
         self.fileManager = fileManager
-        guard
-            let supportRoot = fileManager.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            ).first
-        else {
+        self.startSuspensionBarrier = startSuspensionBarrier
+        self.preverifiedSubscription = preverifiedSubscription.map {
+            VerifiedMeetingSubscription(planType: $0.planType, identityHash: $0.identityHash)
+        }
+
+        let supportRoot: URL
+        if let applicationSupportRoot {
+            supportRoot = applicationSupportRoot.standardizedFileURL
+        } else if let defaultSupportRoot = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first {
+            supportRoot = defaultSupportRoot
+        } else {
             throw PaceNoteActionError.safeMessage("PaceNote could not open its private application data directory.")
         }
 
@@ -74,6 +105,16 @@ actor PaceNoteRuntime {
         self.applicationRoot = applicationRoot
         self.meetingsRoot = meetingsRoot
         self.codexProfileRoot = codexProfileRoot
+        do {
+            self.codexProfileLease = try CodexProfileLease.acquire(
+                profileRoot: codexProfileRoot
+            )
+        } catch let error as CodexProfileLeaseError {
+            throw PaceNoteActionError.safeMessage(
+                error.errorDescription
+                    ?? "PaceNote could not acquire its dedicated Codex profile."
+            )
+        }
         self.journal = try CleanupJournalStore(
             journalURL: stateRoot.appendingPathComponent("cleanup-journal.json"),
             allowedRoot: applicationRoot
@@ -356,20 +397,68 @@ actor PaceNoteRuntime {
     }
 
     func startMeeting(_ request: MeetingStartRequest) async throws {
+        guard lifecycle == .open else {
+            throw PaceNoteActionError.safeMessage(
+                "PaceNote is shutting down. Reopen it before starting another meeting."
+            )
+        }
+        guard startOperation == nil else {
+            throw PaceNoteActionError.safeMessage("A meeting start is already in progress.")
+        }
         guard activeMeeting == nil else {
             throw PaceNoteActionError.safeMessage("A meeting is already active.")
+        }
+        guard !pendingMeetingCleanupBlocked else {
+            throw PaceNoteActionError.safeMessage(
+                "Private meeting cleanup is incomplete. Quit and reopen PaceNote before starting another meeting."
+            )
         }
         guard request.consentConfirmed else {
             throw PaceNoteActionError.safeMessage(
                 "Confirm participant permission, capture scope, and OpenAI processing before capture starts."
             )
         }
-        guard await ensureStartupCleanup() else {
+        guard request.microphoneEnabled || request.outputEnabled else {
+            throw PaceNoteActionError.safeMessage(
+                "Enable the microphone or meeting output before starting a meeting."
+            )
+        }
+
+        let attemptID = UUID()
+        let task = Task {
+            try await self.performStartMeeting(request, attemptID: attemptID)
+        }
+        startOperation = StartOperation(attemptID: attemptID, task: task)
+        let result = await withTaskCancellationHandler {
+            await task.result
+        } onCancel: {
+            task.cancel()
+        }
+        if startOperation?.attemptID == attemptID {
+            startOperation = nil
+        }
+        return try result.get()
+    }
+
+    private func performStartMeeting(
+        _ request: MeetingStartRequest,
+        attemptID: UUID
+    ) async throws {
+        try requireCurrentStart(attemptID)
+        if let startSuspensionBarrier {
+            await startSuspensionBarrier()
+            try requireCurrentStart(attemptID)
+        }
+
+        let cleanupIsHealthy = await ensureStartupCleanup()
+        try requireCurrentStart(attemptID)
+        guard cleanupIsHealthy else {
             throw PaceNoteActionError.safeMessage(
                 "PaceNote must finish cleanup from an earlier session before capture can start."
             )
         }
         let verifiedSubscription = try await verifiedMeetingSubscription()
+        try requireCurrentStart(attemptID)
 
         let context: PendingMeetingContext
         if let snapshotID = request.sealedSnapshotID {
@@ -378,9 +467,19 @@ actor PaceNoteRuntime {
             }
             context = pendingMeeting
         } else {
-            if let pendingMeeting { try await discardPendingMeeting(pendingMeeting) }
+            if let pendingMeeting {
+                try await discardPendingMeeting(pendingMeeting)
+                try requireCurrentStart(attemptID)
+            }
             let meetingID = UUID()
             let privateRoot = try createMeetingRoot(meetingID: meetingID)
+            let newContext = PendingMeetingContext(
+                meetingID: meetingID,
+                privateRoot: privateRoot,
+                groundingManager: nil,
+                snapshot: nil
+            )
+            pendingMeeting = newContext
             do {
                 try await journal.begin(
                     CleanupJournalEntry(
@@ -390,102 +489,136 @@ actor PaceNoteRuntime {
                     )
                 )
             } catch {
-                try? fileManager.removeItem(at: privateRoot)
+                do {
+                    try await discardPendingMeeting(newContext)
+                } catch let cleanupError {
+                    pendingMeeting = newContext
+                    pendingMeetingCleanupBlocked = true
+                    startupCleanupHealthy = false
+                    throw cleanupError
+                }
                 throw PaceNoteActionError.safeMessage(
                     "PaceNote could not create its private cleanup journal."
                 )
             }
-            context = PendingMeetingContext(
-                meetingID: meetingID,
-                privateRoot: privateRoot,
-                groundingManager: nil,
-                snapshot: nil
-            )
-        }
-        pendingMeeting = nil
-
-        let captureMode = Self.captureMode(for: request)
-        let speechAssets = AppleSpeechAssetManager()
-        let audioServices = try makeAudioServices(
-            request: request,
-            captureMode: captureMode,
-            speechAssets: speechAssets
-        )
-        let groundingIdentity = context.snapshot.map {
-            MeetingGroundingIdentity(
-                repoAlias: $0.repoAlias,
-                fingerprint: $0.groundingFingerprint
-            )
-        }
-        let availableDomainSkillNames = Set(try Self.domainSkills(in: context.snapshot).map(\.name))
-        if let selected = request.selectedDomainSkillName,
-            !availableDomainSkillNames.contains(selected)
-        {
-            throw PaceNoteActionError.safeMessage(
-                "The selected repository skill is not present in the sealed snapshot."
-            )
-        }
-        let responseGenerator = CodexMeetingResponseGenerator(
-            configuration: MeetingResponseConfiguration(
-                meetingID: context.meetingID,
-                meetingPrivateRoot: context.privateRoot,
-                codexProfileRoot: codexProfileRoot,
-                executableURL: codexExecutableURL,
-                clientVersion: Self.applicationVersion,
-                subscriptionPlanType: verifiedSubscription.planType,
-                expectedAccountIdentityHash: verifiedSubscription.identityHash,
-                speakingStyle: Self.speakingStyle,
-                groundingSnapshot: context.snapshot,
-                selectedDomainSkillName: request.selectedDomainSkillName,
-                deepComplexity: .hardTechnical
-            ),
-            journal: journal
-        )
-        let cleaner = DefaultMeetingSessionResourceCleaner(
-            privateRoot: context.privateRoot,
-            temporaryRoots: [
-                context.privateRoot.appendingPathComponent("Grounding", isDirectory: true),
-                context.privateRoot.appendingPathComponent("quick-context", isDirectory: true),
-                context.privateRoot.appendingPathComponent("codex-tmp", isDirectory: true),
-                context.privateRoot.appendingPathComponent("skill-context", isDirectory: true),
-            ],
-            groundingManager: context.groundingManager,
-            groundingSnapshot: context.snapshot,
-            journal: journal,
-            applicationRoot: applicationRoot,
-            stableCodexProfileRoot: codexProfileRoot
-        )
-        let controller = MeetingSessionController(
-            configuration: MeetingSessionConfiguration(
-                meetingID: context.meetingID,
-                captureMode: captureMode,
-                grounding: groundingIdentity,
-                microphoneAttributionDelay: .milliseconds(800)
-            ),
-            audioServices: audioServices,
-            speechAssets: speechAssets,
-            microphonePermission: microphonePermission,
-            responseGenerator: responseGenerator,
-            responseCoordinatorConfiguration: ResponseCoordinatorConfiguration(
-                quickDeadline: .milliseconds(1_250),
-                resultTTL: .seconds(30),
-                bridgeText: "Let me dig into the exact implementation for a second."
-            ),
-            resourceCleaner: cleaner
-        )
-        let sessionEvents = await controller.events()
-        let eventTask = Task { [weak self] in
-            for await event in sessionEvents {
-                guard !Task.isCancelled else { return }
-                await self?.emit(event)
+            do {
+                try requireCurrentStart(attemptID)
+            } catch {
+                do {
+                    try await discardPendingMeeting(newContext)
+                } catch let cleanupError {
+                    pendingMeeting = newContext
+                    pendingMeetingCleanupBlocked = true
+                    startupCleanupHealthy = false
+                    throw cleanupError
+                }
+                throw error
             }
+            context = newContext
         }
-        activeMeeting = ActiveMeetingContext(
-            meetingID: context.meetingID,
-            privateRoot: context.privateRoot,
-            controller: controller,
-            eventTask: eventTask
-        )
+        pendingMeeting = context
+
+        let controller: MeetingSessionController
+        let eventTask: Task<Void, Never>
+        do {
+            let captureMode = Self.captureMode(for: request)
+            let speechAssets = AppleSpeechAssetManager()
+            let audioServices = try makeAudioServices(
+                request: request,
+                captureMode: captureMode,
+                speechAssets: speechAssets
+            )
+            let groundingIdentity = context.snapshot.map {
+                MeetingGroundingIdentity(
+                    repoAlias: $0.repoAlias,
+                    fingerprint: $0.groundingFingerprint
+                )
+            }
+            let availableDomainSkillNames = Set(try Self.domainSkills(in: context.snapshot).map(\.name))
+            if let selected = request.selectedDomainSkillName,
+                !availableDomainSkillNames.contains(selected)
+            {
+                throw PaceNoteActionError.safeMessage(
+                    "The selected repository skill is not present in the sealed snapshot."
+                )
+            }
+            let responseGenerator = CodexMeetingResponseGenerator(
+                configuration: MeetingResponseConfiguration(
+                    meetingID: context.meetingID,
+                    meetingPrivateRoot: context.privateRoot,
+                    codexProfileRoot: codexProfileRoot,
+                    executableURL: codexExecutableURL,
+                    clientVersion: Self.applicationVersion,
+                    subscriptionPlanType: verifiedSubscription.planType,
+                    expectedAccountIdentityHash: verifiedSubscription.identityHash,
+                    speakingStyle: Self.speakingStyle,
+                    groundingSnapshot: context.snapshot,
+                    selectedDomainSkillName: request.selectedDomainSkillName,
+                    deepComplexity: .hardTechnical
+                ),
+                journal: journal
+            )
+            let cleaner = DefaultMeetingSessionResourceCleaner(
+                privateRoot: context.privateRoot,
+                temporaryRoots: [
+                    context.privateRoot.appendingPathComponent("Grounding", isDirectory: true),
+                    context.privateRoot.appendingPathComponent("quick-context", isDirectory: true),
+                    context.privateRoot.appendingPathComponent("codex-tmp", isDirectory: true),
+                    context.privateRoot.appendingPathComponent("skill-context", isDirectory: true),
+                ],
+                groundingManager: context.groundingManager,
+                groundingSnapshot: context.snapshot,
+                journal: journal,
+                applicationRoot: applicationRoot,
+                stableCodexProfileRoot: codexProfileRoot
+            )
+            controller = MeetingSessionController(
+                configuration: MeetingSessionConfiguration(
+                    meetingID: context.meetingID,
+                    captureMode: captureMode,
+                    grounding: groundingIdentity,
+                    microphoneAttributionDelay: .milliseconds(800),
+                    systemOutputScope: request.outputScope.sessionScope,
+                    soleNearbySpeakerConfirmed: request.microphoneEnabled
+                        && request.soleNearbySpeakerConfirmed
+                ),
+                audioServices: audioServices,
+                speechAssets: speechAssets,
+                microphonePermission: microphonePermission,
+                responseGenerator: responseGenerator,
+                responseCoordinatorConfiguration: ResponseCoordinatorConfiguration(
+                    quickDeadline: .milliseconds(1_250),
+                    resultTTL: .seconds(30),
+                    bridgeText: "Let me think through that carefully for a second."
+                ),
+                resourceCleaner: cleaner
+            )
+            let sessionEvents = await controller.events()
+            try requireCurrentStart(attemptID)
+            eventTask = Task { [weak self] in
+                for await event in sessionEvents {
+                    guard !Task.isCancelled else { return }
+                    await self?.emit(event)
+                }
+            }
+            activeMeeting = ActiveMeetingContext(
+                meetingID: context.meetingID,
+                privateRoot: context.privateRoot,
+                controller: controller,
+                eventTask: eventTask
+            )
+            pendingMeeting = nil
+        } catch {
+            do {
+                try await discardPendingMeeting(context)
+            } catch let cleanupError {
+                pendingMeeting = context
+                pendingMeetingCleanupBlocked = true
+                startupCleanupHealthy = false
+                throw cleanupError
+            }
+            throw error
+        }
 
         do {
             _ = try await controller.preflight(
@@ -493,10 +626,21 @@ actor PaceNoteRuntime {
                     participantDisclosureConfirmed: request.consentConfirmed
                 )
             )
+            try requireCurrentStart(attemptID)
             try await controller.start()
+            try requireCurrentStart(attemptID)
         } catch {
             let report = await controller.stop()
+            if let lane = Self.failedStartTeardownLane(
+                report: report,
+                originalError: error,
+                request: request
+            ) {
+                startupCleanupHealthy = false
+                throw MeetingSessionFailure.captureTeardownFailed(lane)
+            }
             eventTask.cancel()
+            await eventTask.value
             activeMeeting = nil
             if report.cleanupSucceeded {
                 do {
@@ -508,6 +652,11 @@ actor PaceNoteRuntime {
                 }
             } else {
                 startupCleanupHealthy = false
+            }
+            if let failure = error as? MeetingSessionFailure,
+                case .captureTeardownFailed(let lane) = failure
+            {
+                throw MeetingSessionFailure.captureUnavailable(lane)
             }
             throw error
         }
@@ -535,7 +684,13 @@ actor PaceNoteRuntime {
     func stopMeeting() async throws {
         guard let activeMeeting else { return }
         let report = await activeMeeting.controller.stop()
+        guard !report.failures.contains(.audioCaptureTeardown) else {
+            throw PaceNoteActionError.audioTeardown(
+                report.audioTeardownFailureLane ?? .output
+            )
+        }
         activeMeeting.eventTask.cancel()
+        await activeMeeting.eventTask.value
         self.activeMeeting = nil
         guard report.cleanupSucceeded else {
             startupCleanupHealthy = false
@@ -555,15 +710,87 @@ actor PaceNoteRuntime {
         }
     }
 
-    func shutdown() async {
+    @discardableResult
+    func shutdown() async -> Bool {
+        if let shutdownTask {
+            return await shutdownTask.value
+        }
+        guard lifecycle != .closed else { return true }
+
+        lifecycle = .closing
+        let task = Task { await self.performShutdown() }
+        shutdownTask = task
+        return await task.value
+    }
+
+    private func performShutdown() async -> Bool {
+        defer { shutdownTask = nil }
+
+        if let startOperation {
+            startOperation.task.cancel()
+            _ = await startOperation.task.result
+            if self.startOperation?.attemptID == startOperation.attemptID {
+                self.startOperation = nil
+            }
+        }
         if activeMeeting != nil {
-            try? await stopMeeting()
+            do {
+                try await stopMeeting()
+            } catch {
+                startupCleanupHealthy = false
+            }
+            guard activeMeeting == nil else { return false }
         }
         if let pendingMeeting {
             try? await discardPendingMeeting(pendingMeeting)
         }
         for continuation in eventContinuations.values { continuation.finish() }
         eventContinuations.removeAll()
+
+        // Environment preflight starts the isolated app-server even before a meeting,
+        // which can create transcript-free transient databases. Remove them on a clean
+        // idle shutdown instead of waiting for the next launch. A nonempty cleanup
+        // journal must keep its recovery state intact for the startup janitor.
+        do {
+            let hasPendingCleanup = try await !journal.entries().isEmpty
+            _ = try Self.sanitizeIdleProfileForShutdown(
+                profileRoot: codexProfileRoot,
+                fileManager: fileManager,
+                hasActiveMeeting: activeMeeting != nil,
+                hasPendingMeeting: pendingMeeting != nil,
+                hasPendingCleanup: hasPendingCleanup
+            )
+        } catch {
+            startupCleanupHealthy = false
+        }
+        lifecycle = .closed
+        return true
+    }
+
+    #if DEBUG
+        func installActiveMeetingForShutdownTesting(
+            controller: MeetingSessionController,
+            privateRoot: URL
+        ) {
+            precondition(activeMeeting == nil)
+            activeMeeting = ActiveMeetingContext(
+                meetingID: UUID(),
+                privateRoot: privateRoot,
+                controller: controller,
+                eventTask: Task {}
+            )
+        }
+
+        func shutdownStateForTesting() -> (hasActiveMeeting: Bool, isClosed: Bool) {
+            (activeMeeting != nil, lifecycle == .closed)
+        }
+    #endif
+
+    private func requireCurrentStart(_ attemptID: UUID) throws {
+        try Task.checkCancellation()
+        guard lifecycle == .open, startOperation?.attemptID == attemptID else {
+            throw CancellationError()
+        }
     }
 
     private func makeAudioServices(
@@ -635,6 +862,8 @@ actor PaceNoteRuntime {
     }
 
     private func verifiedMeetingSubscription() async throws -> VerifiedMeetingSubscription {
+        if let preverifiedSubscription { return preverifiedSubscription }
+
         let client: CodexAppServerClient
         do {
             client = try await connectCodexClient()
@@ -721,6 +950,7 @@ actor PaceNoteRuntime {
         return try await CodexAppServerClient.connect(
             configuration: CodexAppServerConfiguration(
                 executableURL: codexExecutableURL,
+                expectedCodexHome: isolated.profileRoot,
                 clientVersion: Self.applicationVersion,
                 permissionProfileID: isolated.permissionProfileID,
                 processArguments: isolated.processArguments,
@@ -847,7 +1077,10 @@ actor PaceNoteRuntime {
                 "The private repository snapshot cleanup could not be verified. It remains blocked for recovery."
             )
         }
-        if pendingMeeting?.meetingID == context.meetingID { pendingMeeting = nil }
+        if pendingMeeting?.meetingID == context.meetingID {
+            pendingMeeting = nil
+            pendingMeetingCleanupBlocked = false
+        }
     }
 
     private func createMeetingRoot(meetingID: UUID) throws -> URL {
@@ -877,6 +1110,21 @@ actor PaceNoteRuntime {
         case (false, true): .systemOutputOnly
         case (true, true): .microphoneAndSystemOutput
         }
+    }
+
+    static func failedStartTeardownLane(
+        report: MeetingSessionStopReport,
+        originalError: any Error,
+        request: MeetingStartRequest
+    ) -> AudioLane? {
+        guard report.failures.contains(.audioCaptureTeardown) else { return nil }
+        if let lane = report.audioTeardownFailureLane { return lane }
+        if let failure = originalError as? MeetingSessionFailure,
+            case .captureTeardownFailed(let lane) = failure
+        {
+            return lane
+        }
+        return request.outputEnabled ? .output : .microphone
     }
 
     private static func capturePermissionState(_ status: AudioPermissionStatus) -> CapturePermissionState {
@@ -952,6 +1200,20 @@ actor PaceNoteRuntime {
             names.insert(name)
         }
         return names.sorted().map(DomainSkillOption.init(name:))
+    }
+
+    @discardableResult
+    static func sanitizeIdleProfileForShutdown(
+        profileRoot: URL,
+        fileManager: FileManager,
+        hasActiveMeeting: Bool,
+        hasPendingMeeting: Bool,
+        hasPendingCleanup: Bool
+    ) throws -> Bool {
+        guard !hasActiveMeeting, !hasPendingMeeting, !hasPendingCleanup else { return false }
+        _ = try CodexStableProfileSanitizer(fileManager: fileManager)
+            .cleanTransientState(profileRoot: profileRoot)
+        return true
     }
 
     static func skillFrontmatterName(_ text: String) -> String? {
@@ -1102,17 +1364,38 @@ extension MeetingActions {
                 }
             },
             startMeeting: {
-                do { try await runtime.startMeeting($0) } catch let error as PaceNoteActionError { throw error } catch {
+                do {
+                    try await runtime.startMeeting($0)
+                } catch let error as PaceNoteActionError {
+                    throw error
+                } catch let error as MeetingSessionFailure {
+                    if case .captureTeardownFailed(let lane) = error {
+                        throw PaceNoteActionError.audioTeardown(lane)
+                    }
+                    throw PaceNoteActionError.safeMessage(PaceNoteRuntime.safeMessage(for: error))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
                     throw PaceNoteActionError.safeMessage(PaceNoteRuntime.safeMessage(for: error))
                 }
             },
             pauseMeeting: {
-                do { try await runtime.pauseMeeting() } catch {
+                do { try await runtime.pauseMeeting() } catch let error as MeetingSessionFailure {
+                    if case .captureTeardownFailed(let lane) = error {
+                        throw PaceNoteActionError.audioTeardown(lane)
+                    }
+                    throw PaceNoteActionError.safeMessage(PaceNoteRuntime.safeMessage(for: error))
+                } catch {
                     throw PaceNoteActionError.safeMessage(PaceNoteRuntime.safeMessage(for: error))
                 }
             },
             resumeMeeting: {
-                do { try await runtime.resumeMeeting() } catch {
+                do { try await runtime.resumeMeeting() } catch let error as MeetingSessionFailure {
+                    if case .captureTeardownFailed(let lane) = error {
+                        throw PaceNoteActionError.audioTeardown(lane)
+                    }
+                    throw PaceNoteActionError.safeMessage(PaceNoteRuntime.safeMessage(for: error))
+                } catch {
                     throw PaceNoteActionError.safeMessage(PaceNoteRuntime.safeMessage(for: error))
                 }
             },

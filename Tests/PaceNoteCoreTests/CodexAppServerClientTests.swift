@@ -6,11 +6,14 @@ import XCTest
 final class CodexAppServerClientTests: XCTestCase {
     func testWireCodecClassifiesAndRejectsServerRequestsWithoutLeakingPayload() throws {
         let inbound = try CodexWireCodec.decodeLine(Data(CodexFixtures.serverRequest.utf8))
-        guard case .serverRequest(let id, let method, _) = inbound else {
+        guard case .serverRequest(let id, let method, let params) = inbound else {
             return XCTFail("Expected a server request.")
         }
         XCTAssertEqual(id, .integer(77))
         XCTAssertEqual(method, "item/commandExecution/requestApproval")
+        XCTAssertEqual(params?["threadId"]?.stringValue, "fork-thread")
+        XCTAssertEqual(params?["turnId"]?.stringValue, "turn-1")
+        XCTAssertEqual(params?["itemId"]?.stringValue, "command-item")
 
         let rejection = try CodexWireCodec.rejectedServerRequest(id: id)
         XCTAssertEqual(rejection.last, 0x0A)
@@ -303,6 +306,35 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testInitializeRejectsMismatchedCodexHomeBeforeInitialized() async throws {
+        let mismatchedResult = CodexFixtures.initializeResult.replacingOccurrences(
+            of: #"/Users/redacted/.codex"#,
+            with: #"/Users/redacted/another-codex-home"#
+        )
+        let transport = FixtureTransport(exchanges: [
+            .init(
+                method: "initialize",
+                params: CodexFixtures.value(CodexFixtures.initializeParams),
+                result: CodexFixtures.value(mismatchedResult)
+            )
+        ])
+        let client = makeClient(transport: transport)
+
+        do {
+            try await client.initialize()
+            XCTFail("Expected a mismatched Codex home to fail closed.")
+        } catch let error as CodexClientError {
+            XCTAssertEqual(error, .profileMismatch)
+        }
+
+        let notifications = await transport.sentNotifications()
+        let stopped = await transport.wasStopped()
+        let exhausted = await transport.isExhausted()
+        XCTAssertTrue(notifications.isEmpty)
+        XCTAssertTrue(stopped)
+        XCTAssertTrue(exhausted)
+    }
+
     func testPersistentBaseMaterializesBeforePermissionRepeatedEphemeralFork() async throws {
         let startParams: JSONValue = [
             "model": "deep-model",
@@ -375,6 +407,109 @@ final class CodexAppServerClientTests: XCTestCase {
         XCTAssertEqual(fork.permissionProfileID, ":read-only")
         let exhausted = await transport.isExhausted()
         XCTAssertTrue(exhausted)
+        await client.shutdown()
+    }
+
+    func testBaseCreationPublishesOpaqueIDBeforeMetadataValidation() async throws {
+        let startParams: JSONValue = [
+            "model": "deep-model",
+            "cwd": "/tmp/pacenote-snapshot",
+            "runtimeWorkspaceRoots": ["/tmp/pacenote-snapshot"],
+            "approvalPolicy": "never",
+            "permissions": ":read-only",
+            "ephemeral": false,
+            "serviceName": "pacenote",
+        ]
+        var malformed = try XCTUnwrap(
+            CodexFixtures.value(CodexFixtures.baseThreadResult).objectValue
+        )
+        malformed["cwd"] = "/tmp/unexpected-cwd"
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(method: "thread/start", params: startParams, result: .object(malformed)),
+            .init(
+                method: "thread/delete",
+                params: ["threadId": "base-thread"],
+                result: CodexFixtures.value(CodexFixtures.emptyResult)
+            ),
+        ])
+        let recorder = CreatedThreadIDRecorder()
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        do {
+            _ = try await client.createPersistentBase(
+                cwd: "/tmp/pacenote-snapshot",
+                runtimeWorkspaceRoots: ["/tmp/pacenote-snapshot"],
+                model: "deep-model",
+                baseInstructions: nil,
+                onCreated: { await recorder.record($0) }
+            )
+            XCTFail("Expected malformed base metadata")
+        } catch let failure as CodexCreatedThreadFailure {
+            XCTAssertEqual(failure.threadID, "base-thread")
+            XCTAssertEqual(failure.cause, .client(.permissionProfileMismatch))
+            let identifiers = await recorder.identifiers()
+            XCTAssertEqual(identifiers, ["base-thread"])
+            try await client.deleteThread(id: failure.threadID)
+        }
+
+        let baseExchangesExhausted = await transport.isExhausted()
+        XCTAssertTrue(baseExchangesExhausted)
+        await client.shutdown()
+    }
+
+    func testForkCreationPublishesOpaqueIDBeforeMetadataValidation() async throws {
+        let base = CodexBaseThread(
+            id: "base-thread",
+            model: "deep-model",
+            permissionProfileID: ":read-only",
+            cwd: "/tmp/pacenote-snapshot",
+            runtimeWorkspaceRoots: ["/tmp/pacenote-snapshot"],
+            instructionSources: ["/tmp/pacenote-snapshot/AGENTS.md"]
+        )
+        let forkParams: JSONValue = [
+            "threadId": "base-thread",
+            "ephemeral": true,
+            "excludeTurns": true,
+            "approvalPolicy": "never",
+            "permissions": ":read-only",
+            "model": "quick-model",
+        ]
+        var malformed = try XCTUnwrap(
+            CodexFixtures.value(CodexFixtures.forkThreadResult).objectValue
+        )
+        malformed["runtimeWorkspaceRoots"] = ["/tmp/unexpected-root"]
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(method: "thread/fork", params: forkParams, result: .object(malformed)),
+            .init(
+                method: "thread/delete",
+                params: ["threadId": "fork-thread"],
+                result: CodexFixtures.value(CodexFixtures.emptyResult)
+            ),
+        ])
+        let recorder = CreatedThreadIDRecorder()
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        do {
+            _ = try await client.forkEphemeral(
+                from: base,
+                model: "quick-model",
+                onCreated: { await recorder.record($0) }
+            )
+            XCTFail("Expected malformed fork metadata")
+        } catch let failure as CodexCreatedThreadFailure {
+            XCTAssertEqual(failure.threadID, "fork-thread")
+            XCTAssertEqual(failure.cause, .client(.permissionProfileMismatch))
+            let identifiers = await recorder.identifiers()
+            XCTAssertEqual(identifiers, ["fork-thread"])
+            try await client.deleteThread(id: failure.threadID)
+        }
+
+        let forkExchangesExhausted = await transport.isExhausted()
+        XCTAssertTrue(forkExchangesExhausted)
         await client.shutdown()
     }
 
@@ -580,7 +715,12 @@ final class CodexAppServerClientTests: XCTestCase {
         )
 
         await transport.emit(
-            .rejectedServerRequest(method: "item/commandExecution/requestApproval")
+            .rejectedServerRequest(
+                method: "item/commandExecution/requestApproval",
+                threadID: "fork-thread",
+                turnID: "turn-1",
+                itemID: "command-item"
+            )
         )
 
         do {
@@ -589,9 +729,17 @@ final class CodexAppServerClientTests: XCTestCase {
         } catch let error as CodexClientError {
             XCTAssertEqual(
                 error,
-                .serverRequestRejected(method: "item/commandExecution/requestApproval")
+                .serverRequestRejected(
+                    method: "item/commandExecution/requestApproval",
+                    threadID: "fork-thread",
+                    turnID: "turn-1",
+                    itemID: "command-item"
+                )
             )
             XCTAssertFalse(error.localizedDescription.contains("/Users/"))
+            XCTAssertFalse(error.localizedDescription.contains("fork-thread"))
+            XCTAssertFalse(error.localizedDescription.contains("turn-1"))
+            XCTAssertFalse(error.localizedDescription.contains("command-item"))
         }
         let stopped = await transport.wasStopped()
         XCTAssertTrue(stopped)
@@ -610,8 +758,19 @@ final class CodexAppServerClientTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
 
+        let isolated = try CodexIsolatedRuntimeBuilder.prepare(
+            profileRoot: temporaryDirectory.appendingPathComponent("profile", isDirectory: true),
+            temporaryRoot: temporaryDirectory.appendingPathComponent("codex-tmp", isDirectory: true)
+        )
+
         let client = try await CodexAppServerClient.connect(
-            configuration: .init(clientVersion: "0.1.0")
+            configuration: .init(
+                expectedCodexHome: isolated.profileRoot,
+                clientVersion: "0.1.0",
+                permissionProfileID: isolated.permissionProfileID,
+                processArguments: isolated.processArguments,
+                processEnvironment: isolated.processEnvironment
+            )
         )
         do {
             let account = try await client.account()
@@ -674,7 +833,13 @@ final class CodexAppServerClientTests: XCTestCase {
     ) -> CodexAppServerClient {
         CodexAppServerClient(
             transport: transport,
-            configuration: .init(clientVersion: "0.1.0"),
+            configuration: .init(
+                expectedCodexHome: URL(
+                    fileURLWithPath: "/Users/redacted/.codex",
+                    isDirectory: true
+                ),
+                clientVersion: "0.1.0"
+            ),
             binaryVersion: .init(
                 major: 0,
                 minor: 147,
@@ -703,6 +868,16 @@ private struct FixtureExchange: Sendable {
         self.result = result
         self.eventsBeforeResult = eventsBeforeResult
     }
+}
+
+private actor CreatedThreadIDRecorder {
+    private var values: [String] = []
+
+    func record(_ value: String) {
+        values.append(value)
+    }
+
+    func identifiers() -> [String] { values }
 }
 
 private actor FixtureTransport: CodexRPCTransporting {

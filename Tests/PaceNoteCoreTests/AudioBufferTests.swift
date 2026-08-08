@@ -208,6 +208,57 @@ final class AudioBufferTests: XCTestCase {
         XCTAssertEqual(buffer.queuedCount(), 0)
     }
 
+    func testSensitiveQueueCanScrubFailedTeardownAttemptBeforeTerminalRetry() async {
+        let discarded = DiscardedAudioRecorder()
+        let buffer = DiscardingAsyncStreamBuffer<AudioCaptureEvent>(
+            maximumCount: 2,
+            prepare: { $0.ownedForSensitiveBuffer() },
+            discard: {
+                $0.scrubAudioData()
+                discarded.record($0)
+            }
+        )
+        let stream = buffer.stream()
+        XCTAssertEqual(buffer.yield(.audio(makeChunk(at: 0, bytes: 32))), .enqueued)
+
+        buffer.discardQueued()
+
+        XCTAssertEqual(buffer.queuedCount(), 0)
+        XCTAssertEqual(buffer.discardedCount(), 1)
+        XCTAssertEqual(discarded.audioEventCount(), 1)
+        XCTAssertEqual(discarded.nonzeroAudioByteCount(), 0)
+
+        buffer.finish(delivering: .stopped(.output))
+        var iterator = stream.makeAsyncIterator()
+        let terminal = await iterator.next()
+        let end = await iterator.next()
+        XCTAssertEqual(terminal, .stopped(.output))
+        XCTAssertNil(end)
+    }
+
+    func testSealedRealtimeRingRejectsFurtherCallbackWrites() throws {
+        let format = try XCTUnwrap(
+            AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)
+        )
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1)
+        )
+        buffer.frameLength = 1
+        let ring = RealtimeAudioRing(
+            lane: .output,
+            format: AudioFormatDescription(format),
+            configuration: .init(slotCount: 2, maximumBytesPerSlot: 64, maximumPlanes: 2)
+        )
+        let timestamp = HostTimestamp(ticks: AVAudioTime.hostTime(forSeconds: 1))
+        XCTAssertTrue(ring.write(buffer.audioBufferList, frameCount: 1, hostTime: timestamp))
+
+        ring.sealAndClear()
+
+        XCTAssertNil(ring.read())
+        XCTAssertFalse(ring.write(buffer.audioBufferList, frameCount: 1, hostTime: timestamp))
+        XCTAssertNil(ring.read())
+    }
+
     func testAnalyzerInputQueueScrubsPCMOnSaturationAndFinish() throws {
         let first = try makeAnalyzerInput(sample: 0.75)
         let second = try makeAnalyzerInput(sample: -0.5)

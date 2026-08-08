@@ -69,6 +69,27 @@ final class CodexOutputTests: XCTestCase {
         )
     }
 
+    func testGeneralDeepEncodingPreservesExplicitNullGroundingFingerprint() throws {
+        let draft = DeepDraft(
+            turnID: UUID(),
+            generation: 1,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext: "I would separate the decision from the implementation details.",
+            confidence: 0.7,
+            basis: []
+        )
+
+        let data = try JSONEncoder().encode(draft)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertTrue(object.keys.contains("groundingFingerprint"))
+        XCTAssertTrue(object["groundingFingerprint"] is NSNull)
+        XCTAssertEqual(try JSONDecoder().decode(DeepDraft.self, from: data), draft)
+    }
+
     func testRealtimeReturnsFirstAssistantFinalText() async throws {
         let pair = AsyncThrowingStream<CodexRealtimeEvent, any Error>.makeStream()
         let session = CodexRealtimeSession(threadID: "thread", events: pair.stream)

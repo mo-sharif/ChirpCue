@@ -15,7 +15,7 @@ struct WindowSharingProtection: NSViewRepresentable {
     private func configureWindow(for view: NSView) {
         DispatchQueue.main.async {
             guard let window = view.window else { return }
-            window.sharingType = .none
+            CoachingWindowBehavior.apply(to: window)
             let clampedFrame = WindowFramePlacement.clampedFrame(
                 window.frame,
                 visibleFrames: NSScreen.screens.map(\.visibleFrame)
@@ -24,6 +24,15 @@ struct WindowSharingProtection: NSViewRepresentable {
                 window.setFrame(clampedFrame, display: true)
             }
         }
+    }
+}
+
+enum CoachingWindowBehavior {
+    @MainActor
+    static func apply(to window: NSWindow) {
+        window.sharingType = .none
+        window.hidesOnDeactivate = false
+        window.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
     }
 }
 

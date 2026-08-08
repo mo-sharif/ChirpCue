@@ -1,5 +1,20 @@
 import Foundation
 
+public enum CodexCreatedThreadFailureCause: Equatable, Sendable {
+    case cancellation
+    case client(CodexClientError)
+}
+
+public struct CodexCreatedThreadFailure: Error, Equatable, Sendable {
+    public let threadID: String
+    public let cause: CodexCreatedThreadFailureCause
+
+    public init(threadID: String, cause: CodexCreatedThreadFailureCause) {
+        self.threadID = threadID
+        self.cause = cause
+    }
+}
+
 public protocol CodexMeetingClient: Sendable {
     var runtimeCapabilities: CodexRuntimeCapabilities { get }
 
@@ -18,8 +33,20 @@ public protocol CodexMeetingClient: Sendable {
         model: String,
         baseInstructions: String?
     ) async throws -> CodexBaseThread
+    func createPersistentBase(
+        cwd: String,
+        runtimeWorkspaceRoots: [String],
+        model: String,
+        baseInstructions: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexBaseThread
     func forkEphemeral(from base: CodexBaseThread, model: String?) async throws
         -> CodexEphemeralThread
+    func forkEphemeral(
+        from base: CodexBaseThread,
+        model: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexEphemeralThread
     func deleteThread(id: String) async throws
     func startQuick(
         threadID: String,
@@ -40,6 +67,35 @@ public protocol CodexMeetingClient: Sendable {
     func interruptTurn(threadID: String, turnID: String) async throws
     func stopRealtimeText(threadID: String) async throws
     func shutdown() async
+}
+
+public extension CodexMeetingClient {
+    func createPersistentBase(
+        cwd: String,
+        runtimeWorkspaceRoots: [String],
+        model: String,
+        baseInstructions: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexBaseThread {
+        let base = try await createPersistentBase(
+            cwd: cwd,
+            runtimeWorkspaceRoots: runtimeWorkspaceRoots,
+            model: model,
+            baseInstructions: baseInstructions
+        )
+        try await onCreated(base.id)
+        return base
+    }
+
+    func forkEphemeral(
+        from base: CodexBaseThread,
+        model: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexEphemeralThread {
+        let fork = try await forkEphemeral(from: base, model: model)
+        try await onCreated(fork.id)
+        return fork
+    }
 }
 
 extension CodexAppServerClient: CodexMeetingClient {}

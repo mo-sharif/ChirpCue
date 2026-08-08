@@ -26,7 +26,10 @@ public enum CodexOutputSchema {
             "turnID": ["type": "string", "format": "uuid"],
             "generation": ["type": "integer", "minimum": 0],
             "groundingFingerprint": ["type": ["string", "null"]],
-            "kind": ["type": "string", "enum": ["answer", "clarification", "abstention"]],
+            "kind": [
+                "type": "string",
+                "enum": ["answer", "general_answer", "clarification", "abstention"],
+            ],
             "candidateSayNext": ["type": "string", "minLength": 1, "maxLength": 320],
             "confidence": ["type": "number", "minimum": 0, "maximum": 1],
             "basis": [

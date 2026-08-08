@@ -19,11 +19,28 @@ struct PaceNoteApp: App {
             OutputCaptureScope(
                 rawValue: defaults.string(forKey: "paceNote.defaultOutputScope") ?? ""
             ) ?? .meetingApplication
-        let runtime = try? PaceNoteRuntime()
+        let runtime: PaceNoteRuntime?
+        let actions: MeetingActions
+        do {
+            let preparedRuntime = try PaceNoteRuntime()
+            runtime = preparedRuntime
+            actions = .live(runtime: preparedRuntime)
+        } catch let error as PaceNoteActionError {
+            runtime = nil
+            actions = .unavailable(
+                reason: error.errorDescription
+                    ?? "PaceNote could not initialize its private local service."
+            )
+        } catch {
+            runtime = nil
+            actions = .unavailable(
+                reason: "PaceNote could not initialize its private local service."
+            )
+        }
         self.runtime = runtime
         _model = State(
             initialValue: MeetingViewModel(
-                actions: runtime.map(MeetingActions.live(runtime:)) ?? .unwired,
+                actions: actions,
                 hasCompletedFirstRun: defaults.bool(forKey: Self.firstRunKey),
                 microphoneEnabled: microphoneEnabled,
                 outputEnabled: outputEnabled,
@@ -71,13 +88,40 @@ final class PaceNoteApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime else { return .terminateNow }
+        return beginTermination(
+            shutdown: { await runtime.shutdown() },
+            reply: { sender.reply(toApplicationShouldTerminate: $0) }
+        )
+    }
+
+    func beginTermination(
+        shutdown: @escaping @MainActor () async -> Bool,
+        reply: @escaping @MainActor (Bool) -> Void,
+        onFailure: @escaping @MainActor () -> Void = PaceNoteApplicationDelegate
+            .presentShutdownFailure
+    ) -> NSApplication.TerminateReply {
         guard !terminationInProgress else { return .terminateLater }
         terminationInProgress = true
         Task {
-            await runtime.shutdown()
-            sender.reply(toApplicationShouldTerminate: true)
+            let shutdownCompleted = await shutdown()
+            terminationInProgress = false
+            reply(shutdownCompleted)
+            if !shutdownCompleted {
+                onFailure()
+            }
         }
         return .terminateLater
+    }
+
+    private static func presentShutdownFailure() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "PaceNote is still verifying capture teardown"
+        alert.informativeText =
+            "Quit was canceled because PaceNote could not verify that every audio route stopped. Use Retry Stop in PaceNote, then quit again."
+        alert.addButton(withTitle: "Keep PaceNote Open")
+        alert.runModal()
     }
 }
 

@@ -56,10 +56,71 @@ final class SystemAudioSourceDiscoveryTests: XCTestCase {
         XCTAssertEqual(Set(resolved.map(\.processID)), [10, 12])
     }
 
+    func testSourceIdentityChangesWhenProcessInstanceChangesAtSamePID() {
+        let original = SystemAudioSource(
+            processID: 42,
+            bundleID: "com.example.Meeting",
+            processStartToken: "100:1",
+            audioObjectID: 7,
+            name: "Meeting",
+            isLikelyMeetingSource: true
+        )
+        let replacement = SystemAudioSource(
+            processID: 42,
+            bundleID: "com.example.Meeting",
+            processStartToken: "200:1",
+            audioObjectID: 8,
+            name: "Meeting",
+            isLikelyMeetingSource: true
+        )
+
+        XCTAssertNotEqual(original.id, replacement.id)
+        XCTAssertNotEqual(original.captureTarget, replacement.captureTarget)
+    }
+
+    func testSelectedTargetRequiresConjunctiveProcessIdentity() {
+        let target = AudioProcessTarget(
+            processID: 42,
+            bundleID: "com.example.Meeting",
+            processStartToken: "100:1",
+            audioObjectID: 7
+        )
+
+        XCTAssertTrue(
+            SystemAudioCaptureService.selectedTargetMatches(
+                target,
+                processID: 42,
+                bundleID: "com.example.Meeting",
+                processStartToken: "100:1",
+                audioObjectID: 7
+            )
+        )
+        XCTAssertFalse(
+            SystemAudioCaptureService.selectedTargetMatches(
+                target,
+                processID: 42,
+                bundleID: "com.attacker.Replacement",
+                processStartToken: "200:1",
+                audioObjectID: 8
+            )
+        )
+        XCTAssertFalse(
+            SystemAudioCaptureService.selectedTargetMatches(
+                target,
+                processID: 42,
+                bundleID: "com.example.Meeting",
+                processStartToken: "200:1",
+                audioObjectID: 7
+            )
+        )
+    }
+
     private func source(pid: Int32, bundle: String, name: String) -> SystemAudioSource {
         SystemAudioSource(
             processID: pid,
             bundleID: bundle,
+            processStartToken: "\(pid):1",
+            audioObjectID: UInt32(pid + 100),
             name: name,
             isLikelyMeetingSource: SystemAudioSourceDiscovery.isLikelyMeetingSource(
                 name: name,

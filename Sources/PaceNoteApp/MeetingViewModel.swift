@@ -76,6 +76,26 @@ enum OutputCaptureScope: String, CaseIterable, Identifiable, Sendable {
             "Every audible app can enter the transcript. Use only when app-specific capture is unavailable."
         }
     }
+
+    var sessionScope: MeetingSystemOutputScope {
+        switch self {
+        case .meetingApplication: .meetingApplication
+        case .allSystemAudio: .allSystemAudio
+        }
+    }
+}
+
+enum PaceNoteDisclosureText {
+    static let firstRunOpenAIProcessing =
+        "I understand transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my signed-in ChatGPT account."
+    static let meetingParticipantPermission =
+        "I have informed all participants about live transcription and AI assistance, and I have permission to capture and process this meeting."
+    static let meetingOpenAIProcessing =
+        "I understand this meeting's transcript slices, any selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my ChatGPT account."
+    static let openAIProcessingSummary =
+        "Transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac for processing under the signed-in ChatGPT account's applicable OpenAI terms. PaceNote makes no zero-retention claim."
+    static let soleNearbySpeaker =
+        "I am the only person near this Mac's microphone. Label microphone speech as YOU."
 }
 
 struct OutputSourceOption: Identifiable, Hashable, Sendable {
@@ -228,13 +248,14 @@ struct MeetingConsent: Equatable, Sendable {
     var participantPermission = false
     var captureScopeConfirmed = false
     var openAIProcessingConfirmed = false
+    var soleNearbySpeakerConfirmed = false
 
     var isComplete: Bool {
         participantPermission && captureScopeConfirmed && openAIProcessingConfirmed
     }
 }
 
-struct MeetingStartRequest: Sendable {
+struct MeetingStartRequest: Equatable, Sendable {
     let consentConfirmed: Bool
     let microphoneEnabled: Bool
     let outputEnabled: Bool
@@ -242,6 +263,7 @@ struct MeetingStartRequest: Sendable {
     let outputSourceID: String?
     let sealedSnapshotID: UUID?
     let selectedDomainSkillName: String?
+    let soleNearbySpeakerConfirmed: Bool
 
     init(
         consentConfirmed: Bool,
@@ -250,7 +272,8 @@ struct MeetingStartRequest: Sendable {
         outputScope: OutputCaptureScope,
         outputSourceID: String?,
         sealedSnapshotID: UUID?,
-        selectedDomainSkillName: String?
+        selectedDomainSkillName: String?,
+        soleNearbySpeakerConfirmed: Bool = false
     ) {
         self.consentConfirmed = consentConfirmed
         self.microphoneEnabled = microphoneEnabled
@@ -259,6 +282,7 @@ struct MeetingStartRequest: Sendable {
         self.outputSourceID = outputSourceID
         self.sealedSnapshotID = sealedSnapshotID
         self.selectedDomainSkillName = selectedDomainSkillName
+        self.soleNearbySpeakerConfirmed = soleNearbySpeakerConfirmed
     }
 }
 
@@ -274,12 +298,15 @@ struct RepositorySealRequest: Sendable {
 
 enum PaceNoteActionError: LocalizedError, Sendable {
     case serviceNotConnected
+    case audioTeardown(AudioLane)
     case safeMessage(String)
 
     var errorDescription: String? {
         switch self {
         case .serviceNotConnected:
             "PaceNote's local service is not connected yet."
+        case .audioTeardown(let lane):
+            "The \(lane.rawValue) audio route could not be fully stopped. Retry Stop before starting or resuming."
         case .safeMessage(let message):
             message
         }
@@ -302,33 +329,33 @@ struct MeetingActions: Sendable {
     var stopMeeting: @Sendable () async throws -> Void
     var coachCurrentTurn: @Sendable (String?) async throws -> Void
 
-    static let unwired = MeetingActions(
-        sessionEvents: { AsyncStream { $0.finish() } },
-        checkEnvironment: {
-            PaceNoteEnvironmentSnapshot(
-                microphonePermission: .unavailable("Local capture service is not connected."),
-                systemAudioPermission: .unavailable("Local capture service is not connected."),
-                codex: .unavailable("Codex app-server is not connected."),
-                outputSources: []
-            )
-        },
-        requestCapturePermission: { _ in
-            .unavailable("Local capture service is not connected.")
-        },
-        beginCodexSignIn: {
-            .unavailable("Codex app-server is not connected.")
-        },
-        forgetCodexProfile: { throw PaceNoteActionError.serviceNotConnected },
-        reloadOutputSources: { [] },
-        inspectRepository: { _ in throw PaceNoteActionError.serviceNotConnected },
-        sealRepository: { _ in throw PaceNoteActionError.serviceNotConnected },
-        discardRepositorySnapshot: { _ in throw PaceNoteActionError.serviceNotConnected },
-        startMeeting: { _ in throw PaceNoteActionError.serviceNotConnected },
-        pauseMeeting: { throw PaceNoteActionError.serviceNotConnected },
-        resumeMeeting: { throw PaceNoteActionError.serviceNotConnected },
-        stopMeeting: { throw PaceNoteActionError.serviceNotConnected },
-        coachCurrentTurn: { _ in throw PaceNoteActionError.serviceNotConnected }
-    )
+    static let unwired = unavailable(reason: "PaceNote's local service is not connected yet.")
+
+    static func unavailable(reason: String) -> MeetingActions {
+        MeetingActions(
+            sessionEvents: { AsyncStream { $0.finish() } },
+            checkEnvironment: {
+                PaceNoteEnvironmentSnapshot(
+                    microphonePermission: .unavailable(reason),
+                    systemAudioPermission: .unavailable(reason),
+                    codex: .unavailable(reason),
+                    outputSources: []
+                )
+            },
+            requestCapturePermission: { _ in .unavailable(reason) },
+            beginCodexSignIn: { .unavailable(reason) },
+            forgetCodexProfile: { throw PaceNoteActionError.safeMessage(reason) },
+            reloadOutputSources: { [] },
+            inspectRepository: { _ in throw PaceNoteActionError.safeMessage(reason) },
+            sealRepository: { _ in throw PaceNoteActionError.safeMessage(reason) },
+            discardRepositorySnapshot: { _ in throw PaceNoteActionError.safeMessage(reason) },
+            startMeeting: { _ in throw PaceNoteActionError.safeMessage(reason) },
+            pauseMeeting: { throw PaceNoteActionError.safeMessage(reason) },
+            resumeMeeting: { throw PaceNoteActionError.safeMessage(reason) },
+            stopMeeting: { throw PaceNoteActionError.safeMessage(reason) },
+            coachCurrentTurn: { _ in throw PaceNoteActionError.safeMessage(reason) }
+        )
+    }
 }
 
 @MainActor
@@ -344,7 +371,10 @@ final class MeetingViewModel {
     var statusDetail = "Complete setup before listening."
     var microphoneEnabled = true {
         didSet {
-            if oldValue != microphoneEnabled { meetingConsent.captureScopeConfirmed = false }
+            if oldValue != microphoneEnabled {
+                meetingConsent.captureScopeConfirmed = false
+                meetingConsent.soleNearbySpeakerConfirmed = false
+            }
         }
     }
     var outputEnabled = true {
@@ -369,11 +399,18 @@ final class MeetingViewModel {
     private(set) var repositoryState: RepositorySetupState = .none
     private(set) var isBootstrapping = false
     private(set) var isPerformingMeetingAction = false
+    private(set) var hasIncompleteAudioTeardown = false
     private(set) var actionError: String?
     var presentedSheet: PaceNoteSheet?
     var firstRunAcknowledgement = FirstRunAcknowledgement()
     private(set) var hasCompletedFirstRun: Bool
-    var meetingConsent = MeetingConsent()
+    var meetingConsent = MeetingConsent() {
+        didSet {
+            if oldValue != meetingConsent {
+                meetingStartConfigurationDidChange()
+            }
+        }
+    }
     var approvedSoftFindingIDs: Set<String> = []
     var selectedDomainSkillName: String? {
         didSet {
@@ -388,6 +425,16 @@ final class MeetingViewModel {
     private var didBootstrap = false
     private var privacyReturnSheet: PaceNoteSheet?
     private var runtimeEventTask: Task<Void, Never>?
+    private var isStopping = false
+    private var ignoresSessionEvents = false
+    private struct PendingMeetingStart {
+        let id: UUID
+        let request: MeetingStartRequest
+        let task: Task<Void, any Error>
+    }
+    private var pendingMeetingStart: PendingMeetingStart?
+    private var activeStartRequest: MeetingStartRequest?
+    private var consentRevocationStopTask: Task<Void, Never>?
 
     init(
         actions: MeetingActions = .unwired,
@@ -413,15 +460,19 @@ final class MeetingViewModel {
     }
 
     var canPresentSetup: Bool {
-        phase == .idle || phase == .ready || phase == .ended || phase == .permissionRequired
+        !hasIncompleteAudioTeardown && !isPerformingMeetingAction
+            && (phase == .idle || phase == .ready || phase == .ended
+                || phase == .permissionRequired)
     }
 
     var canStart: Bool {
-        setupBlockers.isEmpty && !isPerformingMeetingAction
+        !hasIncompleteAudioTeardown && !isMeetingActive && pendingMeetingStart == nil
+            && setupBlockers.isEmpty && !isPerformingMeetingAction
     }
 
     var canCoach: Bool {
-        codexState.isReady && !isPerformingMeetingAction && isMeetingActive
+        !hasIncompleteAudioTeardown && codexState.isReady && !isPerformingMeetingAction
+            && isMeetingActive && phase != .paused
     }
 
     var canCoachCurrentTurn: Bool {
@@ -429,7 +480,9 @@ final class MeetingViewModel {
     }
 
     var canForgetCodexProfile: Bool {
-        guard !isMeetingActive else { return false }
+        guard !hasIncompleteAudioTeardown, !isMeetingActive,
+            !isPerformingMeetingAction, pendingMeetingStart == nil
+        else { return false }
         switch codexState {
         case .notChecked, .checking, .signedOut:
             return false
@@ -439,7 +492,8 @@ final class MeetingViewModel {
     }
 
     var canPause: Bool {
-        switch phase {
+        guard !hasIncompleteAudioTeardown else { return false }
+        return switch phase {
         case .listening, .candidateQuestion, .thinking, .suggesting, .brownout: true
         default: false
         }
@@ -447,6 +501,9 @@ final class MeetingViewModel {
 
     var setupBlockers: [String] {
         var blockers: [String] = []
+        if !microphoneEnabled && !outputEnabled {
+            blockers.append("Enable the microphone or meeting output before starting.")
+        }
         if microphoneEnabled && !microphonePermission.isAuthorized {
             blockers.append("Microphone permission is required while microphone capture is on.")
         }
@@ -510,7 +567,19 @@ final class MeetingViewModel {
         presentedSheet = .meetingSetup
     }
 
+    func cancelMeetingSetup() {
+        let wasStarting = pendingMeetingStart != nil
+        invalidatePendingMeetingStart()
+        meetingConsent = MeetingConsent()
+        privacyReturnSheet = nil
+        presentedSheet = nil
+        if !wasStarting {
+            statusDetail = "Meeting setup was canceled. Nothing is being captured."
+        }
+    }
+
     func presentPrivacyDetails() {
+        guard !isPerformingMeetingAction else { return }
         privacyReturnSheet = presentedSheet == .meetingSetup ? .meetingSetup : nil
         presentedSheet = .privacyDetails
     }
@@ -548,6 +617,7 @@ final class MeetingViewModel {
     }
 
     func signInToCodex() async {
+        guard !isPerformingMeetingAction else { return }
         actionError = nil
         codexState = .checking
         codexState = await actions.beginCodexSignIn()
@@ -555,8 +625,9 @@ final class MeetingViewModel {
     }
 
     func forgetCodexProfile() async {
-        guard !isMeetingActive else {
-            actionError = "Stop the current meeting before forgetting the Codex profile."
+        guard canForgetCodexProfile else {
+            actionError =
+                "Finish or stop the current meeting action before forgetting the Codex profile."
             return
         }
         isPerformingMeetingAction = true
@@ -583,6 +654,7 @@ final class MeetingViewModel {
     }
 
     func selectRepository(_ url: URL) async {
+        guard !isPerformingMeetingAction, pendingMeetingStart == nil else { return }
         let alias = url.lastPathComponent
         selectedRepositoryURL = url
         repositoryState = .inspecting(alias)
@@ -601,6 +673,7 @@ final class MeetingViewModel {
     }
 
     func sealRepository() async {
+        guard !isPerformingMeetingAction, pendingMeetingStart == nil else { return }
         guard let url = selectedRepositoryURL,
             case .review(let review) = repositoryState,
             Set(review.softFindings.map(\.id)).isSubset(of: approvedSoftFindingIDs)
@@ -628,6 +701,7 @@ final class MeetingViewModel {
     }
 
     func cancelRepositoryReview() {
+        guard !isPerformingMeetingAction, pendingMeetingStart == nil else { return }
         selectedRepositoryURL = nil
         repositoryState = .none
         selectedDomainSkillName = nil
@@ -637,6 +711,7 @@ final class MeetingViewModel {
     }
 
     func removeRepository() async {
+        guard !isPerformingMeetingAction, pendingMeetingStart == nil else { return }
         let snapshotID: UUID?
         if case .sealed(let summary) = repositoryState {
             snapshotID = summary.snapshotID
@@ -658,36 +733,87 @@ final class MeetingViewModel {
         approvedSoftFindingIDs.removeAll()
     }
 
-    func startMeeting() async {
-        guard canStart else { return }
-        isPerformingMeetingAction = true
-        actionError = nil
+    private func currentMeetingStartRequest() -> MeetingStartRequest {
         let sealedSnapshotID: UUID?
         if case .sealed(let summary) = repositoryState {
             sealedSnapshotID = summary.snapshotID
         } else {
             sealedSnapshotID = nil
         }
+        return MeetingStartRequest(
+            consentConfirmed: meetingConsent.isComplete,
+            microphoneEnabled: microphoneEnabled,
+            outputEnabled: outputEnabled,
+            outputScope: outputScope,
+            outputSourceID: outputScope == .meetingApplication ? selectedOutputSourceID : nil,
+            sealedSnapshotID: sealedSnapshotID,
+            selectedDomainSkillName: selectedDomainSkillName,
+            soleNearbySpeakerConfirmed: microphoneEnabled
+                && meetingConsent.soleNearbySpeakerConfirmed
+        )
+    }
+
+    func startMeeting() async {
+        guard canStart, pendingMeetingStart == nil else { return }
+        isPerformingMeetingAction = true
+        ignoresSessionEvents = true
+        actionError = nil
+        let request = currentMeetingStartRequest()
+        let attemptID = UUID()
+        let startTask = Task {
+            try await actions.startMeeting(request)
+        }
+        pendingMeetingStart = PendingMeetingStart(
+            id: attemptID,
+            request: request,
+            task: startTask
+        )
+        // Capture can become live while the runtime is still finishing Start. Keep the visible
+        // capture indicator conservative until success or verified cleanup returns.
+        isCaptureActive = request.microphoneEnabled || request.outputEnabled
+        statusDetail = "Starting only the capture sources you approved."
+
+        let result = await withTaskCancellationHandler {
+            await startTask.result
+        } onCancel: {
+            startTask.cancel()
+        }
+        let mayCommit =
+            !Task.isCancelled
+            && pendingMeetingStart?.id == attemptID
+            && pendingMeetingStart?.request == request
+            && currentMeetingStartRequest() == request
+            && setupBlockers.isEmpty
+        if pendingMeetingStart?.id == attemptID {
+            pendingMeetingStart = nil
+        }
+
+        guard mayCommit else {
+            await finishRevokedMeetingStart(request: request, result: result)
+            isPerformingMeetingAction = false
+            return
+        }
+
         do {
-            try await actions.startMeeting(
-                MeetingStartRequest(
-                    consentConfirmed: meetingConsent.isComplete,
-                    microphoneEnabled: microphoneEnabled,
-                    outputEnabled: outputEnabled,
-                    outputScope: outputScope,
-                    outputSourceID: outputScope == .meetingApplication ? selectedOutputSourceID : nil,
-                    sealedSnapshotID: sealedSnapshotID,
-                    selectedDomainSkillName: selectedDomainSkillName
-                )
-            )
-            isCaptureActive = microphoneEnabled || outputEnabled
+            try result.get()
+            activeStartRequest = request
+            ignoresSessionEvents = false
+            isCaptureActive = request.microphoneEnabled || request.outputEnabled
+            hasIncompleteAudioTeardown = false
             phase = .listening
             statusDetail = "Listening only to the capture sources you approved."
             presentedSheet = nil
         } catch {
-            phase = .permissionRequired
+            ignoresSessionEvents = true
+            meetingConsent.captureScopeConfirmed = false
+            if Self.isAudioTeardownFailure(error) {
+                enterIncompleteAudioTeardown()
+            } else {
+                isCaptureActive = false
+                phase = .permissionRequired
+                statusDetail = "Meeting did not start. Review setup and try again."
+            }
             actionError = safeMessage(for: error)
-            statusDetail = "Meeting did not start. Review setup and try again."
         }
         isPerformingMeetingAction = false
     }
@@ -699,32 +825,48 @@ final class MeetingViewModel {
         do {
             try await actions.pauseMeeting()
             isCaptureActive = false
+            hasIncompleteAudioTeardown = false
             phase = .paused
             statusDetail = "Capture and coaching are paused."
         } catch {
             actionError = safeMessage(for: error)
+            if Self.isAudioTeardownFailure(error) {
+                enterIncompleteAudioTeardown()
+            }
         }
         isPerformingMeetingAction = false
     }
 
     func resume() async {
-        guard phase == .paused else { return }
+        guard !hasIncompleteAudioTeardown, phase == .paused else { return }
         isPerformingMeetingAction = true
         actionError = nil
+        // Resume can reactivate hardware before the runtime call returns. Keep the red
+        // indicator conservative until the result proves capture never became active.
+        isCaptureActive = microphoneEnabled || outputEnabled
         do {
             try await actions.resumeMeeting()
             isCaptureActive = microphoneEnabled || outputEnabled
+            hasIncompleteAudioTeardown = false
             phase = .listening
             statusDetail = "Listening only to the capture sources you approved."
         } catch {
             actionError = safeMessage(for: error)
+            if Self.isAudioTeardownFailure(error) {
+                enterIncompleteAudioTeardown()
+            } else {
+                isCaptureActive = false
+            }
         }
         isPerformingMeetingAction = false
     }
 
     func stop() async {
         guard phase != .idle && phase != .ended else { return }
+        activeStartRequest = nil
         isPerformingMeetingAction = true
+        isStopping = true
+        ignoresSessionEvents = true
         actionError = nil
 
         // Clear meeting content before waiting for service cleanup. Stop is the privacy boundary.
@@ -733,8 +875,6 @@ final class MeetingViewModel {
         deepSuggestion = nil
         manualQuestion = ""
         brownouts.removeAll()
-        isCaptureActive = false
-        phase = .ended
         statusDetail = "Meeting content cleared from the interface."
 
         do {
@@ -742,13 +882,26 @@ final class MeetingViewModel {
             if case .sealed(let summary) = repositoryState {
                 try await actions.discardRepositorySnapshot(summary.snapshotID)
             }
-            repositoryState = .none
-            meetingConsent = MeetingConsent()
+            isCaptureActive = false
+            hasIncompleteAudioTeardown = false
+            resetPerMeetingSetupState()
+            phase = .ended
             statusDetail = "Meeting data and its private repository snapshot were cleared."
         } catch {
             actionError =
                 "Local content was cleared, but background cleanup needs attention: \(safeMessage(for: error))"
+            if Self.isAudioTeardownFailure(error) {
+                enterIncompleteAudioTeardown()
+            } else {
+                isCaptureActive = false
+                hasIncompleteAudioTeardown = false
+                resetPerMeetingSetupState()
+                phase = .ended
+                statusDetail = "Meeting content was cleared; journaled cleanup will retry on launch."
+            }
         }
+        clearMeetingContent()
+        isStopping = false
         isPerformingMeetingAction = false
     }
 
@@ -767,12 +920,136 @@ final class MeetingViewModel {
         actionError = nil
     }
 
+    private static func isAudioTeardownFailure(_ error: any Error) -> Bool {
+        if let failure = error as? MeetingSessionFailure,
+            case .captureTeardownFailed = failure
+        {
+            return true
+        }
+        if let actionError = error as? PaceNoteActionError,
+            case .audioTeardown = actionError
+        {
+            return true
+        }
+        return false
+    }
+
+    private func enterIncompleteAudioTeardown() {
+        hasIncompleteAudioTeardown = true
+        // Teardown failure means capture state is unknown. Keep the red indicator on until a
+        // later Stop succeeds and proves every owned audio handle is gone.
+        isCaptureActive = true
+        phase = .brownout
+        presentedSheet = nil
+        statusDetail =
+            "Capture may still be active because teardown is incomplete. Retry Stop before continuing."
+    }
+
+    private func invalidatePendingMeetingStart() {
+        guard let pendingMeetingStart else { return }
+        self.pendingMeetingStart = nil
+        pendingMeetingStart.task.cancel()
+        ignoresSessionEvents = true
+        clearMeetingContent()
+        statusDetail = "Canceling Start and verifying capture cleanup."
+    }
+
+    private func meetingStartConfigurationDidChange() {
+        invalidatePendingMeetingStart()
+
+        guard consentRevocationStopTask == nil,
+            let activeStartRequest,
+            activeStartRequest != currentMeetingStartRequest()
+        else { return }
+
+        self.activeStartRequest = nil
+        ignoresSessionEvents = true
+        statusDetail = "Consent or capture scope changed. Stopping capture now."
+        consentRevocationStopTask = Task { [weak self] in
+            guard let self else { return }
+            await self.stop()
+            self.consentRevocationStopTask = nil
+        }
+    }
+
+    private func finishRevokedMeetingStart(
+        request: MeetingStartRequest,
+        result: Result<Void, any Error>
+    ) async {
+        ignoresSessionEvents = true
+        clearMeetingContent()
+
+        do {
+            try await actions.stopMeeting()
+        } catch {
+            if Self.isAudioTeardownFailure(error) {
+                actionError =
+                    "Start was revoked, but capture teardown could not be verified: \(safeMessage(for: error))"
+                enterIncompleteAudioTeardown()
+                return
+            }
+            isCaptureActive = false
+            hasIncompleteAudioTeardown = false
+            actionError =
+                "Capture stopped, but private meeting cleanup needs attention: \(safeMessage(for: error))"
+            resetPerMeetingSetupState()
+            refreshAfterRevokedStart(
+                detail: "The revoked Start was stopped; journaled cleanup will retry on launch."
+            )
+            return
+        }
+
+        isCaptureActive = false
+        hasIncompleteAudioTeardown = false
+        if let snapshotID = request.sealedSnapshotID {
+            do {
+                try await actions.discardRepositorySnapshot(snapshotID)
+            } catch {
+                actionError =
+                    "Capture stopped, but private snapshot cleanup needs attention: \(safeMessage(for: error))"
+                resetPerMeetingSetupState()
+                refreshAfterRevokedStart(
+                    detail: "The revoked Start was stopped; snapshot cleanup will retry on launch."
+                )
+                return
+            }
+        }
+        resetPerMeetingSetupState()
+        let detail: String
+        switch result {
+        case .success:
+            detail = "The revoked Start was stopped and its meeting data was cleared."
+        case .failure:
+            detail = "Start was canceled and its private meeting data was cleared."
+        }
+        refreshAfterRevokedStart(detail: detail)
+    }
+
+    private func refreshAfterRevokedStart(detail: String) {
+        if codexState.isReady {
+            phase = .ready
+        } else {
+            phase = .permissionRequired
+        }
+        statusDetail = detail
+    }
+
+    private func resetPerMeetingSetupState() {
+        repositoryState = .none
+        selectedRepositoryURL = nil
+        approvedSoftFindingIDs.removeAll()
+        selectedDomainSkillName = nil
+        meetingConsent = MeetingConsent()
+    }
+
     func repositorySelectionFailed() {
         actionError = "The repository folder could not be selected. No repository access was granted."
     }
 
     func receiveTranscript(_ incomingSegments: [TranscriptSegment]) {
-        guard phase != .idle && phase != .ended else { return }
+        guard !isStopping, !hasIncompleteAudioTeardown, phase != .idle, phase != .ended else {
+            return
+        }
         for segment in incomingSegments {
             if let index = transcript.firstIndex(where: { $0.id == segment.id }) {
                 transcript[index] = segment
@@ -790,7 +1067,11 @@ final class MeetingViewModel {
     }
 
     func receiveQuickSuggestion(_ card: SuggestionCard) {
-        guard card.stage == .quick || card.stage == .bridge else { return }
+        guard !isStopping, !hasIncompleteAudioTeardown, phase != .idle, phase != .ended,
+            phase != .paused, card.stage == .quick || card.stage == .bridge
+        else {
+            return
+        }
         if let existing = quickSuggestion, existing.identity == card.identity {
             return
         }
@@ -803,18 +1084,26 @@ final class MeetingViewModel {
     }
 
     func receiveVerifiedDeepSuggestion(_ card: SuggestionCard) {
-        guard card.stage == .deep,
+        guard !isStopping, !hasIncompleteAudioTeardown, phase != .idle, phase != .ended,
+            phase != .paused,
+            card.stage == .deep,
             let quickSuggestion,
             quickSuggestion.identity == card.identity,
             deepSuggestion == nil
         else { return }
         deepSuggestion = card
         phase = .suggesting
-        statusDetail = "A repository-grounded response is ready."
+        statusDetail = Self.deepSuggestionStatus(for: card.deepKind)
     }
 
     func updateBrownouts(_ reasons: Set<BrownoutReason>) {
         brownouts = reasons
+        if hasIncompleteAudioTeardown {
+            phase = .brownout
+            statusDetail =
+                "Capture may still be active because teardown is incomplete. Retry Stop before continuing."
+            return
+        }
         if reasons.isEmpty {
             if phase == .brownout { phase = .listening }
         } else if phase != .paused && phase != .ended {
@@ -839,12 +1128,20 @@ final class MeetingViewModel {
     }
 
     private func receiveSessionEvent(_ event: MeetingSessionEvent) {
+        guard !isStopping, !ignoresSessionEvents else { return }
         switch event {
         case .stateChanged(let state):
-            isCaptureActive = state.isRunning && !state.captureMode.enabledLanes.isEmpty
-            phase = state.phase
             brownouts = Set(state.brownouts.map(\.reason))
-            updateStatusDetail(for: state.phase)
+            if hasIncompleteAudioTeardown {
+                isCaptureActive = true
+                phase = .brownout
+                statusDetail =
+                    "Capture may still be active because teardown is incomplete. Retry Stop before continuing."
+            } else {
+                isCaptureActive = state.isRunning && !state.captureMode.enabledLanes.isEmpty
+                phase = state.phase
+                updateStatusDetail(for: state.phase)
+            }
         case .transcriptUpserted(let segment):
             receiveTranscript([segment])
         case .transcriptRemoved(let id):
@@ -874,7 +1171,18 @@ final class MeetingViewModel {
                 systemAudioPermission = .denied
             }
             actionError = failure.errorDescription ?? "The meeting session could not continue."
+            if Self.isAudioTeardownFailure(failure) {
+                enterIncompleteAudioTeardown()
+            }
         }
+    }
+
+    private func clearMeetingContent() {
+        transcript.removeAll(keepingCapacity: false)
+        quickSuggestion = nil
+        deepSuggestion = nil
+        manualQuestion = ""
+        brownouts.removeAll()
     }
 
     private func updateStatusDetail(for phase: MeetingPhase) {
@@ -893,9 +1201,8 @@ final class MeetingViewModel {
             statusDetail = "Preparing a response."
         case .suggesting:
             statusDetail =
-                deepSuggestion == nil
-                ? "A quick response is ready while deeper context is checked."
-                : "A repository-grounded response is ready."
+                deepSuggestion.map { Self.deepSuggestionStatus(for: $0.deepKind) }
+                ?? "A quick response is ready while deeper context is checked."
         case .paused:
             statusDetail = "Capture and coaching are paused."
         case .brownout:
@@ -915,6 +1222,21 @@ final class MeetingViewModel {
         selectedOutputSourceID = outputSources.first?.id
     }
 
+    private static func deepSuggestionStatus(for kind: DeepDraftKind?) -> String {
+        switch kind {
+        case .answer:
+            "A repository evidence-checked response is ready."
+        case .generalAnswer:
+            "General guidance is ready. Verify it before speaking."
+        case .clarification:
+            "A safe clarification is ready."
+        case .abstention:
+            "PaceNote could not verify an answer safely."
+        case nil:
+            "A Deep response is ready. Review it before speaking."
+        }
+    }
+
     private var isMeetingActive: Bool {
         switch phase {
         case .listening, .candidateQuestion, .thinking, .suggesting, .paused, .brownout: true
@@ -923,6 +1245,7 @@ final class MeetingViewModel {
     }
 
     private func refreshReadyPhase() {
+        guard !hasIncompleteAudioTeardown else { return }
         guard phase == .idle || phase == .permissionRequired || phase == .ready else { return }
         if codexState.isReady {
             phase = .ready
@@ -1013,7 +1336,7 @@ final class MeetingViewModel {
                 id: UUID(uuidString: "66666666-6666-6666-6666-666666666666") ?? UUID(),
                 identity: identity,
                 stage: .bridge,
-                text: "There are two separate safeguards. Let me walk through the boundary.",
+                text: "Let me think through that carefully for a second.",
                 confidence: 1
             )
             model.deepSuggestion = SuggestionCard(
@@ -1032,7 +1355,8 @@ final class MeetingViewModel {
                         fileHash: String(repeating: "a", count: 64),
                         claim: "The grounding manager creates a private snapshot before repository use."
                     )
-                ]
+                ],
+                deepKind: .answer
             )
             return model
         }

@@ -22,6 +22,11 @@ public enum MeetingCaptureMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum MeetingSystemOutputScope: String, Codable, CaseIterable, Sendable {
+    case meetingApplication
+    case allSystemAudio
+}
+
 public struct MeetingConsent: Equatable, Sendable {
     public let participantDisclosureConfirmed: Bool
 
@@ -49,6 +54,8 @@ public struct MeetingSessionConfiguration: Sendable {
     public let transcriptContextSeconds: TimeInterval
     public let turnBoundaryDelay: Duration
     public let microphoneAttributionDelay: Duration
+    public let systemOutputScope: MeetingSystemOutputScope
+    public let soleNearbySpeakerConfirmed: Bool
 
     public init(
         meetingID: UUID = UUID(),
@@ -58,7 +65,9 @@ public struct MeetingSessionConfiguration: Sendable {
         transcriptRetention: Duration = .seconds(180),
         transcriptContextSeconds: TimeInterval = 45,
         turnBoundaryDelay: Duration = .milliseconds(450),
-        microphoneAttributionDelay: Duration = .milliseconds(250)
+        microphoneAttributionDelay: Duration = .milliseconds(250),
+        systemOutputScope: MeetingSystemOutputScope = .meetingApplication,
+        soleNearbySpeakerConfirmed: Bool = false
     ) {
         precondition(transcriptContextSeconds > 0)
         self.meetingID = meetingID
@@ -69,6 +78,8 @@ public struct MeetingSessionConfiguration: Sendable {
         self.transcriptContextSeconds = transcriptContextSeconds
         self.turnBoundaryDelay = turnBoundaryDelay
         self.microphoneAttributionDelay = microphoneAttributionDelay
+        self.systemOutputScope = systemOutputScope
+        self.soleNearbySpeakerConfirmed = soleNearbySpeakerConfirmed
     }
 }
 
@@ -224,6 +235,7 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
     case responseProtocolUnsupported
     case responseUnavailable
     case captureUnavailable(AudioLane)
+    case captureTeardownFailed(AudioLane)
     case systemAudioPermissionDenied
     case noCandidateQuestion
     case emptyManualQuestion
@@ -254,6 +266,8 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
             "The Codex response runtime could not be prepared."
         case .captureUnavailable(let lane):
             "The \(lane.rawValue) audio route could not be started."
+        case .captureTeardownFailed(let lane):
+            "The \(lane.rawValue) audio route could not be fully stopped. Retry Stop before starting or resuming."
         case .systemAudioPermissionDenied:
             "System audio capture permission is denied. Allow PaceNote in System Settings, then try again."
         case .noCandidateQuestion:

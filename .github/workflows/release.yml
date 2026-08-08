@@ -2,6 +2,11 @@ name: Signed release
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag matching VERSION, for example v0.1.0
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
@@ -19,6 +24,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - name: Validate release tag and version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          test -n "$version"
+          test "$RELEASE_TAG" = "v$version"
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
       - name: Select Xcode
         run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
       - name: Import Developer ID certificate
@@ -56,4 +71,5 @@ jobs:
       - name: Create private GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/PaceNote-arm64.zip dist/SHA256SUMS --verify-tag --generate-notes
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/PaceNote-arm64.zip dist/SHA256SUMS --verify-tag --generate-notes

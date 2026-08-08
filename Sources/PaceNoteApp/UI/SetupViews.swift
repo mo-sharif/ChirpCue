@@ -92,16 +92,13 @@ struct FirstRunConsentView: View {
                                 model.firstRunAcknowledgement.consentResponsibility.toggle()
                             }
                             Toggle(
-                                "I understand transcript text and selected repository excerpts are processed by OpenAI through my signed-in ChatGPT account.",
+                                PaceNoteDisclosureText.firstRunOpenAIProcessing,
                                 isOn: $model.firstRunAcknowledgement.openAIProcessing
                             )
-                            .accessibilityLabel(
-                                "I understand transcript text and selected repository excerpts are processed by OpenAI through my signed-in ChatGPT account."
-                            )
+                            .accessibilityLabel(PaceNoteDisclosureText.firstRunOpenAIProcessing)
                             .accessibilityIdentifier("first-run.openai-processing")
                             .paceNoteAssistiveControl(
-                                label:
-                                    "I understand transcript text and selected repository excerpts are processed by OpenAI through my signed-in ChatGPT account.",
+                                label: PaceNoteDisclosureText.firstRunOpenAIProcessing,
                                 identifier: "first-run.openai-processing",
                                 role: .checkBox,
                                 value: model.firstRunAcknowledgement.openAIProcessing
@@ -182,7 +179,6 @@ private struct FirstRunPrinciple: View {
 @MainActor
 struct MeetingSetupView: View {
     @Bindable var model: MeetingViewModel
-    @Environment(\.dismiss) private var dismiss
     @State private var isChoosingRepository = false
 
     var body: some View {
@@ -256,17 +252,19 @@ struct MeetingSetupView: View {
                 Button("Privacy Details") {
                     model.presentPrivacyDetails()
                 }
+                .disabled(model.isPerformingMeetingAction)
                 .accessibilityLabel("Privacy Details")
                 .accessibilityIdentifier("meeting-setup.privacy")
                 .paceNoteAssistiveControl(
                     label: "Privacy Details",
-                    identifier: "meeting-setup.privacy"
+                    identifier: "meeting-setup.privacy",
+                    isEnabled: !model.isPerformingMeetingAction
                 ) {
                     model.presentPrivacyDetails()
                 }
                 Spacer()
                 Button("Cancel") {
-                    dismiss()
+                    model.cancelMeetingSetup()
                 }
                 .accessibilityLabel("Cancel Meeting Setup")
                 .accessibilityIdentifier("meeting-setup.cancel")
@@ -274,7 +272,7 @@ struct MeetingSetupView: View {
                     label: "Cancel Meeting Setup",
                     identifier: "meeting-setup.cancel"
                 ) {
-                    dismiss()
+                    model.cancelMeetingSetup()
                 }
                 Button("Start Meeting") {
                     Task { await model.startMeeting() }
@@ -341,6 +339,36 @@ private struct CaptureSetupSection: View {
                     ) {
                         Task { await model.requestPermission(.microphone) }
                     }
+                }
+
+                if model.microphoneEnabled {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(
+                            "Uses the current macOS default input. PaceNote does not enumerate an exact microphone device here."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        Toggle(
+                            PaceNoteDisclosureText.soleNearbySpeaker,
+                            isOn: $model.meetingConsent.soleNearbySpeakerConfirmed
+                        )
+                        .accessibilityLabel(PaceNoteDisclosureText.soleNearbySpeaker)
+                        .accessibilityIdentifier("meeting-setup.sole-nearby-speaker")
+                        .paceNoteAssistiveControl(
+                            label: PaceNoteDisclosureText.soleNearbySpeaker,
+                            identifier: "meeting-setup.sole-nearby-speaker",
+                            role: .checkBox,
+                            value: model.meetingConsent.soleNearbySpeakerConfirmed
+                        ) {
+                            model.meetingConsent.soleNearbySpeakerConfirmed.toggle()
+                        }
+                        Text(
+                            "Optional. Leave this off if anyone else may be nearby; microphone speech will be labeled MIC."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .toggleStyle(.checkbox)
                 }
 
                 HStack(alignment: .top, spacing: 12) {
@@ -410,8 +438,8 @@ private struct CaptureSetupSection: View {
                 if !model.microphoneEnabled {
                     Label(
                         model.outputEnabled
-                            ? "Meeting output still supports automatic question detection. Microphone capture is only needed to label your side of the conversation."
-                            : "Capture is off. PaceNote will coach only questions you type manually.",
+                            ? "Meeting output will still be transcribed. With the microphone off, PaceNote waits for you to press Coach Current Turn instead of suggesting automatically."
+                            : "Capture is off. Enable the microphone or meeting output before starting.",
                         systemImage: "info.circle"
                     )
                     .font(.caption)
@@ -489,13 +517,16 @@ private struct CodexSetupSection: View {
                             Button("Sign in to Codex with ChatGPT") {
                                 Task { await model.signInToCodex() }
                             }
-                            .disabled(model.codexState == .checking)
+                            .disabled(
+                                model.codexState == .checking || model.isPerformingMeetingAction
+                            )
                             .accessibilityLabel("Sign in to Codex with ChatGPT")
                             .accessibilityIdentifier("meeting-setup.codex-sign-in")
                             .paceNoteAssistiveControl(
                                 label: "Sign in to Codex with ChatGPT",
                                 identifier: "meeting-setup.codex-sign-in",
                                 isEnabled: model.codexState != .checking
+                                    && !model.isPerformingMeetingAction
                             ) {
                                 Task { await model.signInToCodex() }
                             }
@@ -587,7 +618,7 @@ private struct RepositorySetupSection: View {
                     Button(model.repositoryName == nil ? "Choose Repository…" : "Choose Another…") {
                         chooseRepository()
                     }
-                    .disabled(model.repositoryState.isPending)
+                    .disabled(model.repositoryState.isPending || model.isPerformingMeetingAction)
                     .accessibilityLabel(
                         model.repositoryName == nil ? "Choose Repository" : "Choose Another Repository"
                     )
@@ -597,18 +628,21 @@ private struct RepositorySetupSection: View {
                             model.repositoryName == nil
                             ? "Choose Repository" : "Choose Another Repository",
                         identifier: "meeting-setup.choose-repository",
-                        isEnabled: !model.repositoryState.isPending,
+                        isEnabled: !model.repositoryState.isPending
+                            && !model.isPerformingMeetingAction,
                         action: chooseRepository
                     )
                     if case .review = model.repositoryState {
                         Button("Review Findings") {
                             model.presentedSheet = .repositoryReview
                         }
+                        .disabled(model.isPerformingMeetingAction)
                         .accessibilityLabel("Review Repository Findings")
                         .accessibilityIdentifier("meeting-setup.review-findings")
                         .paceNoteAssistiveControl(
                             label: "Review Repository Findings",
-                            identifier: "meeting-setup.review-findings"
+                            identifier: "meeting-setup.review-findings",
+                            isEnabled: !model.isPerformingMeetingAction
                         ) {
                             model.presentedSheet = .repositoryReview
                         }
@@ -617,13 +651,16 @@ private struct RepositorySetupSection: View {
                         Button("Remove") {
                             Task { await model.removeRepository() }
                         }
-                        .disabled(model.repositoryState.isPending)
+                        .disabled(
+                            model.repositoryState.isPending || model.isPerformingMeetingAction
+                        )
                         .accessibilityLabel("Remove Repository")
                         .accessibilityIdentifier("meeting-setup.remove-repository")
                         .paceNoteAssistiveControl(
                             label: "Remove Repository",
                             identifier: "meeting-setup.remove-repository",
                             isEnabled: !model.repositoryState.isPending
+                                && !model.isPerformingMeetingAction
                         ) {
                             Task { await model.removeRepository() }
                         }
@@ -648,16 +685,13 @@ private struct MeetingConsentSection: View {
         GroupBox("Consent for this meeting") {
             VStack(alignment: .leading, spacing: 11) {
                 Toggle(
-                    "I have permission to use live transcription and AI assistance in this meeting.",
+                    PaceNoteDisclosureText.meetingParticipantPermission,
                     isOn: $model.meetingConsent.participantPermission
                 )
-                .accessibilityLabel(
-                    "I have permission to use live transcription and AI assistance in this meeting."
-                )
+                .accessibilityLabel(PaceNoteDisclosureText.meetingParticipantPermission)
                 .accessibilityIdentifier("meeting-setup.consent-participant")
                 .paceNoteAssistiveControl(
-                    label:
-                        "I have permission to use live transcription and AI assistance in this meeting.",
+                    label: PaceNoteDisclosureText.meetingParticipantPermission,
                     identifier: "meeting-setup.consent-participant",
                     role: .checkBox,
                     value: model.meetingConsent.participantPermission
@@ -682,16 +716,13 @@ private struct MeetingConsentSection: View {
                     model.meetingConsent.captureScopeConfirmed.toggle()
                 }
                 Toggle(
-                    "I understand this meeting's transcript and any selected repository excerpts are processed by OpenAI through my ChatGPT account.",
+                    PaceNoteDisclosureText.meetingOpenAIProcessing,
                     isOn: $model.meetingConsent.openAIProcessingConfirmed
                 )
-                .accessibilityLabel(
-                    "I understand this meeting's transcript and any selected repository excerpts are processed by OpenAI through my ChatGPT account."
-                )
+                .accessibilityLabel(PaceNoteDisclosureText.meetingOpenAIProcessing)
                 .accessibilityIdentifier("meeting-setup.consent-openai-processing")
                 .paceNoteAssistiveControl(
-                    label:
-                        "I understand this meeting's transcript and any selected repository excerpts are processed by OpenAI through my ChatGPT account.",
+                    label: PaceNoteDisclosureText.meetingOpenAIProcessing,
                     identifier: "meeting-setup.consent-openai-processing",
                     role: .checkBox,
                     value: model.meetingConsent.openAIProcessingConfirmed
@@ -934,8 +965,7 @@ struct PrivacyDetailsView: View {
                     )
                     PrivacyDetailRow(
                         title: "OpenAI processing",
-                        detail:
-                            "Transcript text and selected repository excerpts leave this Mac for processing under the signed-in ChatGPT account's applicable OpenAI terms. PaceNote makes no zero-retention claim."
+                        detail: PaceNoteDisclosureText.openAIProcessingSummary
                     )
                     PrivacyDetailRow(
                         title: "Isolated subscription sign-in",

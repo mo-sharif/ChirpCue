@@ -33,8 +33,8 @@ For a personal Mac app, this is the simplest credible architecture:
 2. AVAudioEngine captures the microphone.
 3. Apple's on-device Speech framework creates two timestamped transcript lanes.
 4. A local turn detector decides when the other party has probably asked a question.
-5. For every eligible turn, PaceNote immediately shows one fixed local bridge while Deep inspects sanitized repo and skill snapshots under a deny-by-default permission profile. The production coordinator never invokes model Quick.
-6. The UI keeps the bridge and the later verified continuation or fixed local clarification or hold state separate.
+5. For every eligible turn, PaceNote immediately shows one fixed local bridge while Deep runs under a deny-by-default permission profile. Deep uses an empty private context for general guidance or a sanitized repo and skill snapshot for repository-specific claims. The production coordinator never invokes model Quick.
+6. The UI keeps the bridge and the later visibly unverified general guidance, verified repository continuation, or fixed local clarification or hold state separate.
 
 This avoids the cost and latency of sending continuous audio to a realtime API. It also avoids pretending that a Codex subscription is a general-purpose OpenAI API allowance.
 
@@ -43,8 +43,9 @@ This avoids the cost and latency of sending continuous audio to a realtime API. 
 Transcription and generic meeting summaries are not the wedge. PaceNote is differentiated by:
 
 - repo, AGENTS.md, and skill-aware technical answers;
+- useful general guidance when no repository is attached, explicitly labeled as unverified;
 - an instant cue that is structurally unable to invent repo facts;
-- an extractively verified continuation, or fixed local clarification or abstention text when evidence is unavailable;
+- an extractively verified repository continuation, a labeled general continuation, or fixed local clarification or abstention text;
 - native Mac capture without a meeting bot;
 - personal subscription use, read-only isolation, and ephemeral meeting context.
 
@@ -57,7 +58,7 @@ Transcription and generic meeting summaries are not the wedge. PaceNote is diffe
 - Universal system-output capture when audio is routed through the Mac.
 - Separate microphone and meeting-output transcript lanes.
 - English transcription first.
-- One explicitly selected repository. Each technical question routes to one AGENTS scope within its sealed snapshot.
+- Zero or one explicitly selected repository. Repository-specific questions route to one AGENTS scope within its sealed snapshot; repository-free turns have no file access and cannot claim codebase facts.
 - Explicitly selected read-only skills.
 - SAY NOW bridge and Deep suggestion cards.
 - Independent mic and output controls plus start, pause, resume, stop, dismiss, and Coach Current Turn controls.
@@ -89,12 +90,12 @@ The user opens PaceNote from the menu bar and chooses:
 - profile: the dedicated Personal profile used only by PaceNote;
 - meeting source: a detected meeting app when resolvable, or an explicit all-system-output fallback;
 - capture lanes: microphone and system output independently enabled or disabled;
-- repository: one selected repo;
+- repository: optional; one selected repo enables evidence-verified codebase-specific answers;
 - skill loadout: the built-in meeting-copilot skill and at most one domain skill;
 - speaking style: Direct, Calm, or Technical;
 - retention: Ephemeral, which is the MVP default.
 
-The app requires a per-meeting confirmation of source scope and permission to capture. It then checks audio permissions, live input meters, transcription assets, ChatGPT identity, Codex rate limits, repo state, discovered AGENTS.md files, and the selected skills. It shows Ready only after those checks pass or identifies the exact degraded mode.
+The app requires a per-meeting confirmation of source scope and permission to capture. Before Start, it checks audio permissions and source selection, transcription assets, ChatGPT identity, Codex rate limits, repo state, discovered AGENTS.md files, and the selected skills. After capture begins, callback and route watchdogs expose missing or changed audio as a visible brownout. It shows Ready only after the preflight checks pass or identifies the exact degraded mode. Pre-capture live level meters are deferred beyond the personal release candidate.
 
 System output is required for automatic or manual Coach Current Turn suggestions. If output capture is disabled, the app enters OUTPUT_DISABLED: it may show a mic-only transcript, but it does not infer the other party's question or generate a response from captured speech. The user can still type or paste an explicit question into a separate Ask field. If both capture lanes are disabled, the app cannot enter Listening.
 
@@ -110,7 +111,7 @@ The default interface is a compact floating macOS window with menu-bar controls:
     │ THEM  But why not do that synchronously?                   │
     ├────────────────────────────────────────────────────────────┤
     │ SAY NOW                                                    │
-    │ Let me dig into the exact implementation for a second.    │
+    │ Let me think through that carefully for a second.         │
     ├────────────────────────────────────────────────────────────┤
     │ Checking the repo... auth flow · 3 files inspected         │
     ├────────────────────────────────────────────────────────────┤
@@ -146,7 +147,7 @@ Remote question:
 
 Immediate technical bridge:
 
-> Let me dig into the exact implementation for a second.
+> Let me think through that carefully for a second.
 
 Deep continuation:
 
@@ -181,7 +182,9 @@ flowchart LR
     GM["Grounding manager"] --> D
     REPO["Sanitized repo snapshots"] --> GM
     SKILLS["Approved skill snapshots"] --> GM
-    D --> VERIFY["Local evidence verifier"]
+    D --> MODE{"Repository attached?"}
+    MODE -->|"yes"| VERIFY["Local evidence verifier"]
+    MODE -->|"no"| BIND
     VERIFY --> BIND
     BIND --> UI
 
@@ -216,9 +219,9 @@ This should work with Google Meet because browser audio is ordinary Mac system o
 
 ### 6.2 Microphone
 
-Use AVAudioEngine for the selected microphone. Keep the mic and system streams separate all the way through transcription. Physical source separation gives a reliable microphone-versus-output lane with headphones, but it does not prove speaker identity. The microphone can capture a nearby person or private aside even while the user is muted inside Meet or Zoom.
+Use AVAudioEngine for the current macOS default microphone. Keep the mic and system streams separate all the way through transcription. Physical source separation gives a reliable microphone-versus-output lane with headphones, but it does not prove speaker identity. The microphone can capture a nearby person or private aside even while the user is muted inside Meet or Zoom.
 
-When speakers cause remote audio to leak into the microphone, compare recent audio fingerprints and suppress high-confidence duplicates. If the source remains uncertain, label the span UNKNOWN instead of guessing. The setup screen shows independent live meters so the user can verify both routes before capture begins.
+When speakers cause remote audio to leak into the microphone, compare recent transcript timing and similarity and suppress high-confidence duplicates. If the source remains uncertain, label the span UNKNOWN instead of guessing. Setup shows the enabled lanes, Mac-output scope, and permissions. It states that the microphone uses the current macOS default input rather than claiming to display an exact microphone device. After Start, independent callback watchdogs surface a missing route. Pre-capture live level meters are deferred.
 
 Automatic coaching requires the microphone lane because cue freezing and reply timing depend on local speech. With mic disabled, the app enters MIC_DISABLED manual mode: output transcription continues, no cue is triggered automatically, and the user presses Coach Current Turn to seal the latest stable output span. The user also freezes or dismisses that card manually, and cue-before-reply metrics are marked unavailable.
 
@@ -228,7 +231,7 @@ Meeting-output capture is required for speech-driven coaching. With output disab
 
 Map both AVAudioTime host timestamps into one mach continuous-time domain. Maintain a sliding clock transform per source, record discontinuities, and resample only when measured drift exceeds the evaluation threshold. A controlled loopback fixture supplies the same timed signal to both lanes and verifies long-run skew.
 
-Each lane has a callback, format, route-ID, and energy watchdog. A missing callback, route change, invalid format, or unexpected zero-energy span creates a typed gap. The app does not use an inaudible canary and cannot prove that a global tap contains only meeting audio; the independent route meters and source badge make that scope visible to the user.
+Each lane has a callback, format, route-ID, and callback watchdog. A missing callback, route change, invalid format, or transfer failure creates a typed gap. The app does not use an inaudible canary and cannot prove that a global tap contains only meeting audio; the explicit source badge makes that scope visible to the user.
 
 ### 6.4 Transcription
 
@@ -284,18 +287,18 @@ Every candidate question receives:
 - repo grounding fingerprint;
 - deadline budget.
 
-Deep starts automatically for every eligible response-required turn. The visible cue is always the exact fixed local bridge, regardless of topic. The production coordinator does not call model Quick, does not classify a turn to decide whether a model may write the first cue, and does not consult a model-controlled `needsDeep` value. Deep still requires selected-repository grounding, stable source attribution, authentication, permissions, and available usage-governor capacity.
+Deep starts automatically for every eligible response-required turn. The visible cue is always the exact fixed local bridge, regardless of topic. The production coordinator does not call model Quick, does not classify a turn to decide whether a model may write the first cue, and does not consult a model-controlled `needsDeep` value. Deep requires authentication, the pinned permission profile, and available usage-governor capacity. Repository mode additionally requires a fresh sealed snapshot and stable source attribution; general mode uses an empty private context with no repository or domain skill.
 
 The visible cue is sealed exactly once:
 
 1. the coordinator immediately seals the deterministic bridge as displayedCue;
 2. the coordinator assigns the sealed text a cue ID and content hash;
-3. Deep independently returns an evidence-backed DeepDraft;
-4. local verification accepts the answer candidate only when it exactly matches one extractive verified basis claim after case and whitespace normalization while preserving punctuation;
+3. Deep independently returns a schema-bound DeepDraft;
+4. in repository mode, local verification accepts an answer candidate only when it exactly matches one extractive verified basis claim after case and whitespace normalization while preserving punctuation; in general mode, local validation requires `general_answer`, a null grounding fingerprint, and empty basis;
 5. a binder produces BoundDeep against exactly that cue ID, cue hash, and DeepDraft hash;
-6. only the verified BoundDeep bundle may display.
+6. only the locally validated BoundDeep bundle may display, with general guidance visibly distinguished from repository-verified evidence.
 
-Deterministic rules bind an answer as continue, a missing-evidence question as clarify, and an abstention as abstain. For an answer, the binder uses the verified extractive candidate. For clarification and abstention, it discards model candidate prose and inserts fixed local safe text. A validation failure emits `deepUnavailable`, leaves the bridge visible, and enters `DEEP_LIMITED`; rejected text is never shown. The production coordinator does not start a model reconciliation turn. Completion orderings are fixture-tested. Results are accepted only when meeting ID, turn ID, generation, cue binding, DeepDraft hash, and grounding fingerprint still match.
+Deterministic rules bind a repository answer or general answer as continue, a missing-context question as clarify, and an abstention as abstain. For a repository answer, the binder uses the verified extractive candidate. For `general_answer`, it uses the schema-validated candidate and marks the card as unverified general guidance. For clarification and abstention, it discards model candidate prose and inserts fixed local safe text. A validation failure emits `deepUnavailable`, leaves the bridge visible, and enters `DEEP_LIMITED`; rejected text is never shown. The production coordinator does not start a model reconciliation turn. Completion orderings are fixture-tested. Results are accepted only when meeting ID, turn ID, generation, cue binding, DeepDraft hash, and optional grounding fingerprint still match.
 
 ### 7.2 Immediate bridge
 
@@ -303,7 +306,7 @@ Purpose: give the user a safe sentence to say immediately while Deep works.
 
 The implemented deterministic bridge is:
 
-> Let me dig into the exact implementation for a second.
+> Let me think through that carefully for a second.
 
 It is local, immutable, and identical for every production turn. Meeting text cannot alter it. No model inference, topic classifier, repository access, subscription capacity, or network round trip sits on this first-cue path.
 
@@ -311,24 +314,25 @@ Lower-level Quick and reconciliation protocol types and fixture tests remain for
 
 ### 7.3 Deep worker
 
-Purpose: produce the next technically grounded sentence.
+Purpose: produce the next concise sentence, either visibly unverified general guidance or a repository-grounded technical answer.
 
 Inputs:
 
 - the same turn envelope;
-- an ephemeral fork of the selected repo context;
-- verified AGENTS.md instruction sources;
+- an ephemeral fork of either an empty private context or the selected repo context;
+- verified AGENTS.md instruction sources only in repository mode;
 - the meeting-copilot skill;
-- at most one explicitly approved domain skill;
+- at most one explicitly approved domain skill in repository mode;
 - the minimum recent transcript window needed to understand the question.
 
-Model availability and effort options are discovered at runtime. Current production routes every Deep turn as `hardTechnical`, preferring gpt-5.6-sol at high effort and falling back through the versioned hard-technical policy. The narrow-technical Terra route remains configuration for future evaluation and is not selected by the current runtime. Deep narrows or abstains when the evidence set cannot support an answer.
+Model availability and effort options are discovered at runtime. Current production routes every Deep turn as `hardTechnical`, preferring gpt-5.6-sol at high effort and falling back through the versioned hard-technical policy. The narrow-technical Terra route remains configuration for future evaluation and is not selected by the current runtime. Repository Deep narrows or abstains when evidence cannot support an answer. General Deep clarifies or abstains when the question depends on unavailable organization-specific facts.
 
 Do not treat these model IDs as permanent product assumptions. model/list does not rank latency or expose product roles, so an unknown model is never selected automatically. The coordinator uses the versioned policy only for known available models and records the choice in content-free diagnostics.
 
-Deep returns a cue-independent draft classified as answer, clarification, or abstention. Before display, PaceNote requires an answer candidate to exactly match one verified basis claim after case and whitespace normalization while preserving punctuation. That claim must contain at least two informative terms and copy one complete freshly read cited source line, apart from a leading code-comment or list marker. Appending, combining, paraphrasing, changing punctuation, or changing negation fails closed. The binder creates the final relationship:
+Deep returns a cue-independent draft classified as `answer`, `general_answer`, `clarification`, or `abstention`. Repository mode rejects `general_answer`; general mode rejects `answer`. Before displaying a repository answer, PaceNote requires its candidate to exactly match one verified basis claim after case and whitespace normalization while preserving punctuation. That claim must contain at least two informative terms and copy one complete freshly read cited source line, apart from a leading code-comment or list marker. Appending, combining, paraphrasing, changing punctuation, or changing negation fails closed. A general answer must have a null grounding fingerprint and empty basis and is shown with an explicit verify-before-speaking label. The binder creates the final relationship:
 
 - continue: adds the verified detail naturally;
+- continue for general guidance: adds the schema-validated sentence with an unverified label;
 - clarify: discards model prose and uses the fixed local clarification sentence;
 - abstain: discards model prose and uses the fixed local abstention sentence.
 
@@ -357,7 +361,7 @@ Local speech initially freezes the visible cue instead of cancelling Deep becaus
 
 ### 7.5 Eligibility and usage governor
 
-Automatic coaching requires a likely meeting-output question or a user-triggered Coach Current Turn, stable enough source attribution, and available Codex capacity. A typed question can start coaching when output capture is unavailable. Deep also requires a selected, successfully sealed repository. The personal defaults allow one active Deep turn and at most two Deep starts per minute. These limits must be tuned from measured plan usage. The local bridge consumes no subscription capacity.
+Automatic coaching requires a likely meeting-output question or a user-triggered Coach Current Turn, stable enough source attribution, and available Codex capacity. A typed question can start coaching when output capture is unavailable. Repository-specific Deep additionally requires a selected, successfully sealed repository; otherwise PaceNote uses the clearly labeled general mode. The personal defaults allow one active Deep turn and at most two Deep starts per minute. These limits must be tuned from measured plan usage. The local bridge consumes no subscription capacity.
 
 `account/rateLimits/updated` can lower the local budget immediately; recovery is visible and never assumed on a timer alone.
 
@@ -369,7 +373,7 @@ Both stages output words for the user to say, not a report for the user to trans
 - Lead with the answer or transition, not model process.
 - Use ordinary spoken clauses and one idea per sentence.
 - Keep file paths, citations, model names, confidence mechanics, and tool activity out of sayNow and sayNext.
-- Keep the candidate to one evidence-backed statement; the binder supplies its transition.
+- Keep the candidate to one statement. Repository mode requires extractive evidence; general mode requires qualified, non-codebase-specific wording and an empty basis. The binder supplies its transition.
 - Apply only the user-selected static style note. Do not learn a hidden voice profile from retained meetings.
 
 ## 8. Output contracts
@@ -394,7 +398,7 @@ DeepDraft:
       "turnID": "UUID",
       "generation": 1,
       "groundingFingerprint": "sha256 | null",
-      "kind": "answer | clarification | abstention",
+      "kind": "answer | general_answer | clarification | abstention",
       "candidateSayNext": "33 words maximum",
       "confidence": "number from 0 through 1",
       "basis": [
@@ -419,13 +423,14 @@ BoundDeep:
       "cueHash": "sha256",
       "deepDraftHash": "sha256",
       "groundingFingerprint": "sha256 | null",
+      "kind": "answer | general_answer | clarification | abstention",
       "relationship": "continue | correct | clarify | abstain",
       "transition": "7 words maximum",
       "sayNext": "33 words maximum",
       "basis": ["verified EvidenceReference values"]
     }
 
-The UI composes a deterministic transition plus `sayNext`, capped at 40 words total, only after the DeepDraft envelope and every binding field validate. For an answer, `sayNext` is the verified extractive candidate. For clarification and abstention, it is fixed local safe text and model prose is ignored.
+The UI composes a deterministic transition plus `sayNext`, capped at 40 words total, only after the DeepDraft envelope and every binding field validate. For a repository `answer`, `sayNext` is the verified extractive candidate. For `general_answer`, it is the schema-validated candidate and the card is marked **General guidance • verify before speaking**. For clarification and abstention, it is fixed local safe text and model prose is ignored.
 
 Local validation rejects:
 
@@ -433,7 +438,7 @@ Local validation rejects:
 - absolute paths or paths outside an allowlisted root;
 - nonexistent files or line ranges;
 - evidence from a different repo fingerprint;
-- implementation claims with no evidence;
+- an `answer` with no repository evidence, or a `general_answer` that carries a repository fingerprint or basis;
 - a basis claim with fewer than two informative terms or one that is not an exact complete cited source line after removing only a leading comment or list marker;
 - a candidate that appends, combines, paraphrases, changes punctuation, or changes negation instead of exactly matching one extractive claim;
 - results for a stale turn ID, generation, cue hash, repo fingerprint, or cited file hash.
@@ -449,6 +454,8 @@ Run a pinned Codex app-server subprocess and communicate over its default JSONL 
 The user performs a one-time ChatGPT login from PaceNote. Set `cli_auth_credentials_store` to `keyring` so cached OAuth credentials use macOS Keychain rather than plaintext `auth.json`; the presence of a plaintext credential file fails closed. Bind the profile to the expected account identity. Ready displays a redacted identity and blocks a mismatch. Account logout and Forget Profile clear the cached login, local identity binding, and dedicated profile state.
 
 The canonical profile configuration sets `[history] persistence = "none"`, disables analytics, memories, agents, hooks, apps, browser and computer-use surfaces, and keeps shell environment inheritance empty. PaceNote rewrites this restrictive configuration before every connection and restores it after meeting cleanup. It never reads or copies tokens from another Codex profile.
+
+Exactly one PaceNote process or opt-in live probe may own the dedicated profile. A stable sibling lock file, outside the profile subtree that cleanup sanitizes, is held for the owner's lifetime. Acquisition rejects symlinked parents or lock files, non-regular files, hard links, and foreign ownership, and forces owner-only mode. A second owner fails before app-server launch or profile mutation.
 
 The app-server owns token refresh, account status, model discovery, Codex usage limits, threads, turns, streamed events, and approvals. No OpenAI API key is stored or requested.
 
@@ -665,8 +672,8 @@ Transcript slices, repo excerpts, tool output, AGENTS.md instructions, and selec
 
 ### 12.2 Destruction lifecycle
 
-- Pause stops both capture lanes, cancels active Codex work, and clears the raw-audio ring. The visible transcript may remain in RAM until resume or stop.
-- Stop or End interrupts all turns, deletes meeting-created base and fork threads, terminates the meeting app-server after a bounded grace period, clears transcript and cards, releases audio pages, removes sealed snapshots and temporary context, sanitizes allowlisted transient state from the stable profile, restores its canonical restrictive configuration, and audits for meeting and grounding canaries.
+- Pause stops both capture lanes, cancels active Codex work, and clears the raw-audio ring. The visible transcript may remain in RAM until resume or stop. Core Audio teardown advances through stop-aggregate, destroy-IOProc, destroy-aggregate, and destroy-tap stages, retaining the exact unfinished stage and lane for retry.
+- Stop or End clears visible transcript and cards immediately, interrupts all turns, deletes meeting-created base and fork threads, terminates the meeting app-server after a bounded grace period, seals realtime audio writers, overwrites queued and historical audio, removes sealed snapshots and temporary context, sanitizes allowlisted transient state from the stable profile, restores its canonical restrictive configuration, and audits for meeting and grounding canaries. It emits a stopped event and clears the red capture indicator only after every owned audio handle is destroyed. An incomplete audio teardown keeps the red indicator visible and leaves only Stop enabled so the same owner can retry safely.
 - Stop deletes the complete private meeting root before removing its cleanup-journal entry. A residual finding, unsafe stable-profile entry, failed root deletion, or failed audit leaves cleanup pending and blocks another meeting.
 - Startup runs a janitor before sign-in or capture. It reads the cleanup journal, deletes app-created threads after app-server initialization, finds unjournaled thread IDs by their expected snapshot cwd when needed, removes abandoned meeting roots, sanitizes stable-profile transient state, and repeats the residual audit.
 - All base-thread cwd values live under the meeting's private root. If a crash occurred before a thread ID was journaled, the janitor lists appServer threads at the journaled expected cwd values and deletes every match.
@@ -677,7 +684,7 @@ Transcript slices, repo excerpts, tool output, AGENTS.md instructions, and selec
 
 - Starting capture is always manual.
 - A persistent red listening indicator is visible.
-- Mic and system-output capture have separate visible toggles and meters.
+- Mic and system-output capture have separate visible toggles, permission states, and source labels. Pre-capture level meters are deferred.
 - Every meeting requires the user to confirm the selected source scope and that they have permission to capture and process it.
 - First-run setup lists every data class that leaves the Mac.
 - The user is responsible for participant consent, recording law, confidentiality agreements, and employer policy.
@@ -731,6 +738,8 @@ Evaluate with sanitized technical meeting fixtures and real repo snapshots, neve
 | Deep citation path and line validity | 100% |
 | Deep claim-to-citation support | 95% or better |
 | Displayed Deep answer candidate exactly matches one extractive verified basis claim while preserving punctuation | 100% |
+| Repository-free useful answers emitted only as `general_answer` with null fingerprint, empty basis, and visible unverified label | 100% |
+| General answer claims knowledge of the user's codebase or production state | 0 |
 | Correct abstention when evidence is missing | 90% or better |
 | Deep result bound to the exact displayed cue ID and hash | 100% |
 | Sensitive-file fixture exposed to a model-readable snapshot | 0 |
@@ -788,7 +797,7 @@ Go/no-go: do not declare the native audio product ready until this survives forc
 - AVAudioEngine microphone stream.
 - Two on-device transcribers.
 - Shared monotonic clock mapping and bounded drift correction.
-- independent route meters, callback watchdogs, and explicit silent-route detection.
+- independent callback watchdogs and explicit missing-route detection; optional live level meters remain deferred.
 - gap, route-change, echo, and uncertainty events.
 - local turn detector and fixture replayer.
 
@@ -842,20 +851,20 @@ The project includes text-only and Swift test harnesses alongside the native app
 Input:
 
 - a timestamped mock transcript;
-- one selected repo;
-- one simulated direct technical question.
+- one optional selected repo;
+- one simulated general question and one direct repository-specific technical question.
 
 They must:
 
 1. launch and initialize the pinned app-server with dedicated, identity-bound ChatGPT auth and no API key;
-2. build, secret-scan, seal, and fingerprint a repo and skill snapshot;
+2. prove an empty general context cannot read repository files, then build, secret-scan, seal, and fingerprint a repo and skill snapshot;
 3. activate and verify the deny-by-default named permission profile;
 4. create one immutable turn;
 5. seal the exact deterministic bridge immediately for every eligible turn and start Deep automatically without invoking a classifier, model Quick, model reconciliation, or a model-controlled `needsDeep` value;
 6. prove lower-level Quick and reconciliation stubs are never called by the production coordinator;
 7. bind Deep to that cue's ID and hash under every completion ordering;
 8. reject a stale Deep result after synthetic turn, gap, pause, TTL, and repo-change events;
-9. validate every Deep citation against snapshot and live-source hashes, require each claim to copy one complete cited line, and require the answer candidate to exactly match one extractive basis claim while preserving punctuation;
+9. require every general answer to use `general_answer` with null fingerprint and empty basis, and validate every repository citation against snapshot and live-source hashes, require each claim to copy one complete cited line, and require the repository answer candidate to exactly match one extractive basis claim while preserving punctuation;
 10. fail secret reads, symlink and subprocess escapes, writes, tool network, and unapproved skills;
 11. simulate Deep rate limiting, Codex offline, protocol mismatch, app-server crash, and identity mismatch;
 12. force crashes around thread creation and prove startup cleanup leaves no meeting text or repo grounding in app-owned threads, the stable profile's transient state, logs, snapshots, or crash artifacts;

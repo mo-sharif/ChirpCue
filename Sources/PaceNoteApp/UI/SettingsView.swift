@@ -144,8 +144,7 @@ struct SettingsView: View {
                     )
                     PrivacySettingRow(
                         title: "OpenAI processing",
-                        detail:
-                            "Transcript and selected repository excerpts are processed through the signed-in ChatGPT account. PaceNote makes no zero-retention claim."
+                        detail: PaceNoteDisclosureText.openAIProcessingSummary
                     )
                     PrivacySettingRow(
                         title: "No automatic response",

@@ -440,7 +440,7 @@ private struct SuggestionsPane: View {
                         Label("No suggestion yet", systemImage: "text.bubble")
                     } description: {
                         Text(
-                            "A brief speaking cue appears first. An evidence-checked technical answer follows when support is available."
+                            "A brief speaking cue appears first. A concise answer follows; repository-specific answers are evidence checked."
                         )
                     }
                     .frame(maxWidth: .infinity, minHeight: 230)
@@ -452,17 +452,20 @@ private struct SuggestionsPane: View {
                         subtitle: "Locked for this turn",
                         card: quick,
                         tint: .blue,
-                        isVerified: false
+                        systemImage: "lock.fill",
+                        symbolAccessibilityLabel: "Suggestion locked"
                     )
                     .accessibilitySortPriority(2)
                 }
                 if let deep {
+                    let presentation = deepPresentation(for: deep)
                     SuggestionCardView(
                         title: "Then say",
-                        subtitle: deep.evidence.isEmpty ? "Grounding checks passed" : "Evidence checked",
+                        subtitle: presentation.subtitle,
                         card: deep,
-                        tint: .green,
-                        isVerified: true
+                        tint: presentation.tint,
+                        systemImage: presentation.systemImage,
+                        symbolAccessibilityLabel: presentation.accessibilityLabel
                     )
                     .accessibilitySortPriority(1)
                 } else if quick != nil {
@@ -480,6 +483,54 @@ private struct SuggestionsPane: View {
         }
         .background(.quaternary.opacity(0.25))
     }
+
+    private func deepPresentation(for card: SuggestionCard) -> DeepSuggestionPresentation {
+        switch card.deepKind {
+        case .answer:
+            DeepSuggestionPresentation(
+                subtitle: "Repository evidence checked",
+                tint: .green,
+                systemImage: "checkmark.seal.fill",
+                accessibilityLabel: "Repository evidence check passed"
+            )
+        case .generalAnswer:
+            DeepSuggestionPresentation(
+                subtitle: "General guidance • verify before speaking",
+                tint: .orange,
+                systemImage: "exclamationmark.bubble.fill",
+                accessibilityLabel: "General guidance is not repository verified"
+            )
+        case .clarification:
+            DeepSuggestionPresentation(
+                subtitle: "Safe clarification",
+                tint: .purple,
+                systemImage: "questionmark.bubble.fill",
+                accessibilityLabel: "Clarification suggestion"
+            )
+        case .abstention:
+            DeepSuggestionPresentation(
+                subtitle: "Could not verify safely",
+                tint: .secondary,
+                systemImage: "hand.raised.fill",
+                accessibilityLabel: "PaceNote abstained"
+            )
+        case nil:
+            DeepSuggestionPresentation(
+                subtitle: card.evidence.isEmpty ? "Safe response" : "Repository evidence checked",
+                tint: card.evidence.isEmpty ? .secondary : .green,
+                systemImage: card.evidence.isEmpty ? "shield.fill" : "checkmark.seal.fill",
+                accessibilityLabel: card.evidence.isEmpty
+                    ? "Safe response" : "Repository evidence check passed"
+            )
+        }
+    }
+}
+
+private struct DeepSuggestionPresentation {
+    let subtitle: String
+    let tint: Color
+    let systemImage: String
+    let accessibilityLabel: String
 }
 
 private struct SuggestionCardView: View {
@@ -487,7 +538,8 @@ private struct SuggestionCardView: View {
     let subtitle: String
     let card: SuggestionCard
     let tint: Color
-    let isVerified: Bool
+    let systemImage: String
+    let symbolAccessibilityLabel: String
     @State private var showsEvidence = false
 
     var body: some View {
@@ -502,9 +554,9 @@ private struct SuggestionCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Image(systemName: isVerified ? "checkmark.seal.fill" : "lock.fill")
-                    .foregroundStyle(isVerified ? .green : tint)
-                    .accessibilityLabel(isVerified ? "Grounding check passed" : "Suggestion locked")
+                Image(systemName: systemImage)
+                    .foregroundStyle(tint)
+                    .accessibilityLabel(symbolAccessibilityLabel)
             }
             Text(card.text)
                 .font(.title3.weight(.medium))
@@ -749,7 +801,7 @@ extension BrownoutReason {
     var recoveryGuidance: String {
         switch self {
         case .systemAudioLost: "Reopen setup and select the meeting app again."
-        case .microphoneLost: "Reconnect the selected microphone or use manual coaching."
+        case .microphoneLost: "Reconnect the current Mac microphone or use manual coaching."
         case .microphoneDisabled: "Automatic turn detection is off. Use Coach Current Turn."
         case .outputDisabled: "Only microphone speech is available."
         case .transcriptUncertain: "Confirm the question before speaking a suggestion."
@@ -760,7 +812,7 @@ extension BrownoutReason {
         case .protocolUnsupported: "Install the tested Codex version before continuing."
         case .appServerCrashed: "Restart Codex from setup. Existing cards stay visible."
         case .quickLimited: "A deterministic bridge may appear while capacity recovers."
-        case .deepLimited: "Use the quick cue; repository research is temporarily paused."
+        case .deepLimited: "Use the SAY NOW bridge; deeper coaching is temporarily paused."
         case .repositoryChanged: "The sealed snapshot is stale. Reselect the repository."
         case .snapshotBlocked: "Review excluded and suspicious files before grounding."
         case .snapshotBusy: "Wait for repository writes to settle, then seal it again."

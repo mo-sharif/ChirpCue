@@ -57,6 +57,8 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(reachedSuggestion)
         XCTAssertEqual(state.transcript.count, 1)
         XCTAssertEqual(state.transcript.first?.source, .them)
+        XCTAssertEqual(state.suggestions.first(where: { $0.stage == .deep })?.deepKind, .generalAnswer)
+        XCTAssertTrue(state.suggestions.first(where: { $0.stage == .deep })?.evidence.isEmpty == true)
         XCTAssertEqual(turns.last?.question, "Explain the retry boundary")
         XCTAssertTrue(state.brownouts.contains { $0.reason == .microphoneDisabled })
         XCTAssertTrue(state.brownouts.contains { $0.reason == .outputDisabled })
@@ -93,6 +95,25 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testGlobalSystemOutputUsesOutputLabelInsteadOfThem() async throws {
+        let harness = makeHarness(
+            mode: .systemOutputOnly,
+            systemOutputScope: .allSystemAudio
+        )
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, "How does this retry?", stability: .final))
+        )
+
+        let globalOutputVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.transcript.first?.source == .output
+        }
+        XCTAssertTrue(globalOutputVisible)
+        _ = await harness.controller.stop()
+    }
+
     func testCoachCurrentTurnForcesLatestOutputWithoutDuplicatingTranscript() async throws {
         let harness = makeHarness(mode: .systemOutputOnly)
         try await prepareAndStart(harness)
@@ -103,6 +124,11 @@ final class MeetingSessionControllerTests: XCTestCase {
             await harness.controller.state().transcript.count == 1
         }
         XCTAssertTrue(transcriptArrived)
+        try await Task.sleep(for: .milliseconds(30))
+        let turnsBeforeManualCoach = await harness.response.deepRequestedTurns
+        let stateBeforeManualCoach = await harness.controller.state()
+        XCTAssertTrue(turnsBeforeManualCoach.isEmpty)
+        XCTAssertTrue(stateBeforeManualCoach.suggestions.isEmpty)
 
         try await harness.controller.coachCurrentTurn()
         let suggestionArrived = await eventually {
@@ -220,6 +246,183 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testStopInvalidatesAndAwaitsSuspendedPreflight() async throws {
+        let preparationBarrier = AudioOperationBarrier()
+        let response = FakeMeetingResponseGenerator(prepareBarrier: preparationBarrier)
+        let harness = makeHarness(mode: .manualOnly, response: response)
+        await preparationBarrier.arm()
+
+        let preflight = Task { () -> MeetingSessionFailure? in
+            do {
+                _ = try await harness.controller.preflight(
+                    consent: MeetingConsent(participantDisclosureConfirmed: true)
+                )
+                return nil
+            } catch let failure as MeetingSessionFailure {
+                return failure
+            } catch {
+                return .responseUnavailable
+            }
+        }
+        await preparationBarrier.waitUntilEntered()
+
+        let stopProbe = StopReportProbe()
+        let stop = Task {
+            let report = await harness.controller.stop()
+            await stopProbe.store(report)
+            return report
+        }
+        let stopReturnedEarly = await eventually(timeout: .milliseconds(100)) {
+            await stopProbe.hasReport
+        }
+        XCTAssertFalse(stopReturnedEarly)
+
+        await preparationBarrier.release()
+        let preflightFailure = await preflight.value
+        let stopReport = await stop.value
+        let state = await harness.controller.state()
+        let shutdownCount = await response.shutdownCount
+
+        XCTAssertEqual(preflightFailure, .invalidLifecycle)
+        XCTAssertTrue(stopReport.cleanupSucceeded)
+        XCTAssertEqual(shutdownCount, 1)
+        XCTAssertEqual(state.phase, .ended)
+        XCTAssertFalse(state.isPrepared)
+    }
+
+    func testStopInvalidatesAndAwaitsSuspendedStart() async throws {
+        let startBarrier = AudioOperationBarrier()
+        let harness = makeHarness(mode: .systemOutputOnly, outputStartBarrier: startBarrier)
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        await startBarrier.arm()
+
+        let start = Task { () -> MeetingSessionFailure? in
+            do {
+                try await harness.controller.start()
+                return nil
+            } catch let failure as MeetingSessionFailure {
+                return failure
+            } catch {
+                return .responseUnavailable
+            }
+        }
+        await startBarrier.waitUntilEntered()
+
+        let stopProbe = StopReportProbe()
+        let stop = Task {
+            let report = await harness.controller.stop()
+            await stopProbe.store(report)
+            return report
+        }
+        let stopReturnedEarly = await eventually(timeout: .milliseconds(100)) {
+            await stopProbe.hasReport
+        }
+        XCTAssertFalse(stopReturnedEarly)
+
+        await startBarrier.release()
+        let startFailure = await start.value
+        let stopReport = await stop.value
+        let state = await harness.controller.state()
+        let startCount = await harness.outputCapture.startCount
+        let stopCount = await harness.outputCapture.stopCount
+
+        XCTAssertEqual(startFailure, .invalidLifecycle)
+        XCTAssertTrue(stopReport.cleanupSucceeded)
+        XCTAssertEqual(startCount, 1)
+        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(state.phase, .ended)
+        XCTAssertFalse(state.isRunning)
+    }
+
+    func testStopInvalidatesAndAwaitsSuspendedResume() async throws {
+        let startBarrier = AudioOperationBarrier()
+        let harness = makeHarness(mode: .systemOutputOnly, outputStartBarrier: startBarrier)
+        try await prepareAndStart(harness)
+        try await harness.controller.pause()
+        await startBarrier.arm()
+
+        let resume = Task { () -> MeetingSessionFailure? in
+            do {
+                try await harness.controller.resume()
+                return nil
+            } catch let failure as MeetingSessionFailure {
+                return failure
+            } catch {
+                return .responseUnavailable
+            }
+        }
+        await startBarrier.waitUntilEntered()
+
+        let stopProbe = StopReportProbe()
+        let stop = Task {
+            let report = await harness.controller.stop()
+            await stopProbe.store(report)
+            return report
+        }
+        let stopReturnedEarly = await eventually(timeout: .milliseconds(100)) {
+            await stopProbe.hasReport
+        }
+        XCTAssertFalse(stopReturnedEarly)
+
+        await startBarrier.release()
+        let resumeFailure = await resume.value
+        let stopReport = await stop.value
+        let state = await harness.controller.state()
+        let startCount = await harness.outputCapture.startCount
+        let stopCount = await harness.outputCapture.stopCount
+
+        XCTAssertEqual(resumeFailure, .invalidLifecycle)
+        XCTAssertTrue(stopReport.cleanupSucceeded)
+        XCTAssertEqual(startCount, 2)
+        XCTAssertEqual(stopCount, 2)
+        XCTAssertEqual(state.phase, .ended)
+        XCTAssertFalse(state.isRunning)
+    }
+
+    func testStopInvalidatesAndAwaitsSuspendedPause() async throws {
+        let stopBarrier = AudioOperationBarrier()
+        let harness = makeHarness(mode: .systemOutputOnly, outputStopBarrier: stopBarrier)
+        try await prepareAndStart(harness)
+        await stopBarrier.arm()
+
+        let pause = Task { () -> MeetingSessionFailure? in
+            do {
+                try await harness.controller.pause()
+                return nil
+            } catch let failure as MeetingSessionFailure {
+                return failure
+            } catch {
+                return .responseUnavailable
+            }
+        }
+        await stopBarrier.waitUntilEntered()
+
+        let stopProbe = StopReportProbe()
+        let stop = Task {
+            let report = await harness.controller.stop()
+            await stopProbe.store(report)
+            return report
+        }
+        let stopReturnedEarly = await eventually(timeout: .milliseconds(100)) {
+            await stopProbe.hasReport
+        }
+        XCTAssertFalse(stopReturnedEarly)
+
+        await stopBarrier.release()
+        let pauseFailure = await pause.value
+        let stopReport = await stop.value
+        let state = await harness.controller.state()
+        let stopCount = await harness.outputCapture.stopCount
+
+        XCTAssertEqual(pauseFailure, .invalidLifecycle)
+        XCTAssertTrue(stopReport.cleanupSucceeded)
+        XCTAssertEqual(stopCount, 2)
+        XCTAssertEqual(state.phase, .ended)
+        XCTAssertFalse(state.isRunning)
+    }
+
     func testPauseStopsAudioCancelsGenerationAndResumeRestartsCapture() async throws {
         let harness = makeHarness(mode: .systemOutputOnly)
         try await prepareAndStart(harness)
@@ -333,6 +536,118 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(state.suggestions.isEmpty)
     }
 
+    func testStopAuditsAndClearsDelayedAttributionText() async throws {
+        let cleanupBarrier = CleanupBarrier()
+        let cleaner = FakeMeetingResourceCleaner(deleteBarrier: cleanupBarrier)
+        let clock = LockedMeetingTime(10)
+        let harness = makeHarness(
+            mode: .microphoneAndSystemOutput,
+            cleaner: cleaner,
+            time: clock,
+            microphoneAttributionDelay: .seconds(5)
+        )
+        try await prepareAndStart(harness)
+        let outputText = "Sensitive output words retained during attribution"
+        let pendingText = "Sensitive microphone words waiting for speaker attribution"
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, outputText, confidence: 0.96))
+        )
+        let outputRetained = await eventually {
+            await harness.controller.delayedAttributionRetentionSnapshot()
+                .hasLatestOutputObservation
+        }
+        XCTAssertTrue(outputRetained)
+        clock.set(12)
+        await harness.microphoneTranscriber.emit(
+            .result(transcript(.microphone, pendingText, confidence: 0.91))
+        )
+        let populated = await eventually {
+            let snapshot = await harness.controller.delayedAttributionRetentionSnapshot()
+            return snapshot.hasAttributionTask
+                && snapshot.hasPendingMicrophoneObservation
+                && snapshot.hasLatestOutputObservation
+        }
+        XCTAssertTrue(populated)
+
+        let stopTask = Task { await harness.controller.stop() }
+        await cleanupBarrier.waitUntilEntered()
+
+        let cleared = await harness.controller.delayedAttributionRetentionSnapshot()
+        XCTAssertEqual(
+            cleared,
+            MeetingSessionController.DelayedAttributionRetentionSnapshot(
+                hasAttributionTask: false,
+                hasPendingMicrophoneObservation: false,
+                hasLatestOutputObservation: false
+            )
+        )
+        await cleanupBarrier.release()
+
+        let report = await stopTask.value
+        let retainedNeedles = await cleaner.sensitiveNeedles()
+        let auditedNeedles = retainedNeedles.compactMap {
+            String(data: $0, encoding: .utf8)
+        }
+        let state = await harness.controller.state()
+
+        XCTAssertTrue(report.cleanupSucceeded)
+        XCTAssertTrue(auditedNeedles.contains(pendingText))
+        XCTAssertTrue(auditedNeedles.contains(outputText))
+        XCTAssertTrue(state.transcript.isEmpty)
+        XCTAssertTrue(state.suggestions.isEmpty)
+    }
+
+    func testConcurrentStopCallersAwaitOneCleanupAndReceiveTheSameReport() async throws {
+        let cleanupBarrier = CleanupBarrier()
+        let response = FakeMeetingResponseGenerator(
+            shutdownReport: MeetingResponseCleanupReport(deletedThreadCount: 4)
+        )
+        let cleaner = FakeMeetingResourceCleaner(
+            deleteReport: MeetingResourceCleanupReport(
+                deletedSnapshotCount: 2,
+                deletedTemporaryRootCount: 3
+            ),
+            deleteBarrier: cleanupBarrier
+        )
+        let harness = makeHarness(mode: .manualOnly, response: response, cleaner: cleaner)
+        try await prepareAndStart(harness)
+
+        let firstStop = Task { await harness.controller.stop() }
+        await cleanupBarrier.waitUntilEntered()
+
+        let secondResult = StopReportProbe()
+        let secondStop = Task {
+            let report = await harness.controller.stop()
+            await secondResult.store(report)
+            return report
+        }
+        let secondReturnedBeforeCleanupFinished = await eventually(timeout: .milliseconds(200)) {
+            await secondResult.hasReport
+        }
+        XCTAssertFalse(secondReturnedBeforeCleanupFinished)
+
+        await cleanupBarrier.release()
+        let firstReport = await firstStop.value
+        let secondReport = await secondStop.value
+        let cachedReport = await harness.controller.stop()
+
+        XCTAssertEqual(firstReport, secondReport)
+        XCTAssertEqual(secondReport, cachedReport)
+        XCTAssertTrue(firstReport.cleanupSucceeded)
+        XCTAssertEqual(firstReport.deletedThreadCount, 4)
+        XCTAssertEqual(firstReport.deletedSnapshotCount, 2)
+        XCTAssertEqual(firstReport.deletedTemporaryRootCount, 3)
+        let shutdownCount = await response.shutdownCount
+        let journalRemovalCount = await cleaner.journalRemovalCount
+        let cleanupOperations = await cleaner.operations()
+        XCTAssertEqual(shutdownCount, 1)
+        XCTAssertEqual(journalRemovalCount, 1)
+        XCTAssertEqual(
+            cleanupOperations,
+            [.deleteResources, .residualAudit, .deletePrivateRoot, .removeJournal]
+        )
+    }
+
     func testStopRetainsJournalWhenResidualAuditFindsTranscriptData() async throws {
         let cleaner = FakeMeetingResourceCleaner(residualFindingCount: 1)
         let harness = makeHarness(mode: .manualOnly, cleaner: cleaner)
@@ -364,6 +679,143 @@ final class MeetingSessionControllerTests: XCTestCase {
             cleanupOperations,
             [.deleteResources, .residualAudit, .deletePrivateRoot]
         )
+    }
+
+    func testStopRetriesTransientAudioTeardownAndReportsSuccess() async throws {
+        let harness = makeHarness(mode: .systemOutputOnly, outputStopFailureCount: 1)
+        try await prepareAndStart(harness)
+
+        let report = await harness.controller.stop()
+        let state = await harness.controller.state()
+        let stopCount = await harness.outputCapture.stopCount
+        let journalRemovals = await harness.cleaner.journalRemovalCount
+
+        XCTAssertTrue(report.cleanupSucceeded)
+        XCTAssertFalse(report.failures.contains(.audioCaptureTeardown))
+        XCTAssertEqual(stopCount, 2)
+        XCTAssertEqual(journalRemovals, 1)
+        XCTAssertEqual(state.phase, .ended)
+    }
+
+    func testStopRetainsControllerForExplicitRetryAfterBoundedAudioFailure() async throws {
+        let harness = makeHarness(
+            mode: .microphoneAndSystemOutput,
+            outputStopFailureCount: 2
+        )
+        try await prepareAndStart(harness)
+
+        let failedReport = await harness.controller.stop()
+        let failedState = await harness.controller.state()
+        let firstOutputStopCount = await harness.outputCapture.stopCount
+        let firstMicrophoneStopCount = await harness.microphoneCapture.stopCount
+        let firstJournalRemovals = await harness.cleaner.journalRemovalCount
+
+        XCTAssertFalse(failedReport.cleanupSucceeded)
+        XCTAssertTrue(failedReport.failures.contains(.audioCaptureTeardown))
+        XCTAssertEqual(failedReport.audioTeardownFailureLane, .output)
+        XCTAssertEqual(firstOutputStopCount, 2)
+        XCTAssertEqual(firstMicrophoneStopCount, 2)
+        XCTAssertEqual(firstJournalRemovals, 0)
+        XCTAssertEqual(failedState.phase, .brownout)
+
+        let retryReport = await harness.controller.stop()
+        let retryState = await harness.controller.state()
+        let finalOutputStopCount = await harness.outputCapture.stopCount
+        let cleanupOperations = await harness.cleaner.operations()
+
+        XCTAssertTrue(retryReport.cleanupSucceeded)
+        XCTAssertNil(retryReport.audioTeardownFailureLane)
+        XCTAssertEqual(finalOutputStopCount, 3)
+        XCTAssertEqual(retryState.phase, .ended)
+        XCTAssertEqual(
+            cleanupOperations,
+            [.deleteResources, .residualAudit, .deletePrivateRoot, .removeJournal]
+        )
+    }
+
+    func testStopAudioTeardownFailureEmitsTypedFailureBeforeBrownoutState() async throws {
+        let harness = makeHarness(
+            mode: .systemOutputOnly,
+            outputStopFailureCount: 2
+        )
+        let events = await harness.controller.events()
+        let observedFailureAndState:
+            Task<
+                (MeetingSessionFailure?, MeetingSessionState?), Never
+            > = Task {
+                var failure: MeetingSessionFailure?
+                for await event in events {
+                    switch event {
+                    case .failed(let incoming):
+                        failure = incoming
+                    case .stateChanged(let state) where failure != nil:
+                        return (failure, state)
+                    default:
+                        continue
+                    }
+                }
+                return (failure, nil)
+            }
+        try await prepareAndStart(harness)
+
+        let report = await harness.controller.stop()
+        let (failure, state) = await observedFailureAndState.value
+
+        XCTAssertTrue(report.failures.contains(.audioCaptureTeardown))
+        XCTAssertEqual(failure, .captureTeardownFailed(.output))
+        XCTAssertEqual(state?.phase, .brownout)
+        XCTAssertFalse(state?.isRunning ?? true)
+    }
+
+    func testStopReportPreservesMicrophoneTeardownLaneAcrossExplicitRetry() async throws {
+        let harness = makeHarness(
+            mode: .microphoneOnly,
+            microphoneStopFailureCount: 4
+        )
+        try await prepareAndStart(harness)
+
+        let firstReport = await harness.controller.stop()
+        let secondReport = await harness.controller.stop()
+        let failedStopCount = await harness.microphoneCapture.stopCount
+
+        XCTAssertTrue(firstReport.failures.contains(.audioCaptureTeardown))
+        XCTAssertEqual(firstReport.audioTeardownFailureLane, .microphone)
+        XCTAssertTrue(secondReport.failures.contains(.audioCaptureTeardown))
+        XCTAssertEqual(secondReport.audioTeardownFailureLane, .microphone)
+        XCTAssertEqual(failedStopCount, 4)
+
+        let recoveredReport = await harness.controller.stop()
+        let recoveredStopCount = await harness.microphoneCapture.stopCount
+
+        XCTAssertTrue(recoveredReport.cleanupSucceeded)
+        XCTAssertNil(recoveredReport.audioTeardownFailureLane)
+        XCTAssertEqual(recoveredStopCount, 5)
+    }
+
+    func testPauseFailureDoesNotClaimPausedOrPermitResume() async throws {
+        let harness = makeHarness(mode: .systemOutputOnly, outputStopFailureCount: 1)
+        try await prepareAndStart(harness)
+
+        do {
+            try await harness.controller.pause()
+            XCTFail("Expected pause teardown failure")
+        } catch let error as MeetingSessionFailure {
+            XCTAssertEqual(error, .captureTeardownFailed(.output))
+        }
+
+        let state = await harness.controller.state()
+        XCTAssertEqual(state.phase, .brownout)
+        do {
+            try await harness.controller.resume()
+            XCTFail("Incomplete teardown must block resume")
+        } catch let error as MeetingSessionFailure {
+            XCTAssertEqual(error, .invalidLifecycle)
+        }
+
+        let report = await harness.controller.stop()
+        XCTAssertTrue(report.cleanupSucceeded)
+        let stopCount = await harness.outputCapture.stopCount
+        XCTAssertEqual(stopCount, 2)
     }
 
     func testAttributionResolverSuppressesExactAndNearDuplicateEcho() {
@@ -439,7 +891,8 @@ final class MeetingSessionControllerTests: XCTestCase {
         let harness = makeHarness(
             mode: .microphoneAndSystemOutput,
             time: clock,
-            microphoneAttributionDelay: .milliseconds(5)
+            microphoneAttributionDelay: .milliseconds(5),
+            soleNearbySpeakerConfirmed: true
         )
         try await prepareAndStart(harness)
         await harness.outputTranscriber.emit(
@@ -467,6 +920,37 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testMicrophoneSpeechUsesMicLabelWithoutSoleSpeakerConfirmation() async throws {
+        let clock = LockedMeetingTime(10)
+        let harness = makeHarness(
+            mode: .microphoneAndSystemOutput,
+            time: clock,
+            microphoneAttributionDelay: .milliseconds(5)
+        )
+        try await prepareAndStart(harness)
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, "The remote speaker finished this thought", confidence: 0.94))
+        )
+        let outputVisible = await eventually {
+            await harness.controller.state().transcript.contains { $0.source == .them }
+        }
+        XCTAssertTrue(outputVisible)
+
+        clock.set(12)
+        await harness.microphoneTranscriber.emit(
+            .result(transcript(.microphone, "A nearby person can be speaking", confidence: 0.91))
+        )
+
+        let microphoneVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.transcript.contains {
+                $0.source == .microphone && $0.text == "A nearby person can be speaking"
+            }
+        }
+        XCTAssertTrue(microphoneVisible)
+        _ = await harness.controller.stop()
+    }
+
     func testClearlyAttributedUserSpeechCancelsDeepAndPreservesDisplayedCue() async throws {
         let clock = LockedMeetingTime(10)
         let response = FakeMeetingResponseGenerator(slowDeepGenerations: [1])
@@ -474,7 +958,8 @@ final class MeetingSessionControllerTests: XCTestCase {
             mode: .microphoneAndSystemOutput,
             response: response,
             time: clock,
-            microphoneAttributionDelay: .milliseconds(5)
+            microphoneAttributionDelay: .milliseconds(5),
+            soleNearbySpeakerConfirmed: true
         )
         try await prepareAndStart(harness)
         await harness.outputTranscriber.emit(
@@ -525,12 +1010,24 @@ final class MeetingSessionControllerTests: XCTestCase {
         cleaner: FakeMeetingResourceCleaner = FakeMeetingResourceCleaner(),
         time: any MeetingTimeProviding = LockedMeetingTime(10),
         microphoneAttributionDelay: Duration = .milliseconds(5),
-        outputStartError: AudioCaptureError? = nil
+        systemOutputScope: MeetingSystemOutputScope = .meetingApplication,
+        soleNearbySpeakerConfirmed: Bool = false,
+        outputStartError: AudioCaptureError? = nil,
+        outputStartBarrier: AudioOperationBarrier? = nil,
+        outputStopBarrier: AudioOperationBarrier? = nil,
+        microphoneStopFailureCount: Int = 0,
+        outputStopFailureCount: Int = 0
     ) -> SessionHarness {
-        let microphoneCapture = FakeSessionAudioCapture(lane: .microphone)
+        let microphoneCapture = FakeSessionAudioCapture(
+            lane: .microphone,
+            stopFailureCount: microphoneStopFailureCount
+        )
         let outputCapture = FakeSessionAudioCapture(
             lane: .output,
-            startError: outputStartError
+            startError: outputStartError,
+            startBarrier: outputStartBarrier,
+            stopBarrier: outputStopBarrier,
+            stopFailureCount: outputStopFailureCount
         )
         let microphoneTranscriber = FakeSessionTranscriber(lane: .microphone)
         let outputTranscriber = FakeSessionTranscriber(lane: .output)
@@ -558,7 +1055,9 @@ final class MeetingSessionControllerTests: XCTestCase {
                 meetingID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
                 captureMode: mode,
                 turnBoundaryDelay: .milliseconds(5),
-                microphoneAttributionDelay: microphoneAttributionDelay
+                microphoneAttributionDelay: microphoneAttributionDelay,
+                systemOutputScope: systemOutputScope,
+                soleNearbySpeakerConfirmed: soleNearbySpeakerConfirmed
             ),
             audioServices: MeetingAudioServices(
                 microphone: microphoneServices,
@@ -608,6 +1107,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     let shutdownReport: MeetingResponseCleanupReport
     let slowDeepGenerations: Set<UInt64>
     let deepKind: DeepDraftKind
+    let prepareBarrier: AudioOperationBarrier?
     private(set) var prepareCount = 0
     private(set) var cancelCount = 0
     private(set) var shutdownCount = 0
@@ -617,15 +1117,18 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     init(
         slowDeepGenerations: Set<UInt64> = [],
         shutdownReport: MeetingResponseCleanupReport = .init(),
-        deepKind: DeepDraftKind = .answer
+        deepKind: DeepDraftKind = .generalAnswer,
+        prepareBarrier: AudioOperationBarrier? = nil
     ) {
         self.slowDeepGenerations = slowDeepGenerations
         self.shutdownReport = shutdownReport
         self.deepKind = deepKind
+        self.prepareBarrier = prepareBarrier
     }
 
-    func prepare() -> MeetingResponseRuntime {
+    func prepare() async -> MeetingResponseRuntime {
         prepareCount += 1
+        if let prepareBarrier { await prepareBarrier.suspendIfArmed() }
         return runtime
     }
 
@@ -675,6 +1178,8 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         switch draft.kind {
         case .answer:
             Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        case .generalAnswer:
+            Reconciliation(relationship: .continueAnswer, transition: "Broadly speaking,")
         case .clarification:
             Reconciliation(relationship: .clarify, transition: "The detail I need is:")
         case .abstention:
@@ -686,6 +1191,8 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         switch deepKind {
         case .answer:
             "The isolated queue prevents downstream retries from blocking the caller."
+        case .generalAnswer:
+            "I would separate the immediate decision from implementation details."
         case .clarification:
             "whether you mean staging or production"
         case .abstention:
@@ -705,26 +1212,34 @@ private actor FakeMeetingResourceCleaner: MeetingSessionResourceCleaning {
     let deleteReport: MeetingResourceCleanupReport
     let configuredResidualFindingCount: Int
     let privateRootDeletionFails: Bool
+    let deleteBarrier: CleanupBarrier?
     private(set) var journalRemovalCount = 0
     private var recordedOperations: [Operation] = []
+    private var recordedSensitiveNeedles: [Data] = []
 
     init(
         deleteReport: MeetingResourceCleanupReport = .init(),
         residualFindingCount: Int = 0,
-        privateRootDeletionFails: Bool = false
+        privateRootDeletionFails: Bool = false,
+        deleteBarrier: CleanupBarrier? = nil
     ) {
         self.deleteReport = deleteReport
         self.configuredResidualFindingCount = residualFindingCount
         self.privateRootDeletionFails = privateRootDeletionFails
+        self.deleteBarrier = deleteBarrier
     }
 
-    func deleteResources(preserveCodexRecoveryState: Bool) -> MeetingResourceCleanupReport {
+    func deleteResources(
+        preserveCodexRecoveryState: Bool
+    ) async -> MeetingResourceCleanupReport {
         recordedOperations.append(.deleteResources)
+        if let deleteBarrier { await deleteBarrier.enterAndWaitForRelease() }
         return deleteReport
     }
 
     func residualFindingCount(sensitiveNeedles: [Data]) -> Int {
         recordedOperations.append(.residualAudit)
+        recordedSensitiveNeedles = sensitiveNeedles
         return configuredResidualFindingCount
     }
 
@@ -739,6 +1254,102 @@ private actor FakeMeetingResourceCleaner: MeetingSessionResourceCleaning {
     }
 
     func operations() -> [Operation] { recordedOperations }
+    func sensitiveNeedles() -> [Data] { recordedSensitiveNeedles }
+}
+
+private actor CleanupBarrier {
+    private var entered = false
+    private var released = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func enterAndWaitForRelease() async {
+        entered = true
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters { waiter.resume() }
+
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            if released {
+                continuation.resume()
+            } else {
+                releaseWaiter = continuation
+            }
+        }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private actor AudioOperationBarrier {
+    private var armed = false
+    private var entered = false
+    private var released = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func arm() {
+        precondition(!armed && !entered)
+        armed = true
+        released = false
+    }
+
+    func suspendIfArmed() async {
+        guard armed else { return }
+        armed = false
+        entered = true
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters { waiter.resume() }
+
+        guard !released else {
+            entered = false
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if released {
+                continuation.resume()
+            } else {
+                releaseWaiter = continuation
+            }
+        }
+        entered = false
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+private actor StopReportProbe {
+    private var report: MeetingSessionStopReport?
+
+    var hasReport: Bool { report != nil }
+
+    func store(_ report: MeetingSessionStopReport) {
+        self.report = report
+    }
 }
 
 private enum FakeCleanupError: Error {
@@ -781,13 +1392,26 @@ private actor FakeSessionMicrophonePermission: MicrophonePermissionProviding {
 private actor FakeSessionAudioCapture: AudioCapturing {
     nonisolated let lane: AudioLane
     let startError: AudioCaptureError?
+    let startBarrier: AudioOperationBarrier?
+    let stopBarrier: AudioOperationBarrier?
     private var continuation: AsyncStream<AudioCaptureEvent>.Continuation?
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private var stopFailuresRemaining: Int
 
-    init(lane: AudioLane, startError: AudioCaptureError? = nil) {
+    init(
+        lane: AudioLane,
+        startError: AudioCaptureError? = nil,
+        startBarrier: AudioOperationBarrier? = nil,
+        stopBarrier: AudioOperationBarrier? = nil,
+        stopFailureCount: Int = 0
+    ) {
+        precondition(stopFailureCount >= 0)
         self.lane = lane
         self.startError = startError
+        self.startBarrier = startBarrier
+        self.stopBarrier = stopBarrier
+        self.stopFailuresRemaining = stopFailureCount
     }
 
     func events() -> AsyncStream<AudioCaptureEvent> {
@@ -797,13 +1421,19 @@ private actor FakeSessionAudioCapture: AudioCapturing {
         return pair.stream
     }
 
-    func start() throws {
+    func start() async throws {
         startCount += 1
+        if let startBarrier { await startBarrier.suspendIfArmed() }
         if let startError { throw startError }
     }
 
-    func stop() {
+    func stop() async throws {
         stopCount += 1
+        if let stopBarrier { await stopBarrier.suspendIfArmed() }
+        if stopFailuresRemaining > 0 {
+            stopFailuresRemaining -= 1
+            throw AudioCaptureError.systemFailure(code: -7_007)
+        }
         continuation?.yield(.stopped(lane))
         continuation?.finish()
         continuation = nil

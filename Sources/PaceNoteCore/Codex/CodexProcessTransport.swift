@@ -272,11 +272,18 @@ public actor CodexProcessTransport: CodexRPCTransporting {
         case .notification(let notification):
             publish(.notification(notification))
 
-        case .serverRequest(let id, let method, _):
+        case .serverRequest(let id, let method, let params):
             // PaceNote never delegates approval, auth refresh, or tool decisions to app-server.
             // Reject every server-initiated request and let the client fail the active turn closed.
             try write(CodexWireCodec.rejectedServerRequest(id: id))
-            publish(.rejectedServerRequest(method: CodexSafeLabel.method(method)))
+            publish(
+                .rejectedServerRequest(
+                    method: CodexSafeLabel.method(method),
+                    threadID: params?["threadId"]?.stringValue,
+                    turnID: params?["turnId"]?.stringValue,
+                    itemID: params?["itemId"]?.stringValue
+                )
+            )
         }
     }
 

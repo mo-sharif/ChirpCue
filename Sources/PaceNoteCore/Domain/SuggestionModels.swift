@@ -10,6 +10,7 @@ public enum SuggestionRelationship: String, Codable, Sendable {
 
 public enum DeepDraftKind: String, Codable, Sendable {
     case answer
+    case generalAnswer = "general_answer"
     case clarification
     case abstention
 }
@@ -172,6 +173,22 @@ public struct DeepDraft: Codable, Equatable, Sendable {
         basis = try container.decode([EvidenceReference].self, forKey: .basis)
         missingEvidence = try container.decode([String].self, forKey: .missingEvidence)
     }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(turnID, forKey: .turnID)
+        try container.encode(generation, forKey: .generation)
+        if let groundingFingerprint {
+            try container.encode(groundingFingerprint, forKey: .groundingFingerprint)
+        } else {
+            try container.encodeNil(forKey: .groundingFingerprint)
+        }
+        try container.encode(kind, forKey: .kind)
+        try container.encode(candidateSayNext, forKey: .candidateSayNext)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encode(basis, forKey: .basis)
+        try container.encode(missingEvidence, forKey: .missingEvidence)
+    }
 }
 
 public struct Reconciliation: Codable, Equatable, Sendable {
@@ -232,6 +249,7 @@ public struct BoundDeep: Codable, Equatable, Sendable {
     public let cueHash: String
     public let deepDraftHash: String
     public let groundingFingerprint: String?
+    public let kind: DeepDraftKind
     public let relationship: SuggestionRelationship
     public let transition: String
     public let sayNext: String
@@ -244,6 +262,7 @@ public struct BoundDeep: Codable, Equatable, Sendable {
         cueHash: String,
         deepDraftHash: String,
         groundingFingerprint: String?,
+        kind: DeepDraftKind,
         relationship: SuggestionRelationship,
         transition: String,
         sayNext: String,
@@ -255,6 +274,7 @@ public struct BoundDeep: Codable, Equatable, Sendable {
         self.cueHash = cueHash
         self.deepDraftHash = deepDraftHash
         self.groundingFingerprint = groundingFingerprint
+        self.kind = kind
         self.relationship = relationship
         self.transition = transition
         self.sayNext = sayNext
@@ -289,6 +309,7 @@ public struct SuggestionCard: Identifiable, Codable, Equatable, Sendable {
     public let text: String
     public let confidence: Double?
     public let evidence: [EvidenceReference]
+    public let deepKind: DeepDraftKind?
 
     public init(
         id: UUID = UUID(),
@@ -296,7 +317,8 @@ public struct SuggestionCard: Identifiable, Codable, Equatable, Sendable {
         stage: SuggestionStage,
         text: String,
         confidence: Double? = nil,
-        evidence: [EvidenceReference] = []
+        evidence: [EvidenceReference] = [],
+        deepKind: DeepDraftKind? = nil
     ) {
         self.id = id
         self.identity = identity
@@ -304,5 +326,6 @@ public struct SuggestionCard: Identifiable, Codable, Equatable, Sendable {
         self.text = text
         self.confidence = confidence
         self.evidence = evidence
+        self.deepKind = deepKind
     }
 }

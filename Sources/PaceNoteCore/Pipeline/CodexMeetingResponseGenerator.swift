@@ -2,6 +2,13 @@ import CryptoKit
 import Foundation
 
 public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
+    private enum Lifecycle: Sendable {
+        case open
+        case cancelling
+        case closing
+        case closed
+    }
+
     private enum OperationKind: Sendable {
         case quick
         case deep
@@ -12,6 +19,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         case preparing
         case turn(String)
         case realtime
+        case finishing
     }
 
     private struct ActiveOperation: Sendable {
@@ -20,9 +28,21 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         var execution: ActiveExecution
     }
 
+    private enum PublicOperationKind: Sendable {
+        case prepare
+        case quick
+        case deep
+        case reconciliation
+    }
+
+    private struct PublicOperationState: Sendable {
+        let kind: PublicOperationKind
+        var cancelLocalTask: (@Sendable () -> Void)?
+    }
+
     private struct PreparedDeep: Sendable {
         let base: CodexBaseThread
-        let snapshot: GroundingSnapshot
+        let snapshot: GroundingSnapshot?
         let skills: [CodexSkillInvocation]
     }
 
@@ -41,6 +61,17 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     private var journalStarted = false
     private var ownedThreadIDs: Set<String> = []
     private var activeOperations: [UUID: ActiveOperation] = [:]
+    private var lifecycle = Lifecycle.open
+    private var publicOperations: [UUID: PublicOperationState] = [:]
+    private var publicOperationWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    private var cancellationRequested: Set<UUID> = []
+    private var preparationWorker:
+        (
+            operationID: UUID,
+            task: Task<MeetingResponseRuntime, Error>
+        )?
+    private var cancellationTask: Task<Void, Never>?
+    private var shutdownTask: Task<MeetingResponseCleanupReport, Never>?
     private var cleanupFailures: [MeetingResponseCleanupFailure] = []
     private var lastCleanupReport: MeetingResponseCleanupReport?
 
@@ -63,7 +94,31 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     public func prepare() async throws -> MeetingResponseRuntime {
+        try requireOpenForNewOperation()
         if let runtime { return runtime }
+
+        let operationID: UUID
+        let worker: Task<MeetingResponseRuntime, Error>
+        if let existing = preparationWorker,
+            publicOperations[existing.operationID] != nil
+        {
+            operationID = existing.operationID
+            worker = existing.task
+        } else {
+            operationID = beginPublicOperation(.prepare)
+            worker = Task.detached {
+                try await self.performPrepare(operationID: operationID)
+            }
+            preparationWorker = (operationID, worker)
+            installLocalCancellation(of: worker, operationID: operationID)
+        }
+        let result = await waitForDetachedWorker(worker, operationID: operationID)
+        completePublicOperation(operationID)
+        return try result.get()
+    }
+
+    private func performPrepare(operationID: UUID) async throws -> MeetingResponseRuntime {
+        try requireContinuingOperation(operationID)
         let quickRoot = try privateDirectoryURL(named: "quick-context")
         let temporaryRoot = try privateDirectoryURL(named: "codex-tmp")
         let packagedSkillRoot = PackagedMeetingSkillStager.destination(
@@ -77,9 +132,12 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             ),
             snapshot: configuration.groundingSnapshot
         )
+        try requireContinuingOperation(operationID)
 
-        let client = try await ensureClient()
+        let client = try await ensureClient(operationID: operationID)
+        try requireContinuingOperation(operationID)
         let account = try await requireChatGPTAccount(client)
+        try requireContinuingOperation(operationID)
 
         let preparedQuickRoot = try preparePrivateDirectory(named: "quick-context")
         guard preparedQuickRoot == quickRoot else {
@@ -92,6 +150,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             throw MeetingResponseError.skillPolicyMismatch
         }
         try await client.setSkillExtraRoots([packagedSkillRoot.path])
+        try requireContinuingOperation(operationID)
 
         let capability: CodexCapabilitySnapshot
         let rateLimits: CodexRateLimitsResult
@@ -99,6 +158,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             async let capabilityRequest = client.verifyCapabilities(cwd: quickRoot.path)
             async let rateLimitRequest = client.rateLimits()
             (capability, rateLimits) = try await (capabilityRequest, rateLimitRequest)
+            try requireContinuingOperation(operationID)
         } catch {
             throw Self.map(error)
         }
@@ -123,17 +183,24 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             workspaceRoots: [quickRoot],
             model: quickRoute.model,
             baseInstructions: Self.quickBaseInstructions,
-            expectedInstructionSources: []
+            expectedInstructionSources: [],
+            operationID: operationID
         )
+        try requireContinuingOperation(operationID)
         quickBase = quick
 
         do {
             preparedDeep = try await prepareDeep(
                 client: client,
                 route: deepRoute,
-                packagedSkillRoot: packagedSkillRoot
+                generalContextRoot: quickRoot,
+                packagedSkillRoot: packagedSkillRoot,
+                operationID: operationID
             )
+            try requireContinuingOperation(operationID)
             deepPreparationError = nil
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as MeetingResponseError {
             deepPreparationError = error
             preparedDeep = nil
@@ -142,6 +209,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             preparedDeep = nil
         }
 
+        try requireContinuingOperation(operationID)
         let preparedRuntime = MeetingResponseRuntime(
             planType: account.planType ?? configuration.subscriptionPlanType,
             quickRoute: quickRoute,
@@ -153,51 +221,101 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     public func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
+        try requireOpenForNewOperation()
         let operationID = UUID()
-        return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await runQuick(for: turn, operationID: operationID)
-        } onCancel: {
-            Task { await self.cancelOperation(operationID) }
+        publicOperations[operationID] = PublicOperationState(
+            kind: .quick,
+            cancelLocalTask: nil
+        )
+        let worker = Task.detached {
+            try await self.runQuick(for: turn, operationID: operationID)
         }
+        installLocalCancellation(of: worker, operationID: operationID)
+        let result = await waitForDetachedWorker(worker, operationID: operationID)
+        completePublicOperation(operationID)
+        return try result.get()
     }
 
     public func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
+        try requireOpenForNewOperation()
         let operationID = UUID()
-        return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await runDeep(for: turn, operationID: operationID)
-        } onCancel: {
-            Task { await self.cancelOperation(operationID) }
+        publicOperations[operationID] = PublicOperationState(
+            kind: .deep,
+            cancelLocalTask: nil
+        )
+        let worker = Task.detached {
+            try await self.runDeep(for: turn, operationID: operationID)
         }
+        installLocalCancellation(of: worker, operationID: operationID)
+        let result = await waitForDetachedWorker(worker, operationID: operationID)
+        completePublicOperation(operationID)
+        return try result.get()
     }
 
     public func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
+        try requireOpenForNewOperation()
         let operationID = UUID()
-        return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await runReconciliation(
+        publicOperations[operationID] = PublicOperationState(
+            kind: .reconciliation,
+            cancelLocalTask: nil
+        )
+        let worker = Task.detached {
+            try await self.runReconciliation(
                 cue: cue,
                 draft: draft,
                 operationID: operationID
             )
-        } onCancel: {
-            Task { await self.cancelOperation(operationID) }
         }
+        installLocalCancellation(of: worker, operationID: operationID)
+        let result = await waitForDetachedWorker(worker, operationID: operationID)
+        completePublicOperation(operationID)
+        return try result.get()
     }
 
     public func cancelActiveWork() async {
-        for operationID in Array(activeOperations.keys) {
-            await cancelOperation(operationID)
+        if let cancellationTask {
+            await cancellationTask.value
+            return
         }
+        guard lifecycle == .open else { return }
+
+        lifecycle = .cancelling
+        let task = Task { await self.performCancellation() }
+        cancellationTask = task
+        await task.value
     }
 
     public func shutdown() async -> MeetingResponseCleanupReport {
+        if let shutdownTask {
+            return await shutdownTask.value
+        }
+
+        if lifecycle == .open || lifecycle == .cancelling {
+            lifecycle = .closing
+        }
+        let task = Task { await self.performShutdown() }
+        shutdownTask = task
+        return await task.value
+    }
+
+    private func performShutdown() async -> MeetingResponseCleanupReport {
         if let lastCleanupReport, client == nil, ownedThreadIDs.isEmpty {
+            lifecycle = .closed
+            shutdownTask = nil
             return lastCleanupReport
         }
 
-        await cancelActiveWork()
+        let tracked = publicOperations
+        for operationID in tracked.keys {
+            await requestPublicOperationCancellation(operationID)
+        }
+        for operationID in tracked.keys {
+            await waitForPublicOperationCompletion(operationID)
+        }
+
+        for operationID in Array(activeOperations.keys) {
+            await cancelOperation(operationID)
+        }
         var deletedCount = 0
         if let client {
             for threadID in ownedThreadIDs.sorted() {
@@ -218,13 +336,114 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             failures: Self.unique(cleanupFailures)
         )
         lastCleanupReport = report
+        lifecycle = .closed
+        shutdownTask = nil
         return report
+    }
+
+    private func performCancellation() async {
+        let tracked = publicOperations
+        for operationID in tracked.keys {
+            await requestPublicOperationCancellation(operationID)
+        }
+        for operationID in tracked.keys {
+            await waitForPublicOperationCompletion(operationID)
+        }
+        for operationID in Array(activeOperations.keys) {
+            await cancelOperation(operationID)
+        }
+
+        cancellationTask = nil
+        if lifecycle == .cancelling {
+            lifecycle = .open
+        }
+    }
+
+    private func beginPublicOperation(_ kind: PublicOperationKind) -> UUID {
+        let operationID = UUID()
+        publicOperations[operationID] = PublicOperationState(
+            kind: kind,
+            cancelLocalTask: nil
+        )
+        return operationID
+    }
+
+    private func installLocalCancellation<Value: Sendable>(
+        of worker: Task<Value, Error>,
+        operationID: UUID
+    ) {
+        publicOperations[operationID]?.cancelLocalTask = {
+            worker.cancel()
+        }
+    }
+
+    private func waitForDetachedWorker<Value: Sendable>(
+        _ worker: Task<Value, Error>,
+        operationID: UUID
+    ) async -> Result<Value, Error> {
+        let completion = Task.detached { await worker.result }
+        return await withTaskCancellationHandler {
+            await completion.value
+        } onCancel: {
+            Task { await self.requestPublicOperationCancellation(operationID) }
+        }
+    }
+
+    private func completePublicOperation(_ operationID: UUID) {
+        publicOperations.removeValue(forKey: operationID)
+        cancellationRequested.remove(operationID)
+        if preparationWorker?.operationID == operationID {
+            preparationWorker = nil
+        }
+        let waiters = publicOperationWaiters.removeValue(forKey: operationID) ?? []
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func waitForPublicOperationCompletion(_ operationID: UUID) async {
+        guard publicOperations[operationID] != nil else { return }
+        await withCheckedContinuation { continuation in
+            publicOperationWaiters[operationID, default: []].append(continuation)
+        }
+    }
+
+    private func requireOpenForNewOperation() throws {
+        guard lifecycle == .open else {
+            throw MeetingResponseError.notPrepared
+        }
+    }
+
+    private func requireContinuingOperation(_ operationID: UUID) throws {
+        try Task.checkCancellation()
+        guard lifecycle == .open, !cancellationRequested.contains(operationID) else {
+            throw CancellationError()
+        }
+    }
+
+    private func operationWasCancelled(_ operationID: UUID) -> Bool {
+        Task.isCancelled || lifecycle != .open || cancellationRequested.contains(operationID)
+    }
+
+    private func requestPublicOperationCancellation(_ operationID: UUID) async {
+        guard let publicOperation = publicOperations[operationID] else { return }
+        cancellationRequested.insert(operationID)
+        guard let activeOperation = activeOperations[operationID] else { return }
+
+        switch activeOperation.execution {
+        case .turn, .realtime:
+            await cancelOperation(operationID)
+            publicOperation.cancelLocalTask?()
+        case .preparing, .finishing:
+            break
+        }
     }
 
     private func runQuick(
         for turn: ConversationTurn,
         operationID: UUID
     ) async throws -> QuickModelOutput {
+        try requireContinuingOperation(operationID)
         guard let runtime, let quickBase, let client else {
             throw MeetingResponseError.notPrepared
         }
@@ -236,7 +455,8 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             client: client,
             from: quickBase,
             model: runtime.quickRoute.model,
-            expectedInstructionSources: []
+            expectedInstructionSources: [],
+            operationID: operationID
         )
         activeOperations[operationID] = ActiveOperation(
             kind: .quick,
@@ -245,43 +465,52 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         )
 
         do {
+            try requireContinuingOperation(operationID)
             let prompt = promptFactory.quickPrompt(
                 for: turn,
                 speakingStyle: configuration.speakingStyle
             )
-            let session = try await client.startQuick(
-                threadID: fork.id,
-                text: prompt,
-                realtimePrompt: Self.realtimeQuickInstructions,
-                model: runtime.quickRoute.model,
-                outputSchema: CodexOutputSchema.quick,
-                skills: []
-            )
+            let startTask = Task.detached {
+                try await client.startQuick(
+                    threadID: fork.id,
+                    text: prompt,
+                    realtimePrompt: Self.realtimeQuickInstructions,
+                    model: runtime.quickRoute.model,
+                    outputSchema: CodexOutputSchema.quick,
+                    skills: []
+                )
+            }
+            let session = try await Self.awaitUncancelled(startTask)
 
             let output: QuickModelOutput
             switch session {
             case .turn(let turnSession):
                 activeOperations[operationID]?.execution = .turn(turnSession.turnID)
+                try requireContinuingOperation(operationID)
                 output = try await CodexStructuredOutput.collect(
                     from: turnSession,
                     as: QuickModelOutput.self
                 )
             case .realtime(let realtimeSession):
                 activeOperations[operationID]?.execution = .realtime
+                try requireContinuingOperation(operationID)
                 let text = try await CodexStructuredOutput.firstRealtimeAnswer(
                     from: realtimeSession
                 )
                 output = try Self.decodeStrictQuick(text)
             }
 
+            try requireContinuingOperation(operationID)
             try Self.validate(output, for: turn)
             let usedRealtime: Bool
             if case .realtime = session { usedRealtime = true } else { usedRealtime = false }
+            activeOperations[operationID]?.execution = .finishing
             try await finishOperation(operationID, stopRealtime: usedRealtime)
+            try requireContinuingOperation(operationID)
             return output
         } catch {
             await cancelOperation(operationID)
-            if Task.isCancelled { throw CancellationError() }
+            if operationWasCancelled(operationID) { throw CancellationError() }
             throw Self.map(error)
         }
     }
@@ -290,6 +519,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         for turn: ConversationTurn,
         operationID: UUID
     ) async throws -> DeepDraft {
+        try requireContinuingOperation(operationID)
         guard let runtime, let client else { throw MeetingResponseError.notPrepared }
         if let deepPreparationError { throw deepPreparationError }
         guard let preparedDeep else { throw MeetingResponseError.groundingUnavailable }
@@ -328,19 +558,29 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         client: any CodexMeetingClient,
         prepared: PreparedDeep
     ) async throws -> DeepDraft {
-        guard turn.groundingFingerprint == prepared.snapshot.groundingFingerprint,
-            turn.repoAlias == prepared.snapshot.repoAlias,
-            await evidenceVerifier.isFresh(prepared.snapshot)
-        else {
-            throw MeetingResponseError.groundingMismatch
+        let expectedInstructionSources: [String]
+        if let snapshot = prepared.snapshot {
+            guard turn.groundingFingerprint == snapshot.groundingFingerprint,
+                turn.repoAlias == snapshot.repoAlias,
+                await evidenceVerifier.isFresh(snapshot)
+            else {
+                throw MeetingResponseError.groundingMismatch
+            }
+            try requireContinuingOperation(operationID)
+            expectedInstructionSources = Self.expectedInstructionPaths(for: snapshot)
+        } else {
+            guard turn.groundingFingerprint == nil, turn.repoAlias == nil else {
+                throw MeetingResponseError.groundingMismatch
+            }
+            expectedInstructionSources = []
         }
 
-        let expectedInstructionSources = Self.expectedInstructionPaths(for: prepared.snapshot)
         let fork = try await createFork(
             client: client,
             from: prepared.base,
             model: runtime.deepRoute.model,
-            expectedInstructionSources: expectedInstructionSources
+            expectedInstructionSources: expectedInstructionSources,
+            operationID: operationID
         )
         activeOperations[operationID] = ActiveOperation(
             kind: .deep,
@@ -349,35 +589,44 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         )
 
         do {
+            try requireContinuingOperation(operationID)
             let prompt = promptFactory.deepPrompt(
                 for: turn,
                 speakingStyle: configuration.speakingStyle,
                 selectedSkillName: configuration.selectedDomainSkillName
             )
-            let session = try await client.startTurn(
-                threadID: fork.id,
-                text: prompt,
-                model: runtime.deepRoute.model,
-                effort: runtime.deepRoute.effort,
-                outputSchema: CodexOutputSchema.deep,
-                skills: prepared.skills
-            )
+            let startTask = Task.detached {
+                try await client.startTurn(
+                    threadID: fork.id,
+                    text: prompt,
+                    model: runtime.deepRoute.model,
+                    effort: runtime.deepRoute.effort,
+                    outputSchema: CodexOutputSchema.deep,
+                    skills: prepared.skills
+                )
+            }
+            let session = try await Self.awaitUncancelled(startTask)
             activeOperations[operationID]?.execution = .turn(session.turnID)
+            try requireContinuingOperation(operationID)
             let draft = try await CodexStructuredOutput.collect(
                 from: session,
                 as: DeepDraft.self
             )
+            try requireContinuingOperation(operationID)
             try Self.validate(draft, for: turn)
-            try await verifyEvidence(
+            try await verifyDeepOutput(
                 draft,
                 actualInstructionSources: fork.instructionSources,
                 snapshot: prepared.snapshot
             )
+            try requireContinuingOperation(operationID)
+            activeOperations[operationID]?.execution = .finishing
             try await finishOperation(operationID, stopRealtime: false)
+            try requireContinuingOperation(operationID)
             return draft
         } catch {
             await cancelOperation(operationID)
-            if Task.isCancelled { throw CancellationError() }
+            if operationWasCancelled(operationID) { throw CancellationError() }
             throw Self.map(error)
         }
     }
@@ -387,6 +636,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         draft: DeepDraft,
         operationID: UUID
     ) async throws -> Reconciliation {
+        try requireContinuingOperation(operationID)
         guard let runtime, let quickBase, let client else {
             throw MeetingResponseError.notPrepared
         }
@@ -398,7 +648,8 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             client: client,
             from: quickBase,
             model: runtime.quickRoute.model,
-            expectedInstructionSources: []
+            expectedInstructionSources: [],
+            operationID: operationID
         )
         activeOperations[operationID] = ActiveOperation(
             kind: .reconciliation,
@@ -407,33 +658,43 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         )
 
         do {
-            let session = try await client.startTurn(
-                threadID: fork.id,
-                text: promptFactory.reconciliationPrompt(cue: cue, draft: draft),
-                model: runtime.quickRoute.model,
-                effort: runtime.quickRoute.effort,
-                outputSchema: CodexOutputSchema.reconciliation,
-                skills: []
-            )
+            try requireContinuingOperation(operationID)
+            let prompt = promptFactory.reconciliationPrompt(cue: cue, draft: draft)
+            let startTask = Task.detached {
+                try await client.startTurn(
+                    threadID: fork.id,
+                    text: prompt,
+                    model: runtime.quickRoute.model,
+                    effort: runtime.quickRoute.effort,
+                    outputSchema: CodexOutputSchema.reconciliation,
+                    skills: []
+                )
+            }
+            let session = try await Self.awaitUncancelled(startTask)
             activeOperations[operationID]?.execution = .turn(session.turnID)
+            try requireContinuingOperation(operationID)
             let output = try await CodexStructuredOutput.collect(
                 from: session,
                 as: Reconciliation.self
             )
+            try requireContinuingOperation(operationID)
             guard Self.wordCount(output.transition) <= 7 else {
                 throw MeetingResponseError.invalidOutput
             }
+            activeOperations[operationID]?.execution = .finishing
             try await finishOperation(operationID, stopRealtime: false)
+            try requireContinuingOperation(operationID)
             return output
         } catch {
             await cancelOperation(operationID)
-            if Task.isCancelled { throw CancellationError() }
+            if operationWasCancelled(operationID) { throw CancellationError() }
             throw Self.map(error)
         }
     }
 
-    private func ensureClient() async throws -> any CodexMeetingClient {
+    private func ensureClient(operationID: UUID) async throws -> any CodexMeetingClient {
         if let client { return client }
+        try requireContinuingOperation(operationID)
         let isolated: CodexIsolatedRuntime
         do {
             isolated = try CodexIsolatedRuntimeBuilder.prepare(
@@ -446,6 +707,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
         let appServerConfiguration = CodexAppServerConfiguration(
             executableURL: configuration.executableURL,
+            expectedCodexHome: isolated.profileRoot,
             clientVersion: configuration.clientVersion,
             permissionProfileID: isolated.permissionProfileID,
             processArguments: isolated.processArguments,
@@ -453,6 +715,12 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         )
         do {
             let connected = try await clientFactory(appServerConfiguration)
+            do {
+                try requireContinuingOperation(operationID)
+            } catch {
+                await connected.shutdown()
+                throw error
+            }
             client = connected
             lastCleanupReport = nil
             return connected
@@ -489,39 +757,72 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     private func prepareDeep(
         client: any CodexMeetingClient,
         route: CodexModelRoute,
-        packagedSkillRoot: URL
+        generalContextRoot: URL,
+        packagedSkillRoot: URL,
+        operationID: UUID
     ) async throws -> PreparedDeep {
-        guard let snapshot = configuration.groundingSnapshot else {
-            throw MeetingResponseError.groundingUnavailable
-        }
-        guard Self.isContained(snapshot.snapshotRoot, inside: configuration.meetingPrivateRoot),
-            !snapshot.manifest.entries.contains(where: Self.isRuntimeConfigurationPath)
-        else {
-            throw MeetingResponseError.groundingMismatch
+        try requireContinuingOperation(operationID)
+        if let snapshot = configuration.groundingSnapshot {
+            guard Self.isContained(snapshot.snapshotRoot, inside: configuration.meetingPrivateRoot),
+                !snapshot.manifest.entries.contains(where: Self.isRuntimeConfigurationPath)
+            else {
+                throw MeetingResponseError.groundingMismatch
+            }
+
+            let skills = try await enforceSkillPolicy(
+                client: client,
+                contextRoot: snapshot.snapshotRoot,
+                snapshot: snapshot,
+                packagedSkillRoot: packagedSkillRoot,
+                operationID: operationID
+            )
+            try requireContinuingOperation(operationID)
+            let expectedInstructions = Self.expectedInstructionPaths(for: snapshot)
+            let base = try await createBase(
+                client: client,
+                cwd: snapshot.snapshotRoot,
+                workspaceRoots: [snapshot.snapshotRoot, packagedSkillRoot],
+                model: route.model,
+                baseInstructions: Self.deepBaseInstructions,
+                expectedInstructionSources: expectedInstructions,
+                operationID: operationID
+            )
+            try requireContinuingOperation(operationID)
+            return PreparedDeep(base: base, snapshot: snapshot, skills: skills)
         }
 
+        guard configuration.selectedDomainSkillName == nil else {
+            throw MeetingResponseError.skillPolicyMismatch
+        }
         let skills = try await enforceSkillPolicy(
             client: client,
-            snapshot: snapshot,
-            packagedSkillRoot: packagedSkillRoot
+            contextRoot: generalContextRoot,
+            snapshot: nil,
+            packagedSkillRoot: packagedSkillRoot,
+            operationID: operationID
         )
-        let expectedInstructions = Self.expectedInstructionPaths(for: snapshot)
+        try requireContinuingOperation(operationID)
         let base = try await createBase(
             client: client,
-            cwd: snapshot.snapshotRoot,
-            workspaceRoots: [snapshot.snapshotRoot, packagedSkillRoot],
+            cwd: generalContextRoot,
+            workspaceRoots: [generalContextRoot, packagedSkillRoot],
             model: route.model,
-            baseInstructions: Self.deepBaseInstructions,
-            expectedInstructionSources: expectedInstructions
+            baseInstructions: Self.generalDeepBaseInstructions,
+            expectedInstructionSources: [],
+            operationID: operationID
         )
-        return PreparedDeep(base: base, snapshot: snapshot, skills: skills)
+        try requireContinuingOperation(operationID)
+        return PreparedDeep(base: base, snapshot: nil, skills: skills)
     }
 
     private func enforceSkillPolicy(
         client: any CodexMeetingClient,
-        snapshot: GroundingSnapshot,
-        packagedSkillRoot: URL
+        contextRoot: URL,
+        snapshot: GroundingSnapshot?,
+        packagedSkillRoot: URL,
+        operationID: UUID
     ) async throws -> [CodexSkillInvocation] {
+        try requireContinuingOperation(operationID)
         let selectedName = configuration.selectedDomainSkillName
         if let selectedName,
             selectedName.isEmpty || selectedName == PackagedMeetingCoachSkill.name
@@ -530,10 +831,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
 
         let initial = try await client.listSkills(
-            cwds: [snapshot.snapshotRoot.path],
+            cwds: [contextRoot.path],
             forceReload: true
         )
-        let initialSkills = Self.skills(for: snapshot.snapshotRoot, in: initial)
+        try requireContinuingOperation(operationID)
+        let initialSkills = Self.skills(for: contextRoot, in: initial)
         guard Set(initialSkills.map(\.name)).count == initialSkills.count else {
             throw MeetingResponseError.skillPolicyMismatch
         }
@@ -556,11 +858,13 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                 approved.append(skill)
             }
             if skill.enabled != shouldEnable {
+                try requireContinuingOperation(operationID)
                 let result = try await client.setSkillEnabled(
                     name: skill.name,
                     path: skill.path,
                     enabled: shouldEnable
                 )
+                try requireContinuingOperation(operationID)
                 guard result.effectiveEnabled == shouldEnable else {
                     throw MeetingResponseError.skillPolicyMismatch
                 }
@@ -572,10 +876,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
 
         let verified = try await client.listSkills(
-            cwds: [snapshot.snapshotRoot.path],
+            cwds: [contextRoot.path],
             forceReload: true
         )
-        let enabled = Self.skills(for: snapshot.snapshotRoot, in: verified).filter(\.enabled)
+        try requireContinuingOperation(operationID)
+        let enabled = Self.skills(for: contextRoot, in: verified).filter(\.enabled)
         guard Set(enabled.map(\.name)) == allowedNames,
             enabled.count == allowedNames.count
         else {
@@ -593,20 +898,33 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         workspaceRoots: [URL],
         model: String,
         baseInstructions: String,
-        expectedInstructionSources: [String]
+        expectedInstructionSources: [String],
+        operationID: UUID
     ) async throws -> CodexBaseThread {
+        try requireContinuingOperation(operationID)
         let base: CodexBaseThread
         do {
             base = try await client.createPersistentBase(
                 cwd: cwd.path,
                 runtimeWorkspaceRoots: workspaceRoots.map(\.path),
                 model: model,
-                baseInstructions: baseInstructions
+                baseInstructions: baseInstructions,
+                onCreated: { [weak self] threadID in
+                    guard let self else { throw CancellationError() }
+                    try await self.registerThread(threadID, client: client)
+                }
             )
+        } catch let failure as CodexCreatedThreadFailure {
+            if ownedThreadIDs.contains(failure.threadID) {
+                _ = await deleteOwnedThread(failure.threadID, client: client)
+            }
+            await client.shutdown()
+            throw Self.map(failure.cause)
         } catch {
             throw Self.map(error)
         }
         do {
+            try requireContinuingOperation(operationID)
             try Self.validateThread(
                 base.cwd,
                 roots: base.runtimeWorkspaceRoots,
@@ -615,10 +933,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                 instructionSources: base.instructionSources,
                 expectedInstructionSources: expectedInstructionSources
             )
-            try await registerThread(base.id, client: client)
             return base
         } catch {
-            try? await client.deleteThread(id: base.id)
+            if ownedThreadIDs.contains(base.id) {
+                _ = await deleteOwnedThread(base.id, client: client)
+            }
             throw Self.map(error)
         }
     }
@@ -627,15 +946,31 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         client: any CodexMeetingClient,
         from base: CodexBaseThread,
         model: String,
-        expectedInstructionSources: [String]
+        expectedInstructionSources: [String],
+        operationID: UUID
     ) async throws -> CodexEphemeralThread {
+        try requireContinuingOperation(operationID)
         let fork: CodexEphemeralThread
         do {
-            fork = try await client.forkEphemeral(from: base, model: model)
+            fork = try await client.forkEphemeral(
+                from: base,
+                model: model,
+                onCreated: { [weak self] threadID in
+                    guard let self else { throw CancellationError() }
+                    try await self.registerThread(threadID, client: client)
+                }
+            )
+        } catch let failure as CodexCreatedThreadFailure {
+            if ownedThreadIDs.contains(failure.threadID) {
+                _ = await deleteOwnedThread(failure.threadID, client: client)
+            }
+            await client.shutdown()
+            throw Self.map(failure.cause)
         } catch {
             throw Self.map(error)
         }
         do {
+            try requireContinuingOperation(operationID)
             try Self.validateThread(
                 fork.cwd,
                 roots: fork.runtimeWorkspaceRoots,
@@ -644,10 +979,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                 instructionSources: fork.instructionSources,
                 expectedInstructionSources: expectedInstructionSources
             )
-            try await registerThread(fork.id, client: client)
             return fork
         } catch {
-            try? await client.deleteThread(id: fork.id)
+            if ownedThreadIDs.contains(fork.id) {
+                _ = await deleteOwnedThread(fork.id, client: client)
+            }
             throw Self.map(error)
         }
     }
@@ -656,15 +992,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         _ threadID: String,
         client: any CodexMeetingClient
     ) async throws {
+        ownedThreadIDs.insert(threadID)
         do {
             try await journal.recordThread(threadID, meetingID: configuration.meetingID)
-            ownedThreadIDs.insert(threadID)
         } catch {
-            do {
-                try await client.deleteThread(id: threadID)
-            } catch {
-                cleanupFailures.append(.deleteThread)
-            }
+            _ = await deleteOwnedThread(threadID, client: client)
             throw MeetingResponseError.cleanupFailed
         }
     }
@@ -700,11 +1032,22 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
     }
 
-    private func verifyEvidence(
+    private func verifyDeepOutput(
         _ draft: DeepDraft,
         actualInstructionSources: [String],
-        snapshot: GroundingSnapshot
+        snapshot: GroundingSnapshot?
     ) async throws {
+        guard let snapshot else {
+            guard actualInstructionSources.isEmpty,
+                draft.groundingFingerprint == nil,
+                draft.kind != .answer,
+                draft.basis.isEmpty
+            else {
+                throw MeetingResponseError.groundingMismatch
+            }
+            return
+        }
+
         let expectedAll = Self.expectedInstructionPaths(for: snapshot)
         let actualAll = try actualInstructionSources.map(Self.canonicalExistingPath).sorted()
         guard actualAll == expectedAll.sorted() else {
@@ -793,7 +1136,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             } catch {
                 cleanupFailures.append(.stopRealtime)
             }
-        case .preparing:
+        case .preparing, .finishing:
             break
         }
 
@@ -861,7 +1204,21 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         else {
             throw MeetingResponseError.invalidOutput
         }
-        if draft.kind != .answer, !draft.basis.isEmpty {
+        guard (turn.repoAlias != nil) == (turn.groundingFingerprint != nil) else {
+            throw MeetingResponseError.invalidOutput
+        }
+        if turn.groundingFingerprint == nil {
+            guard draft.kind != .answer, draft.basis.isEmpty else {
+                throw MeetingResponseError.invalidOutput
+            }
+            if draft.kind == .generalAnswer,
+                !GeneralGuidancePolicy.accepts(draft.candidateSayNext)
+            {
+                throw MeetingResponseError.invalidOutput
+            }
+        } else if draft.kind == .generalAnswer {
+            throw MeetingResponseError.invalidOutput
+        } else if draft.kind != .answer, !draft.basis.isEmpty {
             throw MeetingResponseError.invalidOutput
         }
     }
@@ -932,7 +1289,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         _ skill: CodexSkill,
         selectedName: String?,
         packagedSkillPath: String,
-        snapshot: GroundingSnapshot
+        snapshot: GroundingSnapshot?
     ) throws {
         let canonical = try canonicalExistingPath(skill.path)
         if skill.name == PackagedMeetingCoachSkill.name {
@@ -940,7 +1297,8 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                 throw MeetingResponseError.skillPolicyMismatch
             }
         } else {
-            guard skill.name == selectedName,
+            guard let snapshot,
+                skill.name == selectedName,
                 canonical.hasPrefix(
                     try canonicalExistingPath(snapshot.snapshotRoot.path) + "/"
                 )
@@ -1035,6 +1393,13 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         return values.filter { seen.insert($0).inserted }
     }
 
+    private static func awaitUncancelled<Value: Sendable>(
+        _ task: Task<Value, Error>
+    ) async throws -> Value {
+        let completion = Task.detached { await task.result }
+        return try await completion.value.get()
+    }
+
     private static func map(_ error: any Error) -> any Error {
         if error is CancellationError { return CancellationError() }
         if let error = error as? MeetingResponseError { return error }
@@ -1042,7 +1407,8 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         if let error = error as? CodexClientError {
             switch error {
             case .incompatibleBinaryVersion, .missingCapability, .permissionProfileUnavailable,
-                .permissionProfileMismatch, .threadInvariantFailed, .unsupportedPlatform,
+                .permissionProfileMismatch, .profileMismatch, .threadInvariantFailed,
+                .unsupportedPlatform,
                 .serverRequestRejected:
                 return MeetingResponseError.protocolUnsupported
             case .binaryUnavailable, .transportUnavailable, .transportClosed, .requestTimedOut,
@@ -1055,6 +1421,13 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         return MeetingResponseError.runtimeUnavailable
     }
 
+    private static func map(_ cause: CodexCreatedThreadFailureCause) -> any Error {
+        switch cause {
+        case .cancellation: CancellationError()
+        case .client(let error): map(error)
+        }
+    }
+
     private static let quickBaseInstructions = """
         PaceNote Quick base. This reusable thread contains no meeting transcript, repository,
         skill, or user-specific content. Every transcript-bearing request arrives only in an
@@ -1065,6 +1438,13 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         PaceNote Deep base. This reusable thread contains no meeting transcript. Read only the
         sealed workspace roots under the active PaceNote permission profile. Never write, use
         network access, request approval, or inspect paths outside those roots.
+        """
+
+    private static let generalDeepBaseInstructions = """
+        PaceNote General Deep base. This reusable thread contains no meeting transcript or
+        repository content. Do not inspect files or claim facts about the user's codebase,
+        organization, deployment, customers, incidents, or policies. Never write, use network
+        access, request approval, or inspect paths outside the empty private context.
         """
 
     private static let realtimeQuickInstructions = """

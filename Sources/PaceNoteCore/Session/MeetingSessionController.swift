@@ -1,6 +1,16 @@
 import Foundation
 
 public actor MeetingSessionController {
+    struct DelayedAttributionRetentionSnapshot: Equatable, Sendable {
+        let hasAttributionTask: Bool
+        let hasPendingMicrophoneObservation: Bool
+        let hasLatestOutputObservation: Bool
+    }
+
+    private struct AudioServiceTeardownFailure: Error, Sendable {
+        let lanes: [AudioLane]
+    }
+
     private struct TranscriptObservation: Sendable {
         let result: ProgressiveTranscriptResult
         let receivedAt: TimeInterval
@@ -15,8 +25,11 @@ public actor MeetingSessionController {
         case idle
         case preparing(UUID)
         case prepared
+        case starting(UUID)
         case running
+        case pausing(UUID)
         case paused
+        case resuming(UUID)
         case stopping
         case ended
     }
@@ -51,6 +64,11 @@ public actor MeetingSessionController {
     private var pendingMicrophoneObservation: PendingMicrophoneObservation?
     private var latestOutputObservation: TranscriptObservation?
     private var continuation: AsyncStream<MeetingSessionEvent>.Continuation?
+    private var preparationAttempt: UUID?
+    private var preparationTask: Task<MeetingSessionState, Error>?
+    private var audioTransitionAttempt: UUID?
+    private var audioTransitionTask: Task<Void, Error>?
+    private var stopTask: Task<MeetingSessionStopReport, Never>?
     private var lastStopReport: MeetingSessionStopReport?
 
     public init(
@@ -95,6 +113,9 @@ public actor MeetingSessionController {
     }
 
     deinit {
+        preparationTask?.cancel()
+        audioTransitionTask?.cancel()
+        stopTask?.cancel()
         microphoneEventTask?.cancel()
         outputEventTask?.cancel()
         microphoneAttributionTask?.cancel()
@@ -118,6 +139,14 @@ public actor MeetingSessionController {
         makeState()
     }
 
+    func delayedAttributionRetentionSnapshot() -> DelayedAttributionRetentionSnapshot {
+        DelayedAttributionRetentionSnapshot(
+            hasAttributionTask: microphoneAttributionTask != nil,
+            hasPendingMicrophoneObservation: pendingMicrophoneObservation != nil,
+            hasLatestOutputObservation: latestOutputObservation != nil
+        )
+    }
+
     @discardableResult
     public func requestMicrophonePermission() async throws -> AudioPermissionStatus {
         guard consentConfirmed,
@@ -128,6 +157,9 @@ public actor MeetingSessionController {
         }
 
         let status = await microphonePermission.request()
+        guard lifecycle == .idle else {
+            throw MeetingSessionFailure.invalidLifecycle
+        }
         if status == .denied {
             activateBrownout(.init(reason: .microphoneLost, lane: .microphone))
             phase = .permissionRequired
@@ -154,6 +186,20 @@ public actor MeetingSessionController {
         phase = .idle
         emitState()
 
+        preparationAttempt = attempt
+        let task = Task { try await self.performPreflight(attempt: attempt) }
+        preparationTask = task
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performPreflight(attempt: UUID) async throws -> MeetingSessionState {
+        defer { finishPreparation(attempt: attempt) }
+
         do {
             try validateAudioServices()
             try await prepareMicrophonePermission(attempt: attempt)
@@ -164,6 +210,7 @@ public actor MeetingSessionController {
             do {
                 preparedRuntime = try await responseGenerator.prepare()
             } catch let error as MeetingResponseError {
+                try requirePreparing(attempt)
                 let failure = Self.sessionFailure(for: error)
                 activateBrownout(Self.brownout(for: error))
                 if case .signInRequired = error {
@@ -174,7 +221,6 @@ public actor MeetingSessionController {
                     throw failure
                 }
                 if case .credentialStoreUnavailable = error {
-                    try requirePreparing(attempt)
                     lifecycle = .idle
                     phase = .permissionRequired
                     emitFailure(failure)
@@ -187,6 +233,7 @@ public actor MeetingSessionController {
                 emitFailure(failure)
                 throw failure
             } catch {
+                try requirePreparing(attempt)
                 _ = await responseGenerator.shutdown()
                 try requirePreparing(attempt)
                 activateBrownout(.init(reason: .codexOffline))
@@ -234,19 +281,50 @@ public actor MeetingSessionController {
         guard lifecycle == .prepared else {
             throw MeetingSessionFailure.invalidLifecycle
         }
+
+        let attempt = UUID()
+        lifecycle = .starting(attempt)
+        audioTransitionAttempt = attempt
+        let task = Task { try await self.performStart(attempt: attempt) }
+        audioTransitionTask = task
+
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performStart(attempt: UUID) async throws {
+        defer { finishAudioTransition(attempt: attempt) }
         do {
-            try await startEnabledAudioServices()
+            try await startEnabledAudioServices(attempt: attempt)
+            try requireAudioTransition(attempt)
             lifecycle = .running
             updateOperationalPhase()
             emitState()
         } catch let failure as MeetingSessionFailure {
-            await stopAudioServices()
+            guard ownsAudioTransition(attempt) else {
+                throw MeetingSessionFailure.invalidLifecycle
+            }
+            if let teardownFailure = await audioTeardownFailure() {
+                try requireAudioTransition(attempt)
+                throw transitionToIncompleteAudioTeardown(teardownFailure)
+            }
+            try requireAudioTransition(attempt)
             lifecycle = .prepared
             updateOperationalPhase()
             emitFailure(failure)
             throw failure
         } catch {
-            await stopAudioServices()
+            guard ownsAudioTransition(attempt) else {
+                throw MeetingSessionFailure.invalidLifecycle
+            }
+            if let teardownFailure = await audioTeardownFailure() {
+                try requireAudioTransition(attempt)
+                throw transitionToIncompleteAudioTeardown(teardownFailure)
+            }
+            try requireAudioTransition(attempt)
             lifecycle = .prepared
             activateBrownout(.init(reason: .transcriptUncertain))
             updateOperationalPhase()
@@ -260,22 +338,36 @@ public actor MeetingSessionController {
         guard lifecycle == .running else {
             throw MeetingSessionFailure.invalidLifecycle
         }
-        lifecycle = .paused
-        phase = .paused
-        microphoneAttributionTask?.cancel()
-        microphoneAttributionTask = nil
-        pendingMicrophoneObservation = nil
-        latestOutputObservation = nil
+
+        let attempt = UUID()
+        lifecycle = .pausing(attempt)
+        audioTransitionAttempt = attempt
+        let task = Task { try await self.performPause(attempt: attempt) }
+        audioTransitionTask = task
+
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performPause(attempt: UUID) async throws {
+        defer { finishAudioTransition(attempt: attempt) }
+        clearDelayedAttributionState()
         microphonePartialID = nil
         outputPartialID = nil
         boundaryTask?.cancel()
         boundaryTask = nil
-        microphoneAttributionTask?.cancel()
-        microphoneAttributionTask = nil
-        pendingMicrophoneObservation = nil
-        latestOutputObservation = nil
-        await stopAudioServices()
+        let teardownFailure = await audioTeardownFailure()
+        try requireAudioTransition(attempt)
         await cancelCurrentGeneration(clearSuggestions: true)
+        try requireAudioTransition(attempt)
+        if let teardownFailure {
+            throw transitionToIncompleteAudioTeardown(teardownFailure)
+        }
+        lifecycle = .paused
+        phase = .paused
         emitState()
     }
 
@@ -283,19 +375,50 @@ public actor MeetingSessionController {
         guard lifecycle == .paused else {
             throw MeetingSessionFailure.invalidLifecycle
         }
+
+        let attempt = UUID()
+        lifecycle = .resuming(attempt)
+        audioTransitionAttempt = attempt
+        let task = Task { try await self.performResume(attempt: attempt) }
+        audioTransitionTask = task
+
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performResume(attempt: UUID) async throws {
+        defer { finishAudioTransition(attempt: attempt) }
         do {
-            try await startEnabledAudioServices()
+            try await startEnabledAudioServices(attempt: attempt)
+            try requireAudioTransition(attempt)
             lifecycle = .running
             updateOperationalPhase()
             emitState()
         } catch let failure as MeetingSessionFailure {
-            await stopAudioServices()
+            guard ownsAudioTransition(attempt) else {
+                throw MeetingSessionFailure.invalidLifecycle
+            }
+            if let teardownFailure = await audioTeardownFailure() {
+                try requireAudioTransition(attempt)
+                throw transitionToIncompleteAudioTeardown(teardownFailure)
+            }
+            try requireAudioTransition(attempt)
             lifecycle = .paused
             phase = .paused
             emitFailure(failure)
             throw failure
         } catch {
-            await stopAudioServices()
+            guard ownsAudioTransition(attempt) else {
+                throw MeetingSessionFailure.invalidLifecycle
+            }
+            if let teardownFailure = await audioTeardownFailure() {
+                try requireAudioTransition(attempt)
+                throw transitionToIncompleteAudioTeardown(teardownFailure)
+            }
+            try requireAudioTransition(attempt)
             lifecycle = .paused
             phase = .paused
             let failure = MeetingSessionFailure.responseUnavailable
@@ -339,24 +462,42 @@ public actor MeetingSessionController {
 
     @discardableResult
     public func stop() async -> MeetingSessionStopReport {
-        if let lastStopReport { return lastStopReport }
-        guard lifecycle != .stopping else {
-            return MeetingSessionStopReport(
-                deletedThreadCount: 0,
-                deletedSnapshotCount: 0,
-                deletedTemporaryRootCount: 0,
-                residualFindingCount: 0,
-                journalEntryRemoved: false,
-                failures: [.responseCleanup]
-            )
+        if let stopTask { return await stopTask.value }
+        if let lastStopReport,
+            !lastStopReport.failures.contains(.audioCaptureTeardown)
+        {
+            return lastStopReport
         }
 
-        lifecycle = .stopping
         let sensitiveNeedles = cleanupNeedles()
+        clearDelayedAttributionState()
+        let preparationTask = self.preparationTask
+        let audioTransitionTask = self.audioTransitionTask
+        lifecycle = .stopping
+        preparationTask?.cancel()
+        audioTransitionTask?.cancel()
+        let task: Task<MeetingSessionStopReport, Never>
+        if let lastStopReport {
+            task = Task {
+                if let preparationTask { _ = await preparationTask.result }
+                if let audioTransitionTask { _ = await audioTransitionTask.result }
+                return await self.retryAudioTeardown(from: lastStopReport)
+            }
+        } else {
+            task = Task {
+                if let preparationTask { _ = await preparationTask.result }
+                if let audioTransitionTask { _ = await audioTransitionTask.result }
+                return await self.performStop(sensitiveNeedles: sensitiveNeedles)
+            }
+        }
+        stopTask = task
+        return await task.value
+    }
 
+    private func performStop(sensitiveNeedles: [Data]) async -> MeetingSessionStopReport {
         boundaryTask?.cancel()
         boundaryTask = nil
-        await stopAudioServices()
+        let audioTeardownFailureLane = await stopAudioServicesWithOneRetry()
         await cancelCurrentGeneration(clearSuggestions: true)
 
         let responseReport = await responseGenerator.shutdown()
@@ -374,6 +515,9 @@ public actor MeetingSessionController {
         emit(.transcriptsCleared)
 
         var failures = resourceReport.failures
+        if audioTeardownFailureLane != nil {
+            failures.append(.audioCaptureTeardown)
+        }
         if !responseReport.failures.isEmpty {
             failures.append(.responseCleanup)
         }
@@ -414,15 +558,72 @@ public actor MeetingSessionController {
             deletedTemporaryRootCount: resourceReport.deletedTemporaryRootCount,
             residualFindingCount: residualFindingCount,
             journalEntryRemoved: journalEntryRemoved,
-            failures: Self.deduplicated(failures)
+            failures: Self.deduplicated(failures),
+            audioTeardownFailureLane: audioTeardownFailureLane
         )
+        recordStop(report)
+        return report
+    }
+
+    private func retryAudioTeardown(
+        from previous: MeetingSessionStopReport
+    ) async -> MeetingSessionStopReport {
+        var failures = previous.failures.filter { $0 != .audioCaptureTeardown }
+        let audioTeardownFailureLane = await stopAudioServicesWithOneRetry()
+        if audioTeardownFailureLane != nil {
+            failures.append(.audioCaptureTeardown)
+        }
+
+        var journalEntryRemoved = previous.journalEntryRemoved
+        if failures.isEmpty, !journalEntryRemoved {
+            do {
+                try await resourceCleaner.deletePrivateRoot()
+            } catch {
+                failures.append(.privateRootDeletion)
+            }
+        }
+        if failures.isEmpty, !journalEntryRemoved {
+            do {
+                try await resourceCleaner.removeJournalEntry(meetingID: configuration.meetingID)
+                journalEntryRemoved = true
+            } catch {
+                failures.append(.journalRemoval)
+            }
+        }
+
+        let report = MeetingSessionStopReport(
+            deletedThreadCount: previous.deletedThreadCount,
+            deletedSnapshotCount: previous.deletedSnapshotCount,
+            deletedTemporaryRootCount: previous.deletedTemporaryRootCount,
+            residualFindingCount: previous.residualFindingCount,
+            journalEntryRemoved: journalEntryRemoved,
+            failures: Self.deduplicated(failures),
+            audioTeardownFailureLane: audioTeardownFailureLane
+        )
+        recordStop(report)
+        return report
+    }
+
+    private func recordStop(_ report: MeetingSessionStopReport) {
         lastStopReport = report
+        stopTask = nil
+        if report.failures.contains(.audioCaptureTeardown) {
+            lifecycle = .stopping
+            phase = .brownout
+            let lane =
+                report.audioTeardownFailureLane
+                ?? configuration.captureMode.enabledLanes.first
+                ?? .output
+            activateBrownout(.init(reason: Self.lostReason(for: lane), lane: lane))
+            emitFailure(.captureTeardownFailed(lane))
+            return
+        }
+
         lifecycle = .ended
         phase = .ended
         emitState()
         continuation?.finish()
         continuation = nil
-        return report
     }
 
     private func validateAudioServices() throws {
@@ -481,51 +682,70 @@ public actor MeetingSessionController {
             }
             deactivateBrownout(reason: .transcriberAssetMissing)
         } catch let failure as MeetingSessionFailure {
+            try requirePreparing(attempt)
             activateBrownout(.init(reason: .transcriberAssetMissing))
             throw failure
         } catch {
+            try requirePreparing(attempt)
             activateBrownout(.init(reason: .transcriberAssetMissing))
             throw MeetingSessionFailure.transcriptionAssetUnavailable
         }
     }
 
-    private func startEnabledAudioServices() async throws {
+    private func startEnabledAudioServices(attempt: UUID) async throws {
+        try requireAudioTransition(attempt)
         if configuration.captureMode.capturesMicrophone {
             guard let microphone = audioServices.microphone else {
                 throw MeetingSessionFailure.missingAudioServices(.microphone)
             }
             do {
-                try await startLane(microphone)
+                try await startLane(microphone, attempt: attempt)
+                try requireAudioTransition(attempt)
                 deactivateBrownout(reason: .microphoneLost, lane: .microphone)
+            } catch let failure as MeetingSessionFailure {
+                throw failure
             } catch let error as AudioCaptureError where error == .permissionDenied {
+                try requireAudioTransition(attempt)
                 activateBrownout(.init(reason: .microphoneLost, lane: .microphone))
                 throw MeetingSessionFailure.microphonePermissionDenied
             } catch {
+                try requireAudioTransition(attempt)
                 activateBrownout(.init(reason: .microphoneLost, lane: .microphone))
                 throw MeetingSessionFailure.captureUnavailable(.microphone)
             }
         }
 
+        try requireAudioTransition(attempt)
         if configuration.captureMode.capturesSystemOutput {
             guard let output = audioServices.systemOutput else {
                 throw MeetingSessionFailure.missingAudioServices(.output)
             }
             do {
-                try await startLane(output)
+                try await startLane(output, attempt: attempt)
+                try requireAudioTransition(attempt)
                 deactivateBrownout(reason: .systemAudioLost, lane: .output)
+            } catch let failure as MeetingSessionFailure {
+                throw failure
             } catch let error as AudioCaptureError where error == .permissionDenied {
+                try requireAudioTransition(attempt)
                 activateBrownout(.init(reason: .systemAudioLost, lane: .output))
                 throw MeetingSessionFailure.systemAudioPermissionDenied
             } catch {
+                try requireAudioTransition(attempt)
                 activateBrownout(.init(reason: .systemAudioLost, lane: .output))
                 throw MeetingSessionFailure.captureUnavailable(.output)
             }
         }
     }
 
-    private func startLane(_ services: MeetingAudioLaneServices) async throws {
+    private func startLane(
+        _ services: MeetingAudioLaneServices,
+        attempt: UUID
+    ) async throws {
         let audioEvents = await services.capture.events()
+        try requireAudioTransition(attempt)
         let transcriptionEvents = await services.transcriber.events()
+        try requireAudioTransition(attempt)
         let task = Task { [weak self] in
             for await event in transcriptionEvents {
                 guard !Task.isCancelled else { return }
@@ -539,34 +759,86 @@ public actor MeetingSessionController {
                 audioEvents: audioEvents,
                 localeIdentifier: configuration.localeIdentifier
             )
+            try requireAudioTransition(attempt)
             try await services.capture.start()
+            try requireAudioTransition(attempt)
         } catch {
             task.cancel()
             setEventTask(nil, lane: services.lane)
             await services.transcriber.stop()
-            await services.capture.stop()
             throw error
         }
     }
 
-    private func stopAudioServices() async {
-        microphoneEventTask?.cancel()
-        outputEventTask?.cancel()
+    private func stopAudioServices() async throws {
+        let stoppedMicrophoneEventTask = microphoneEventTask
+        let stoppedOutputEventTask = outputEventTask
+        stoppedMicrophoneEventTask?.cancel()
+        stoppedOutputEventTask?.cancel()
         microphoneEventTask = nil
         outputEventTask = nil
 
+        var failedLanes: [AudioLane] = []
         if configuration.captureMode.capturesMicrophone,
             let microphone = audioServices.microphone
         {
             await microphone.transcriber.stop()
-            await microphone.capture.stop()
+            do {
+                try await microphone.capture.stop()
+            } catch {
+                failedLanes.append(.microphone)
+            }
         }
         if configuration.captureMode.capturesSystemOutput,
             let output = audioServices.systemOutput
         {
             await output.transcriber.stop()
-            await output.capture.stop()
+            do {
+                try await output.capture.stop()
+            } catch {
+                failedLanes.append(.output)
+            }
         }
+
+        await stoppedMicrophoneEventTask?.value
+        await stoppedOutputEventTask?.value
+        clearDelayedAttributionState()
+
+        if !failedLanes.isEmpty {
+            throw AudioServiceTeardownFailure(lanes: failedLanes)
+        }
+    }
+
+    private func audioTeardownFailure() async -> AudioServiceTeardownFailure? {
+        do {
+            try await stopAudioServices()
+            return nil
+        } catch let failure as AudioServiceTeardownFailure {
+            return failure
+        } catch {
+            return AudioServiceTeardownFailure(lanes: configuration.captureMode.enabledLanes)
+        }
+    }
+
+    private func stopAudioServicesWithOneRetry() async -> AudioLane? {
+        var lastFailure: AudioServiceTeardownFailure?
+        for _ in 0..<2 {
+            guard let failure = await audioTeardownFailure() else { return nil }
+            lastFailure = failure
+        }
+        return lastFailure?.lanes.first ?? configuration.captureMode.enabledLanes.first
+    }
+
+    private func transitionToIncompleteAudioTeardown(
+        _ teardownFailure: AudioServiceTeardownFailure
+    ) -> MeetingSessionFailure {
+        let lane = teardownFailure.lanes.first ?? .output
+        lifecycle = .stopping
+        phase = .brownout
+        activateBrownout(.init(reason: Self.lostReason(for: lane), lane: lane))
+        let failure = MeetingSessionFailure.captureTeardownFailed(lane)
+        emitFailure(failure)
+        return failure
     }
 
     private func handleTranscription(_ event: SpeechTranscriptionEvent) async {
@@ -656,12 +928,23 @@ public actor MeetingSessionController {
                 receivedAt: observation.receivedAt
             )
             await applyMicrophone(decision, observation: pending.observation)
+            guard lifecycle == .running else { return }
         }
 
+        guard lifecycle == .running else { return }
         latestOutputObservation = observation
-        let segment = ingest(result, source: .them)
+        let outputSource: TranscriptSource =
+            configuration.systemOutputScope == .meetingApplication ? .them : .output
+        let segment = ingest(result, source: outputSource)
         turnDetector.observe(segment)
         boundaryTask?.cancel()
+        guard configuration.captureMode.capturesMicrophone else {
+            // Without the local-speech lane PaceNote cannot know whether the user
+            // has started answering. Keep transcription live, but require the
+            // explicit Coach Current Turn action to freeze and coach this span.
+            boundaryTask = nil
+            return
+        }
         if segment.isFinal {
             await detectTurnBoundary(force: false)
         } else {
@@ -671,6 +954,7 @@ public actor MeetingSessionController {
 
     private func enqueueMicrophone(_ observation: TranscriptObservation) {
         let pending = PendingMicrophoneObservation(id: UUID(), observation: observation)
+        let pendingID = pending.id
         pendingMicrophoneObservation = pending
         microphoneAttributionTask?.cancel()
         let delay = configuration.microphoneAttributionDelay
@@ -681,7 +965,7 @@ public actor MeetingSessionController {
                 return
             }
             guard !Task.isCancelled else { return }
-            await self?.flushMicrophone(id: pending.id)
+            await self?.flushMicrophone(id: pendingID)
         }
     }
 
@@ -695,7 +979,7 @@ public actor MeetingSessionController {
         pendingMicrophoneObservation = nil
         microphoneAttributionTask = nil
         await applyMicrophone(
-            .attribute(source: .you, speakerUncertain: false),
+            .attribute(source: confirmedMicrophoneSource, speakerUncertain: false),
             observation: pending.observation
         )
     }
@@ -704,6 +988,7 @@ public actor MeetingSessionController {
         _ decision: TranscriptAttributionDecision,
         observation: TranscriptObservation
     ) async {
+        guard lifecycle == .running else { return }
         switch decision {
         case .suppressEcho:
             suppressCurrentMicrophonePartial()
@@ -711,16 +996,23 @@ public actor MeetingSessionController {
             emitState()
 
         case .attribute(let source, let speakerUncertain):
+            let attributedSource =
+                source == .you && !speakerUncertain ? confirmedMicrophoneSource : source
             if speakerUncertain {
                 activateBrownout(.init(reason: .speakerUncertain, lane: .microphone))
             } else {
                 deactivateBrownout(reason: .speakerUncertain, lane: .microphone)
             }
-            if source == .you, !speakerUncertain {
+            if attributedSource == .you, !speakerUncertain {
                 await cancelGenerationForLocalSpeech()
+                guard lifecycle == .running else { return }
             }
-            _ = ingest(observation.result, source: source)
+            _ = ingest(observation.result, source: attributedSource)
         }
+    }
+
+    private var confirmedMicrophoneSource: TranscriptSource {
+        configuration.soleNearbySpeakerConfirmed ? .you : .microphone
     }
 
     @discardableResult
@@ -862,7 +1154,8 @@ public actor MeetingSessionController {
                 identity: identity,
                 stage: .deep,
                 text: deep.composedText,
-                evidence: deep.basis
+                evidence: deep.basis,
+                deepKind: deep.kind
             )
             suggestions.removeAll { $0.identity == identity && $0.stage == .deep }
             suggestions.append(card)
@@ -949,6 +1242,34 @@ public actor MeetingSessionController {
         }
     }
 
+    private func finishPreparation(attempt: UUID) {
+        guard preparationAttempt == attempt else { return }
+        preparationAttempt = nil
+        preparationTask = nil
+    }
+
+    private func requireAudioTransition(_ attempt: UUID) throws {
+        guard ownsAudioTransition(attempt) else {
+            throw MeetingSessionFailure.invalidLifecycle
+        }
+    }
+
+    private func ownsAudioTransition(_ attempt: UUID) -> Bool {
+        guard audioTransitionAttempt == attempt else { return false }
+        switch lifecycle {
+        case .starting(let current), .pausing(let current), .resuming(let current):
+            return current == attempt
+        default:
+            return false
+        }
+    }
+
+    private func finishAudioTransition(attempt: UUID) {
+        guard audioTransitionAttempt == attempt else { return }
+        audioTransitionAttempt = nil
+        audioTransitionTask = nil
+    }
+
     private func activateBrownout(_ brownout: MeetingBrownout) {
         guard !brownouts.contains(where: { $0.id == brownout.id }) else { return }
         brownouts.append(brownout)
@@ -977,12 +1298,16 @@ public actor MeetingSessionController {
             phase = .idle
         case .prepared:
             phase = hasBlockingBrownout ? .brownout : .ready
+        case .starting:
+            phase = hasBlockingBrownout ? .brownout : .ready
         case .running:
             if hasBlockingBrownout {
                 phase = .brownout
             } else {
                 phase = suggestions.isEmpty ? .listening : .suggesting
             }
+        case .pausing, .resuming:
+            phase = .paused
         case .paused:
             phase = .paused
         case .stopping, .ended:
@@ -1002,12 +1327,25 @@ public actor MeetingSessionController {
         }
     }
 
+    private var isPreparedLifecycle: Bool {
+        switch lifecycle {
+        case .prepared, .starting, .running, .pausing, .paused, .resuming:
+            true
+        case .idle, .preparing, .stopping, .ended:
+            false
+        }
+    }
+
     private func cleanupNeedles() -> [Data] {
         let transcriptNeedles = timeline.segments.map(\.text)
         let suggestionNeedles = suggestions.map(\.text)
+        let delayedAttributionNeedles = [
+            pendingMicrophoneObservation?.observation.result.text,
+            latestOutputObservation?.result.text,
+        ].compactMap { $0 }
         return Array(
             Set(
-                (transcriptNeedles + suggestionNeedles)
+                (transcriptNeedles + suggestionNeedles + delayedAttributionNeedles)
                     .map(Self.normalized)
                     .filter { $0.utf8.count >= 8 }
                     .map { Data($0.utf8) }
@@ -1015,12 +1353,19 @@ public actor MeetingSessionController {
         )
     }
 
+    private func clearDelayedAttributionState() {
+        microphoneAttributionTask?.cancel()
+        microphoneAttributionTask = nil
+        pendingMicrophoneObservation = nil
+        latestOutputObservation = nil
+    }
+
     private func makeState() -> MeetingSessionState {
         MeetingSessionState(
             phase: phase,
             captureMode: configuration.captureMode,
             consentConfirmed: consentConfirmed,
-            isPrepared: lifecycle == .prepared || lifecycle == .running || lifecycle == .paused,
+            isPrepared: isPreparedLifecycle,
             isRunning: lifecycle == .running,
             runtime: runtime,
             transcript: timeline.segments,

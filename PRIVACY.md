@@ -5,9 +5,9 @@ PaceNote is a personal, consent-first meeting coach. It is not a covert recorder
 ## Before capture
 
 - You manually start every session.
-- PaceNote shows the selected microphone and Mac-output scope.
+- PaceNote shows whether the microphone lane is enabled and the selected Mac-output scope. The microphone lane uses the current macOS default input; PaceNote does not enumerate or display an exact microphone device before capture.
 - You must confirm for every meeting that participants have been informed and that you have permission to capture and process the conversation.
-- A persistent visible indicator remains on while either capture lane is active.
+- A persistent visible indicator remains on while either capture lane is active or its teardown has not yet been verified.
 
 PaceNote cannot verify participant consent for you. You remain responsible for recording law, confidentiality agreements, employer policy, and assessment rules.
 
@@ -23,9 +23,9 @@ PaceNote cannot verify participant consent for you. You remain responsible for r
 
 PaceNote uses one stable, private Codex profile under its Application Support directory so a one-time ChatGPT sign-in can survive between meetings. It does not copy tokens or authentication files from another Codex installation. Codex is configured to keep credentials in the macOS Keychain, and PaceNote rejects plaintext credential files in the profile.
 
-The profile configuration sets Codex history persistence to `none`. Transcript-bearing production Deep work runs in ephemeral forks; the production coordinator starts no model Quick or model reconciliation turn. Transcript-free bases may exist for grounded Deep context and lower-level compatibility plumbing; PaceNote registers and deletes all of them on Stop or startup recovery.
+The profile configuration sets Codex history persistence to `none`. Transcript-bearing production Deep work runs in ephemeral forks; the production coordinator starts no model Quick or model reconciliation turn. Transcript-free bases may exist for general or grounded Deep context and lower-level compatibility plumbing; PaceNote registers and deletes all of them on Stop or startup recovery.
 
-Codex can create transient local databases while the app-server is running even with history disabled. After a meeting, PaceNote terminates the app-server, removes the allowlisted transient state, restores the restrictive profile configuration, and scans the stable profile for meeting and repository canaries. The Keychain-backed sign-in and minimal profile configuration remain for the next meeting.
+Codex can create transient local databases while the app-server is running even with history disabled. After a meeting, PaceNote terminates the app-server, removes the allowlisted transient state, restores the restrictive profile configuration, and scans the stable profile for meeting and repository canaries. A clean graceful Quit also removes transcript-free preflight databases when no meeting, pending setup, or cleanup-journal owner remains. The Keychain-backed sign-in and minimal profile configuration remain for the next meeting.
 
 ## Temporary meeting data
 
@@ -35,7 +35,7 @@ On Stop, PaceNote deletes app-created threads, snapshots, temporary context, and
 
 ## Data processed by OpenAI
 
-PaceNote sends the minimum recent transcript slice needed for a response through the local Codex app-server. A deeper technical answer can also cause Codex to read selected excerpts from the sealed repository snapshot, applicable `AGENTS.md` instructions, and one explicitly selected read-only skill.
+PaceNote sends the minimum recent transcript slice needed for a response through the local Codex app-server. Without a repository, the model receives no repository files and any useful response is visibly labeled as unverified general guidance. When repository grounding is selected, a deeper technical answer can also cause Codex to read selected excerpts from the sealed snapshot, applicable `AGENTS.md` instructions, and one explicitly selected read-only skill.
 
 This uses the ChatGPT account signed into PaceNote's dedicated Codex profile, not an OpenAI API key. OpenAI-side handling and usage limits follow that account and plan. PaceNote does not claim server-side zero retention.
 
@@ -48,12 +48,12 @@ This uses the ChatGPT account signed into PaceNote's dedicated Codex profile, no
 
 Private-key blocks, major provider tokens, bearer tokens, JWTs, and Slack or Discord webhooks are hard-denied by content and cannot be approved. Only ambiguous credential-assignment warnings can be approved. The default grounding limits are 2 MiB per file, 5,000 accepted files, 32 MiB of accepted content, 192 MiB of scanned content, 50,000 traversed entries, 8 MiB of Git output, 10 seconds per Git command, and 30 seconds per top-level grounding operation. Snapshot creation shares one budget across its build, copy, rebuild, and retry phases. Freshness checks and evidence verification are separate bounded operations with fresh budgets. Every displayed repository answer must pass local path, line, hash, scope, grounding-fingerprint, freshness, claim-to-excerpt, and answer-to-claim checks.
 
-For an answer to be displayed, its candidate sentence must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation. The claim must contain at least two informative terms and copy one complete cited source line exactly, apart from a leading code-comment or list marker. PaceNote rejects appended, combined, paraphrased, punctuation-changed, and negation-changed answer candidates.
+For a repository answer to be displayed, its candidate sentence must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation. The claim must contain at least two informative terms and copy one complete cited source line exactly, apart from a leading code-comment or list marker. PaceNote rejects appended, combined, paraphrased, punctuation-changed, and negation-changed repository answer candidates. A repository-free `general_answer` must instead carry a null grounding fingerprint, empty evidence basis, a qualified or proposal-style opening, and no explicit local codebase, organization, or production-state claim. The UI marks it **verify before speaking** because it remains model guidance, not verified implementation evidence.
 
 ## User control
 
-- **Pause** stops both capture lanes and clears buffered raw audio.
-- **Stop** interrupts inference, clears the transcript and suggestions, and begins verified cleanup.
+- **Pause** stops both capture lanes and clears buffered raw audio. It does not claim success until the underlying capture handles are released.
+- **Stop** clears transcript and suggestions immediately, then interrupts inference and begins verified cleanup. If an audio handle cannot be destroyed, PaceNote keeps the red indicator on, retains the exact teardown state for retry, and disables every meeting action except Stop.
 - **Sign Out and Forget Profile** asks Codex to sign out, removes PaceNote's dedicated profile and local identity binding, and recreates an empty private profile after explicit confirmation.
 - PaceNote never automatically speaks, pastes, posts, sends, joins a call, or changes repository files.
 

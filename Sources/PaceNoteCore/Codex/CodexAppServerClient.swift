@@ -2,6 +2,7 @@ import Foundation
 
 public struct CodexAppServerConfiguration: Sendable {
     public let executableURL: URL
+    public let expectedCodexHome: URL
     public let versionPolicy: CodexVersionPolicy
     public let requestTimeout: Duration
     public let clientName: String
@@ -16,6 +17,7 @@ public struct CodexAppServerConfiguration: Sendable {
         executableURL: URL = URL(
             fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"
         ),
+        expectedCodexHome: URL,
         versionPolicy: CodexVersionPolicy = .tested,
         requestTimeout: Duration = .seconds(15),
         clientName: String = "pacenote",
@@ -27,6 +29,7 @@ public struct CodexAppServerConfiguration: Sendable {
         processEnvironment: [String: String]? = nil
     ) {
         self.executableURL = executableURL
+        self.expectedCodexHome = expectedCodexHome
         self.versionPolicy = versionPolicy
         self.requestTimeout = requestTimeout
         self.clientName = clientName
@@ -145,6 +148,14 @@ public actor CodexAppServerClient {
             )
             guard result.platformOs == "macos", result.platformFamily == "unix" else {
                 throw CodexClientError.unsupportedPlatform
+            }
+            guard
+                Self.matchesExpectedCodexHome(
+                    result.codexHome,
+                    expected: configuration.expectedCodexHome
+                )
+            else {
+                throw CodexClientError.profileMismatch
             }
 
             try await transport.sendNotification(method: "initialized", params: nil)
@@ -352,6 +363,30 @@ public actor CodexAppServerClient {
         model: String,
         baseInstructions: String? = nil
     ) async throws -> CodexBaseThread {
+        do {
+            return try await createPersistentBase(
+                cwd: cwd,
+                runtimeWorkspaceRoots: runtimeWorkspaceRoots,
+                model: model,
+                baseInstructions: baseInstructions,
+                onCreated: { _ in }
+            )
+        } catch let failure as CodexCreatedThreadFailure {
+            _ = try? await transport.request(
+                method: "thread/delete",
+                params: ["threadId": .string(failure.threadID)]
+            )
+            throw Self.error(for: failure.cause)
+        }
+    }
+
+    public func createPersistentBase(
+        cwd: String,
+        runtimeWorkspaceRoots: [String],
+        model: String,
+        baseInstructions: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexBaseThread {
         try requireReady()
         try Self.requireAbsolutePath(cwd)
         guard !runtimeWorkspaceRoots.isEmpty else {
@@ -376,6 +411,15 @@ public actor CodexAppServerClient {
             method: "thread/start",
             params: .object(params)
         )
+        do {
+            try await onCreated(result.thread.id)
+        } catch {
+            _ = try? await transport.request(
+                method: "thread/delete",
+                params: ["threadId": .string(result.thread.id)]
+            )
+            throw error
+        }
         do {
             try validateThreadResult(
                 result,
@@ -405,11 +449,10 @@ public actor CodexAppServerClient {
                 ]
             )
         } catch {
-            _ = try? await transport.request(
-                method: "thread/delete",
-                params: ["threadId": .string(result.thread.id)]
+            throw CodexCreatedThreadFailure(
+                threadID: result.thread.id,
+                cause: Self.createdThreadFailureCause(for: error)
             )
-            throw Self.safe(error)
         }
 
         return CodexBaseThread(
@@ -425,6 +468,28 @@ public actor CodexAppServerClient {
     public func forkEphemeral(
         from base: CodexBaseThread,
         model: String? = nil
+    ) async throws -> CodexEphemeralThread {
+        do {
+            return try await forkEphemeral(
+                from: base,
+                model: model,
+                onCreated: { _ in }
+            )
+        } catch let failure as CodexCreatedThreadFailure {
+            _ = try? await transport.request(
+                method: "thread/delete",
+                params: ["threadId": .string(failure.threadID)]
+            )
+            state = .failed
+            await transport.stop()
+            throw Self.error(for: failure.cause)
+        }
+    }
+
+    public func forkEphemeral(
+        from base: CodexBaseThread,
+        model: String?,
+        onCreated: @Sendable (String) async throws -> Void
     ) async throws -> CodexEphemeralThread {
         try requireReady()
         guard base.permissionProfileID == configuration.permissionProfileID else {
@@ -446,6 +511,15 @@ public actor CodexAppServerClient {
             params: .object(params)
         )
         do {
+            try await onCreated(result.thread.id)
+        } catch {
+            _ = try? await transport.request(
+                method: "thread/delete",
+                params: ["threadId": .string(result.thread.id)]
+            )
+            throw error
+        }
+        do {
             try validateThreadResult(
                 result,
                 expectedEphemeral: true,
@@ -454,9 +528,10 @@ public actor CodexAppServerClient {
                 expectedWorkspaceRoots: base.runtimeWorkspaceRoots
             )
         } catch {
-            state = .failed
-            await transport.stop()
-            throw Self.safe(error)
+            throw CodexCreatedThreadFailure(
+                threadID: result.thread.id,
+                cause: Self.createdThreadFailureCause(for: error)
+            )
         }
         return CodexEphemeralThread(
             id: result.thread.id,
@@ -774,10 +849,16 @@ public actor CodexAppServerClient {
             routeRealtimeNotification(notification)
             routeTurnNotification(notification)
 
-        case .rejectedServerRequest(let method):
+        case .rejectedServerRequest(let method, let threadID, let turnID, let itemID):
             state = .failed
-            finishAllTurns(error: CodexClientError.serverRequestRejected(method: method))
-            finishAllRealtime(error: CodexClientError.serverRequestRejected(method: method))
+            let error = CodexClientError.serverRequestRejected(
+                method: method,
+                threadID: threadID,
+                turnID: turnID,
+                itemID: itemID
+            )
+            finishAllTurns(error: error)
+            finishAllRealtime(error: error)
             await transport.stop()
 
         case .disconnected:
@@ -986,6 +1067,22 @@ public actor CodexAppServerClient {
         }
     }
 
+    private static func matchesExpectedCodexHome(_ actual: String, expected: URL) -> Bool {
+        guard expected.isFileURL,
+            expected.path.hasPrefix("/"),
+            !expected.path.contains("\0"),
+            actual.hasPrefix("/"),
+            !actual.contains("\0")
+        else {
+            return false
+        }
+        let actualURL = URL(fileURLWithPath: actual, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let expectedURL = expected.standardizedFileURL.resolvingSymlinksInPath()
+        return actualURL.path == expectedURL.path
+    }
+
     private static func canonicalPath(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
@@ -1004,5 +1101,19 @@ public actor CodexAppServerClient {
         if error is CancellationError { return CancellationError() }
         if let safe = error as? CodexClientError { return safe }
         return CodexClientError.transportUnavailable
+    }
+
+    private static func createdThreadFailureCause(
+        for error: any Error
+    ) -> CodexCreatedThreadFailureCause {
+        if error is CancellationError { return .cancellation }
+        return .client((error as? CodexClientError) ?? .transportUnavailable)
+    }
+
+    private static func error(for cause: CodexCreatedThreadFailureCause) -> any Error {
+        switch cause {
+        case .cancellation: CancellationError()
+        case .client(let error): error
+        }
     }
 }
