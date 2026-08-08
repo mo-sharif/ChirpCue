@@ -319,19 +319,22 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
     func testCancellationInterruptsAndDeletesTranscriptFork() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
-        let client = FakeMeetingCodexClient(realtime: false, hangQuick: true)
+        let startQuickGate = SuspendedCallGate()
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            hangQuick: true,
+            startQuickGate: startQuickGate
+        )
         let generator = fixture.generator(client: client)
         let turn = fixture.turn(generation: 1)
         _ = try await generator.prepare()
 
         let task = Task { try await generator.generateQuick(for: turn) }
-        for _ in 0..<1_000 {
-            if await client.quickTurnCount() > 0 { break }
-            await Task.yield()
-        }
+        await startQuickGate.waitUntilSuspended()
         let startedQuickCount = await client.quickTurnCount()
         XCTAssertEqual(startedQuickCount, 1)
         task.cancel()
+        await startQuickGate.release()
         do {
             _ = try await task.value
             XCTFail("Expected cancellation.")
@@ -1144,6 +1147,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     private let invalidBaseCwd: Bool
     private let baseCreationGate: SuspendedCallGate?
     private let forkCreationGate: SuspendedCallGate?
+    private let startQuickGate: SuspendedCallGate?
     private let startTurnGate: SuspendedCallGate?
     private var deletionFailuresRemaining: Int
     private var nextBase = 1
@@ -1169,6 +1173,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         invalidBaseCwd: Bool = false,
         baseCreationGate: SuspendedCallGate? = nil,
         forkCreationGate: SuspendedCallGate? = nil,
+        startQuickGate: SuspendedCallGate? = nil,
         startTurnGate: SuspendedCallGate? = nil,
         deletionFailuresRemaining: Int = 0
     ) {
@@ -1181,6 +1186,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         self.invalidBaseCwd = invalidBaseCwd
         self.baseCreationGate = baseCreationGate
         self.forkCreationGate = forkCreationGate
+        self.startQuickGate = startQuickGate
         self.startTurnGate = startTurnGate
         self.deletionFailuresRemaining = deletionFailuresRemaining
     }
@@ -1338,6 +1344,9 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
             return .realtime(.init(threadID: threadID, events: pair.stream))
         }
         quickTurns += 1
+        if let startQuickGate {
+            await startQuickGate.suspend()
+        }
         if hangQuick {
             let pair = AsyncThrowingStream<CodexTurnEvent, any Error>.makeStream()
             hangingContinuations[threadID] = pair.continuation
