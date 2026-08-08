@@ -310,11 +310,12 @@ enum SpeechAudioClockTimelineError: Error, Equatable, Sendable {
     case invalidResultRange
 }
 
-/// Connects the source-frame clock transform to Speech's analyzer timeline.
-/// Speech receives a contiguous source-frame timebase; result ranges are then
-/// mapped back into the shared Core Audio host-time domain through the measured
-/// transform. This prevents normal device-clock drift from accumulating as an
-/// ever-growing overlap correction.
+/// Connects the source-frame clock transform to Speech's contiguous analyzer
+/// timeline. The returned schedule validates the conversion cadence; callers do
+/// not pass its timecode to live `AnalyzerInput` values. Speech's result ranges
+/// are mapped back into the shared Core Audio host-time domain through the
+/// measured transform. This prevents normal device-clock drift from accumulating
+/// as an ever-growing overlap correction.
 struct SpeechAudioClockTimeline: Sendable {
     private var clockTransform: AudioClockTransform
     private var analyzerTimeline: AnalyzerInputTimeline

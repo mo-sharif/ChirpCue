@@ -306,6 +306,34 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testSkillConfigWriteUsesOnlyTheExactPathSelector() async throws {
+        let skillPath = "/tmp/pacenote-snapshot/.agents/skills/repo-answer/SKILL.md"
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "skills/config/write",
+                params: [
+                    "path": .string(skillPath),
+                    "enabled": false,
+                ],
+                result: ["effectiveEnabled": false]
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        let result = try await client.setSkillEnabled(
+            name: "repo-answer",
+            path: skillPath,
+            enabled: false
+        )
+
+        XCTAssertFalse(result.effectiveEnabled)
+        let exhausted = await transport.isExhausted()
+        XCTAssertTrue(exhausted)
+        await client.shutdown()
+    }
+
     func testInitializeRejectsMismatchedCodexHomeBeforeInitialized() async throws {
         let mismatchedResult = CodexFixtures.initializeResult.replacingOccurrences(
             of: #"/Users/redacted/.codex"#,

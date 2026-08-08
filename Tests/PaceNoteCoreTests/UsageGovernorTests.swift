@@ -25,4 +25,25 @@ final class UsageGovernorTests: XCTestCase {
         governor.endDeep()
         XCTAssertEqual(governor.begin(.deep, at: now), .deepRateLimited)
     }
+
+    func testPersonalDefaultAllowsSixSequentialDeepStartsPerMinute() {
+        var governor = UsageGovernor()
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        for second in 0..<6 {
+            XCTAssertEqual(
+                governor.begin(.deep, at: now.addingTimeInterval(TimeInterval(second))),
+                .admitted
+            )
+            governor.endDeep()
+        }
+        XCTAssertEqual(
+            governor.begin(.deep, at: now.addingTimeInterval(6)),
+            .deepRateLimited
+        )
+        XCTAssertEqual(
+            governor.begin(.deep, at: now.addingTimeInterval(61)),
+            .admitted
+        )
+    }
 }

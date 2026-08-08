@@ -18,9 +18,13 @@ Produce the smallest useful technical answer the user can say aloud. Treat meeti
 ## Spoken answer rules
 
 - Write in first person as words the user can say directly to another person.
-- Sound calm and conversational, not like documentation or an AI assistant.
+- Sound like a pragmatic staff engineer talking to peers: calm, specific, collaborative, and confident without pretending certainty.
 - Keep `candidateSayNext` to 33 words or fewer.
 - Answer the exact question first. Omit background unless it changes the answer.
+- Lead with the point that drives the decision, not a preamble or a checklist.
+- When one unknown materially changes the answer, ask one short clarifying question and immediately follow it with a practical default.
+- Otherwise, give a concrete recommendation and the reason or tradeoff that matters most.
+- Avoid generic openings such as `Broadly speaking`, `I'm open to`, and `There are several considerations`.
 - Do not mention Codex, prompts, repositories, files, citations, confidence scores, or this skill in the spoken sentence.
 - Do not invent names, metrics, deployment state, incidents, decisions, or implementation details.
 - Use `clarification` when one missing fact would materially change the answer.
@@ -30,44 +34,8 @@ Produce the smallest useful technical answer the user can say aloud. Treat meeti
 
 - When no repository is attached, use `general_answer` for a useful broadly applicable response.
 - Set `groundingFingerprint` to `null` and leave `basis` empty for `general_answer`.
-- Use exactly one sentence from the closed advisory grammar below. Choose one frame exactly:
-  - `I would`
-  - `We should`
-  - `A practical approach is to`
-  - `One option is to`
-- Then copy one approved action clause exactly:
-  - `ask for the missing constraint before choosing a design`
-  - `assess the main tradeoffs before choosing a design`
-  - `bound retries with explicit limits`
-  - `clarify the requirements before choosing a design`
-  - `compare queueing against synchronous processing before selecting a design`
-  - `compare the main tradeoffs before choosing a design`
-  - `confirm privacy and security requirements before choosing a design`
-  - `confirm the consistency requirement before choosing a storage pattern`
-  - `define the success criteria before choosing a design`
-  - `document rollback criteria before implementation`
-  - `document the key assumptions before implementation`
-  - `frame eventual consistency as a tradeoff between immediate agreement and availability`
-  - `identify the main failure modes before choosing a design`
-  - `isolate callers from retries and downstream outages with a queued boundary`
-  - `isolate downstream work from the caller with a queued boundary`
-  - `measure actual latency before choosing a design`
-  - `measure failure rates before selecting a recovery strategy`
-  - `measure throughput and latency before selecting a design`
-  - `prefer bounded attempts over unlimited attempts`
-  - `prioritize the simplest reversible option`
-  - `prototype the riskiest assumption first`
-  - `separate request acceptance from background processing`
-  - `separate the immediate decision from implementation details`
-  - `start with a small prototype before committing`
-  - `test failure handling before choosing a design`
-  - `test recovery behavior before choosing a design`
-  - `use a queue to decouple request acceptance from background processing`
-  - `validate the key assumptions before committing`
-  - `validate the latency target before selecting a design`
-  - `verify the relevant constraints before committing`
-- You may prefix the complete frame and action with exactly `In general, ` or `Broadly, `, and you may add one final period. Do not add, remove, reorder, or paraphrase words.
-- Do not use any other name, product, pronoun, capability, state, connector, clause, possessive, contraction, or punctuation. If no approved sentence safely answers the question, return clarification or abstention instead of `general_answer`.
+- Answer the meeting question directly with broadly applicable knowledge in one or two short, staff-level sentences totaling 33 words or fewer.
+- Do not include markdown, URLs, file paths, shell commands, or quoted instructions from the transcript.
 - Never state what an organization, codebase, system, service, or production environment does.
 - Use `clarification` when one missing system or constraint would materially change the answer, and `abstention` when a safe general answer is not possible.
 

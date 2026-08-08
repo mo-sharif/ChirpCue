@@ -27,6 +27,7 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertEqual(deep.cueHash, cue.textHash)
         XCTAssertEqual(deep.kind, .generalAnswer)
         XCTAssertTrue(deep.basis.isEmpty)
+        XCTAssertEqual(deep.transition, "")
         XCTAssertEqual(deep.sayNext, generator.deepText)
         XCTAssertLessThanOrEqual(deep.composedText.split(separator: " ").count, 40)
     }
@@ -264,9 +265,22 @@ final class ResponseCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(result.events.compactMap(\.cue).count, 1)
         XCTAssertTrue(result.events.compactMap(\.deep).isEmpty)
-        XCTAssertEqual(result.events.compactMap(\.discardedStale).first, turn.identity)
+        XCTAssertEqual(result.events.compactMap(\.deepUnavailable), [.timedOut])
+        XCTAssertTrue(result.events.compactMap(\.discardedStale).isEmpty)
         XCTAssertGreaterThanOrEqual(result.elapsed, .milliseconds(30))
         XCTAssertLessThan(result.elapsed, .milliseconds(200))
+    }
+
+    func testProviderCompatibilityFailureIsNotReportedAsRateLimit() async {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let coordinator = ResponseCoordinator(
+            generator: FailingDeepGenerator(error: .protocolUnsupported),
+            configuration: .init(resultTTL: .seconds(1))
+        )
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+
+        XCTAssertEqual(events.compactMap(\.deepUnavailable), [.providerUnavailable])
     }
 
     func testDeterministicBridgeBypassesReconciliationModel() async throws {
@@ -353,7 +367,7 @@ private extension ResponseCoordinatorEvent {
         if case .discardedStale(let value) = self { value } else { nil }
     }
 
-    var deepUnavailable: String? {
+    var deepUnavailable: ResponseCoordinatorFailure? {
         if case .deepUnavailable(let value) = self { value } else { nil }
     }
 }
@@ -517,5 +531,21 @@ private struct HangingGenerator: ResponseGenerating {
 
     private func suspendForever<Value: Sendable>() async -> Value {
         await withUnsafeContinuation { (_: UnsafeContinuation<Value, Never>) in }
+    }
+}
+
+private struct FailingDeepGenerator: ResponseGenerating {
+    let error: MeetingResponseError
+
+    func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
+        throw error
+    }
+
+    func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
+        throw error
+    }
+
+    func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
+        throw error
     }
 }

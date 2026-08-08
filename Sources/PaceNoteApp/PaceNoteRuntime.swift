@@ -1685,9 +1685,9 @@ actor PaceNoteRuntime {
 
     private static var speakingStyle: String {
         switch UserDefaults.standard.string(forKey: "paceNote.speakingStyle") {
-        case "Calm": "calm, reassuring, and conversational"
-        case "Technical": "precise, technical, and conversational"
-        default: "direct, concise, and conversational"
+        case "Calm": "calm, reassuring, and conversational, like a pragmatic staff engineer"
+        case "Technical": "precise, technical, and conversational, like a pragmatic staff engineer"
+        default: "direct, concise, and conversational, like a pragmatic staff engineer"
         }
     }
 

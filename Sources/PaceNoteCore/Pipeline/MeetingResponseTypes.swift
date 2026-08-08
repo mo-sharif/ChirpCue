@@ -79,7 +79,7 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
         case .quickRateLimited:
             "Fast suggestions are temporarily rate limited."
         case .deepRateLimited:
-            "Grounded suggestions are temporarily rate limited."
+            "ChirpCue's local Deep start limit was reached."
         case .deepAlreadyActive:
             "A grounded suggestion is already in progress."
         case .groundingUnavailable:
@@ -140,7 +140,7 @@ public struct MeetingResponseConfiguration: Sendable {
         deepComplexity: CodexResponseComplexity = .narrowTechnical,
         routingPolicy: CodexRoutingPolicy = .codex_0_147,
         quickPerMinute: Int = 8,
-        deepPerMinute: Int = 2
+        deepPerMinute: Int = 6
     ) {
         self.meetingID = meetingID
         self.meetingPrivateRoot = meetingPrivateRoot.standardizedFileURL
@@ -167,6 +167,23 @@ public protocol MeetingEvidenceVerifying: Sendable {
         groundingFingerprint: String,
         against snapshot: GroundingSnapshot
     ) async throws
+    func verifiedExtractiveFallback(
+        references: [EvidenceReference],
+        groundingFingerprint: String,
+        against snapshot: GroundingSnapshot,
+        maximumWords: Int
+    ) async throws -> EvidenceReference?
+}
+
+public extension MeetingEvidenceVerifying {
+    func verifiedExtractiveFallback(
+        references: [EvidenceReference],
+        groundingFingerprint: String,
+        against snapshot: GroundingSnapshot,
+        maximumWords: Int
+    ) async throws -> EvidenceReference? {
+        nil
+    }
 }
 
 public struct DefaultMeetingEvidenceVerifier: MeetingEvidenceVerifying {
@@ -191,6 +208,20 @@ public struct DefaultMeetingEvidenceVerifier: MeetingEvidenceVerifying {
             references: references,
             groundingFingerprint: groundingFingerprint,
             against: snapshot
+        )
+    }
+
+    public func verifiedExtractiveFallback(
+        references: [EvidenceReference],
+        groundingFingerprint: String,
+        against snapshot: GroundingSnapshot,
+        maximumWords: Int
+    ) async throws -> EvidenceReference? {
+        try await verifier.verifiedExtractiveFallback(
+            references: references,
+            groundingFingerprint: groundingFingerprint,
+            against: snapshot,
+            maximumWords: maximumWords
         )
     }
 }

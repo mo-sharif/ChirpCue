@@ -320,10 +320,12 @@ public actor CodexAppServerClient {
         try requireReady()
         guard !name.isEmpty else { throw CodexClientError.threadInvariantFailed }
         try Self.requireAbsolutePath(path)
+        // The v2 protocol exposes name and path as alternative selectors. Current Codex builds
+        // reject requests that supply both, so use the exact absolute path to avoid name
+        // collisions and to keep ChirpCue's allowlist binding deterministic.
         return try await call(
             method: "skills/config/write",
             params: [
-                "name": .string(name),
                 "path": .string(path),
                 "enabled": .bool(enabled),
             ]

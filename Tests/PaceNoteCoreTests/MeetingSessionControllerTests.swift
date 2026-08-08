@@ -232,7 +232,14 @@ final class MeetingSessionControllerTests: XCTestCase {
             let invalidated = await eventually {
                 let state = await harness.controller.state()
                 let cancelCount = await response.cancelCount
+                let expectedBrownout: BrownoutReason =
+                    if case .failed = interruption {
+                        .transcriptionUnavailable
+                    } else {
+                        .systemAudioLost
+                    }
                 return state.suggestions.isEmpty
+                    && state.brownouts.contains { $0.reason == expectedBrownout }
                     && cancelCount > cancelCountBeforeInterruption
             }
             XCTAssertTrue(invalidated, "Expected \(interruption) to invalidate in-flight work")
@@ -721,7 +728,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         let report = await stopTask.value
         let auditedNeedles = await harness.cleaner.sensitiveNeedles()
         let expectedLateDeepFragment = Data(
-            "Broadly speaking, I would separate the immediate decision from implementation details."
+            "I would separate the immediate decision from implementation details."
                 .utf8.prefix(128)
         )
         let stoppedState = await harness.controller.state()
@@ -795,6 +802,36 @@ final class MeetingSessionControllerTests: XCTestCase {
         }
         XCTAssertTrue(abstentionVisible)
         _ = await abstentionHarness.controller.stop()
+    }
+
+    func testDeepFailureBecomesTerminalAndCoachCurrentTurnRetriesSameQuestion() async throws {
+        let response = FakeMeetingResponseGenerator(
+            deepFailuresRemaining: 1,
+            deepFailure: .protocolUnsupported
+        )
+        let harness = makeHarness(mode: .manualOnly, response: response)
+        try await prepareAndStart(harness)
+        let question = "How should I explain mutexes and semaphores?"
+        try await harness.controller.submitTypedQuestion(question)
+
+        let failureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .bridge }
+                && state.suggestions.allSatisfy { $0.stage != .deep }
+                && state.brownouts.contains { $0.reason == .deepUnavailable }
+        }
+        XCTAssertTrue(failureVisible)
+
+        try await harness.controller.coachCurrentTurn()
+        let retryResolved = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .deep }
+                && !state.brownouts.contains { $0.reason.isDeepResponseFailure }
+        }
+        let requestedTurns = await response.deepRequestedTurns
+        XCTAssertTrue(retryResolved)
+        XCTAssertEqual(requestedTurns.map(\.question), [question, question])
+        _ = await harness.controller.stop()
     }
 
     func testStopOrdersCleanupClearsEphemeralStateAndRemovesJournalOnSuccess() async throws {
@@ -966,7 +1003,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         let report = await stopTask.value
         let auditedNeedles = await cleaner.sensitiveNeedles()
         let lateDeepText =
-            "Broadly speaking, I would separate the immediate decision from implementation details."
+            "I would separate the immediate decision from implementation details."
         let expectedFragment = Data(lateDeepText.utf8.prefix(128))
         XCTAssertTrue(report.cleanupSucceeded)
         XCTAssertTrue(auditedNeedles.contains(expectedFragment))
@@ -1848,6 +1885,8 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     let prepareBarrier: AudioOperationBarrier?
     let deepBarrier: AudioOperationBarrier?
     let cancelBarrier: AudioOperationBarrier?
+    private var deepFailuresRemaining: Int
+    private let deepFailure: MeetingResponseError
     private(set) var prepareCount = 0
     private(set) var cancelCount = 0
     private(set) var shutdownCount = 0
@@ -1860,7 +1899,9 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         deepKind: DeepDraftKind = .generalAnswer,
         prepareBarrier: AudioOperationBarrier? = nil,
         deepBarrier: AudioOperationBarrier? = nil,
-        cancelBarrier: AudioOperationBarrier? = nil
+        cancelBarrier: AudioOperationBarrier? = nil,
+        deepFailuresRemaining: Int = 0,
+        deepFailure: MeetingResponseError = .runtimeUnavailable
     ) {
         self.slowDeepGenerations = slowDeepGenerations
         self.shutdownReport = shutdownReport
@@ -1868,6 +1909,8 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         self.prepareBarrier = prepareBarrier
         self.deepBarrier = deepBarrier
         self.cancelBarrier = cancelBarrier
+        self.deepFailuresRemaining = max(0, deepFailuresRemaining)
+        self.deepFailure = deepFailure
     }
 
     func prepare() async -> MeetingResponseRuntime {
@@ -1902,6 +1945,10 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
 
     func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
         deepRequestedTurns.append(turn)
+        if deepFailuresRemaining > 0 {
+            deepFailuresRemaining -= 1
+            throw deepFailure
+        }
         if let deepBarrier { await deepBarrier.suspendIfArmed() }
         if slowDeepGenerations.contains(turn.identity.generation) {
             try await Task.sleep(for: .seconds(30))
@@ -1925,7 +1972,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         case .answer:
             Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
         case .generalAnswer:
-            Reconciliation(relationship: .continueAnswer, transition: "Broadly speaking,")
+            Reconciliation(relationship: .continueAnswer, transition: "")
         case .clarification:
             Reconciliation(relationship: .clarify, transition: "The detail I need is:")
         case .abstention:

@@ -60,6 +60,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     private var governor: UsageGovernor
     private var journalStarted = false
     private var ownedThreadIDs: Set<String> = []
+    private var ownedThreadCwds: [String: String] = [:]
     private var activeOperations: [UUID: ActiveOperation] = [:]
     private var lifecycle = Lifecycle.open
     private var publicOperations: [UUID: PublicOperationState] = [:]
@@ -608,19 +609,33 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             let session = try await Self.awaitUncancelled(startTask)
             activeOperations[operationID]?.execution = .turn(session.turnID)
             try requireContinuingOperation(operationID)
-            let draft = try await CodexStructuredOutput.collect(
+            var draft = try await CodexStructuredOutput.collect(
                 from: session,
                 as: DeepDraft.self
             )
             try requireContinuingOperation(operationID)
-            try Self.validate(draft, for: turn)
-            try await verifyDeepOutput(
-                draft,
-                actualInstructionSources: fork.instructionSources,
-                snapshot: prepared.snapshot
-            )
-            try requireContinuingOperation(operationID)
             activeOperations[operationID]?.execution = .finishing
+            try Self.validate(draft, for: turn)
+            do {
+                try await verifyDeepOutput(
+                    draft,
+                    actualInstructionSources: fork.instructionSources,
+                    snapshot: prepared.snapshot
+                )
+            } catch let error as EvidenceVerificationError {
+                switch error {
+                case .candidateNotSupported, .claimNotSupported, .repositoryAliasMismatch:
+                    draft = try await verifiedExtractiveFallback(from: draft, snapshot: prepared.snapshot)
+                    try await verifyDeepOutput(
+                        draft,
+                        actualInstructionSources: fork.instructionSources,
+                        snapshot: prepared.snapshot
+                    )
+                default:
+                    throw error
+                }
+            }
+            try requireContinuingOperation(operationID)
             try await finishOperation(operationID, stopRealtime: false)
             try requireContinuingOperation(operationID)
             return draft
@@ -911,7 +926,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                 baseInstructions: baseInstructions,
                 onCreated: { [weak self] threadID in
                     guard let self else { throw CancellationError() }
-                    try await self.registerThread(threadID, client: client)
+                    try await self.registerThread(threadID, cwd: cwd.path, client: client)
                 }
             )
         } catch let failure as CodexCreatedThreadFailure {
@@ -957,7 +972,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                 model: model,
                 onCreated: { [weak self] threadID in
                     guard let self else { throw CancellationError() }
-                    try await self.registerThread(threadID, client: client)
+                    try await self.registerThread(threadID, cwd: base.cwd, client: client)
                 }
             )
         } catch let failure as CodexCreatedThreadFailure {
@@ -990,9 +1005,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
 
     private func registerThread(
         _ threadID: String,
+        cwd: String,
         client: any CodexMeetingClient
     ) async throws {
         ownedThreadIDs.insert(threadID)
+        ownedThreadCwds[threadID] = cwd
         do {
             try await journal.recordThread(threadID, meetingID: configuration.meetingID)
         } catch {
@@ -1067,6 +1084,63 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
     }
 
+    private func verifiedExtractiveFallback(
+        from draft: DeepDraft,
+        snapshot: GroundingSnapshot?
+    ) async throws -> DeepDraft {
+        guard let snapshot, draft.kind == .answer else {
+            throw EvidenceVerificationError.candidateNotSupported
+        }
+
+        for reference in draft.basis {
+            let claim = reference.claim.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !claim.isEmpty, Self.wordCount(claim) <= 33 else { continue }
+            do {
+                try await evidenceVerifier.verifyAnswer(
+                    candidateSayNext: claim,
+                    [reference],
+                    groundingFingerprint: snapshot.groundingFingerprint,
+                    against: snapshot
+                )
+                return DeepDraft(
+                    turnID: draft.turnID,
+                    generation: draft.generation,
+                    groundingFingerprint: draft.groundingFingerprint,
+                    kind: .answer,
+                    candidateSayNext: claim,
+                    confidence: min(draft.confidence, 0.8),
+                    basis: [reference],
+                    missingEvidence: draft.missingEvidence
+                )
+            } catch let error as EvidenceVerificationError {
+                switch error {
+                case .candidateNotSupported, .claimNotSupported, .repositoryAliasMismatch:
+                    continue
+                default:
+                    throw error
+                }
+            }
+        }
+        if let reference = try await evidenceVerifier.verifiedExtractiveFallback(
+            references: draft.basis,
+            groundingFingerprint: snapshot.groundingFingerprint,
+            against: snapshot,
+            maximumWords: 33
+        ) {
+            return DeepDraft(
+                turnID: draft.turnID,
+                generation: draft.generation,
+                groundingFingerprint: draft.groundingFingerprint,
+                kind: .answer,
+                candidateSayNext: reference.claim,
+                confidence: min(draft.confidence, 0.75),
+                basis: [reference],
+                missingEvidence: draft.missingEvidence
+            )
+        }
+        throw EvidenceVerificationError.candidateNotSupported
+    }
+
     private func finishOperation(
         _ operationID: UUID,
         stopRealtime: Bool
@@ -1098,13 +1172,29 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         _ threadID: String,
         client: any CodexMeetingClient
     ) async -> ThreadDeletionResult {
+        let expectedCwd = ownedThreadCwds[threadID]
         do {
             try await client.deleteThread(id: threadID)
             ownedThreadIDs.remove(threadID)
         } catch {
-            cleanupFailures.append(.deleteThread)
-            return ThreadDeletionResult(deleted: false, journalUpdated: false)
+            let absenceConfirmed: Bool
+            if let expectedCwd {
+                do {
+                    absenceConfirmed = try await !client.listThreadIDs(cwd: expectedCwd)
+                        .contains(threadID)
+                } catch {
+                    absenceConfirmed = false
+                }
+            } else {
+                absenceConfirmed = false
+            }
+            guard absenceConfirmed else {
+                cleanupFailures.append(.deleteThread)
+                return ThreadDeletionResult(deleted: false, journalUpdated: false)
+            }
+            ownedThreadIDs.remove(threadID)
         }
+        ownedThreadCwds.removeValue(forKey: threadID)
 
         do {
             try await journal.removeThread(threadID, meetingID: configuration.meetingID)

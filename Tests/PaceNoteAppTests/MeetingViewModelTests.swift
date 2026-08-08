@@ -579,6 +579,14 @@ final class MeetingViewModelTests: XCTestCase {
             BrownoutReason.protocolUnsupported.userTitle(for: .codex),
             "Codex version is unsupported"
         )
+        XCTAssertEqual(
+            BrownoutReason.deepLimited.userTitle(for: .codex),
+            "ChirpCue's local Deep limit was reached"
+        )
+        XCTAssertEqual(
+            BrownoutReason.deepLimited.recoveryGuidance(for: .codex),
+            "Wait up to one minute, then use Retry Answer. This local pause does not mean your Codex subscription is exhausted."
+        )
     }
 
     func testProviderAccountActionsAreBlockedDuringAnActiveMeeting() async {
@@ -1240,7 +1248,7 @@ final class MeetingViewModelTests: XCTestCase {
         let general = SuggestionCard(
             identity: identity,
             stage: .deep,
-            text: "Broadly speaking, a queue separates acceptance from downstream processing.",
+            text: "I’d use a queue here because it separates acceptance from downstream processing.",
             deepKind: .generalAnswer
         )
 

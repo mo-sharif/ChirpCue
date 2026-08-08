@@ -244,7 +244,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
         case .answer:
             Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
         case .generalAnswer:
-            Reconciliation(relationship: .continueAnswer, transition: "Broadly speaking,")
+            Reconciliation(relationship: .continueAnswer, transition: "")
         case .clarification:
             Reconciliation(relationship: .clarify, transition: "The detail I need is:")
         case .abstention:

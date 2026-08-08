@@ -539,6 +539,26 @@ final class AudioCaptureTests: XCTestCase {
         XCTAssertNil(end)
     }
 
+    func testLiveAnalyzerInputUsesContiguousTiming() throws {
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatInt16,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: true
+            )
+        )
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 320)
+        )
+        buffer.frameLength = 320
+
+        let input = AppleSpeechTranscriptionService.makeAnalyzerInput(from: buffer)
+
+        XCTAssertNil(input.bufferStartTime)
+        XCTAssertTrue(input.buffer === buffer)
+    }
+
     func testScriptedTranscriberPreservesVolatileFinalAndGapOrdering() async {
         let transcriber = FakeAudioTranscriber(lane: .microphone)
         let stream = await transcriber.events()

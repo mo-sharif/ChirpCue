@@ -380,9 +380,8 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
         let source = try Self.makePCMBuffer(from: chunk)
         let converted = try convertedBuffer(source, to: analyzerFormat)
 
-        let schedule: AnalyzerInputSchedule
         do {
-            schedule = try audioClockTimeline.schedule(
+            _ = try audioClockTimeline.schedule(
                 hostTime: chunk.hostTime,
                 sourceFrameCount: chunk.frameCount,
                 sourceSampleRate: chunk.format.sampleRate,
@@ -392,9 +391,7 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
         } catch {
             throw AudioClockPipelineError.discontinuity
         }
-        let result = analyzerInput.yield(
-            AnalyzerInput(buffer: converted, bufferStartTime: schedule.startTime)
-        )
+        let result = analyzerInput.yield(Self.makeAnalyzerInput(from: converted))
         if result == .droppedOldest {
             yield(
                 .gap(
@@ -499,6 +496,17 @@ public actor AppleSpeechTranscriptionService: AudioTranscribing {
             )
         }
         input.buffer.frameLength = 0
+    }
+
+    /// Live capture is a contiguous stream. Supplying conversion-derived timecodes
+    /// makes SpeechAnalyzer validate converter priming and rounding as source gaps,
+    /// which macOS reports as `SFSpeechError.Code.audioDisordered`. Host-time
+    /// attribution remains in `SpeechAudioClockTimeline`; Speech receives the
+    /// contiguous form Apple documents for live input.
+    nonisolated static func makeAnalyzerInput(
+        from buffer: AVAudioPCMBuffer
+    ) -> AnalyzerInput {
+        AnalyzerInput(buffer: buffer)
     }
 
     private func handle(

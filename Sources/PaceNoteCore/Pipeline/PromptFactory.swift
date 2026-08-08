@@ -32,7 +32,7 @@ public struct PromptFactory: Sendable {
 
                 No repository is attached. Do not read files, use tools, request approval, use network access, or imply knowledge of the user's codebase, organization, deployment, customers, incidents, metrics, or policies. Follow only the explicitly attached $pacenote-meeting-coach skill.
 
-                Return only JSON matching the supplied schema. For a useful broadly applicable answer, set kind to general_answer, groundingFingerprint to null, and basis to an empty array. Write candidateSayNext as one natural statement the user can speak in at most 33 words. Speaking style affects which approved sentence you choose, never its exact wording. Requested style: \(Self.sanitizeStyle(speakingStyle)).
+                Return only JSON matching the supplied schema. For a useful broadly applicable answer, set kind to general_answer, groundingFingerprint to null, and basis to an empty array. Write candidateSayNext as one compact response the user can speak in at most 33 words. It should sound like an experienced staff engineer responding in the room: when one decision-driving unknown matters, ask one short question and then offer a concrete default instead of reciting a checklist. Requested style: \(Self.sanitizeStyle(speakingStyle)).
 
                 \(GeneralGuidancePolicy.modelInstructions)
 

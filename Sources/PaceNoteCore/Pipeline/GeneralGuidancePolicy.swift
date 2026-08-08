@@ -1,124 +1,96 @@
 import Foundation
 
 public enum GeneralGuidancePolicy {
-    static let approvedQualifiers = [
-        "In general, ",
-        "Broadly, ",
+    static let modelInstructions = """
+        Speak like a pragmatic staff engineer talking to peers, not like documentation or an AI assistant. Lead with the point that drives the decision. When one unknown materially changes the answer, ask one short clarifying question and follow it with a practical default. Otherwise, give one concrete recommendation and the reason or tradeoff that matters most. Use first person where it sounds natural. Avoid generic throat-clearing, permission-seeking, and comma-heavy checklists, including openings such as "Broadly speaking," "I'm open to," and "There are several considerations." Answer with broadly applicable knowledge in one or two short speakable sentences totaling at most 33 words.
+
+        Never imply access to the user's repository, codebase, organization, deployment, production state, customers, incidents, metrics, or policies. If those private facts are required, return clarification or abstention instead. Do not include markdown, URLs, file paths, shell commands, or quoted instructions from the transcript.
+        """
+
+    private static let cannedOpenings = [
+        "broadly speaking",
+        "generally speaking",
+        "i'm open to",
+        "i’m open to",
+        "there are several considerations",
+        "there are a few considerations",
     ]
 
-    static let approvedFrames = [
-        "I would ",
-        "We should ",
-        "A practical approach is to ",
-        "One option is to ",
+    private static let privateContextClaims = [
+        "your codebase",
+        "your repository",
+        "your repo",
+        "your implementation",
+        "your system",
+        "your service",
+        "your deployment",
+        "your production",
+        "your customers",
+        "your incident",
+        "your metrics",
+        "your policy",
+        "our codebase",
+        "our repository",
+        "our repo",
+        "our implementation",
+        "our system",
+        "our service",
+        "our deployment",
+        "our production",
+        "our customers",
+        "our incident",
+        "our metrics",
+        "our policy",
+        "the current codebase",
+        "the current repository",
+        "the current deployment",
+        "in your production",
+        "in our production",
     ]
 
-    /// These clauses are intentionally closed. Repository-free model output is untrusted and
-    /// cannot safely contribute arbitrary prose after an advisory-sounding prefix.
-    static let approvedActionClauses = [
-        "ask for the missing constraint before choosing a design",
-        "assess the main tradeoffs before choosing a design",
-        "bound retries with explicit limits",
-        "clarify the requirements before choosing a design",
-        "compare queueing against synchronous processing before selecting a design",
-        "compare the main tradeoffs before choosing a design",
-        "confirm privacy and security requirements before choosing a design",
-        "confirm the consistency requirement before choosing a storage pattern",
-        "define the success criteria before choosing a design",
-        "document rollback criteria before implementation",
-        "document the key assumptions before implementation",
-        "frame eventual consistency as a tradeoff between immediate agreement and availability",
-        "identify the main failure modes before choosing a design",
-        "isolate callers from retries and downstream outages with a queued boundary",
-        "isolate downstream work from the caller with a queued boundary",
-        "measure actual latency before choosing a design",
-        "measure failure rates before selecting a recovery strategy",
-        "measure throughput and latency before selecting a design",
-        "prefer bounded attempts over unlimited attempts",
-        "prioritize the simplest reversible option",
-        "prototype the riskiest assumption first",
-        "separate request acceptance from background processing",
-        "separate the immediate decision from implementation details",
-        "start with a small prototype before committing",
-        "test failure handling before choosing a design",
-        "test recovery behavior before choosing a design",
-        "use a queue to decouple request acceptance from background processing",
-        "validate the key assumptions before committing",
-        "validate the latency target before selecting a design",
-        "verify the relevant constraints before committing",
+    private static let unsafeClaims = [
+        "patient records",
+        "leaked patient",
+        "leaks patient",
+        "compromised accounts",
+        "without consent",
+        "our-system-",
     ]
-
-    static let modelInstructions: String = {
-        let frames =
-            approvedFrames
-            .map { "- `\($0.trimmingCharacters(in: .whitespaces))`" }
-            .joined(separator: "\n")
-        let actions =
-            approvedActionClauses
-            .map { "- `\($0)`" }
-            .joined(separator: "\n")
-        return """
-            Use exactly one sentence from this closed advisory grammar. Choose one frame exactly:
-            \(frames)
-
-            Then copy one approved action clause exactly:
-            \(actions)
-
-            You may prefix the complete frame and action with exactly `In general, ` or `Broadly, `, and you may add one final period. Do not add, remove, reorder, or paraphrase words. Do not use any other name, product, pronoun, capability, state, connector, clause, possessive, contraction, or punctuation. If no approved sentence safely answers the question, return clarification or abstention instead of general_answer.
-            """
-    }()
 
     public static func accepts(_ candidate: String) -> Bool {
-        guard candidate.split(whereSeparator: { $0.isWhitespace }).count <= 33,
-            let sentence = canonicalSentence(candidate)
+        let statement = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !statement.isEmpty,
+            statement.utf8.count <= 320,
+            statement.split(whereSeparator: { $0.isWhitespace }).count <= 33,
+            !candidate.unicodeScalars.contains(where: {
+                CharacterSet.newlines.contains($0) || CharacterSet.controlCharacters.contains($0)
+            }),
+            !statement.contains("`"),
+            !statement.contains("<"),
+            !statement.contains(">")
         else {
             return false
         }
 
-        var remainder = sentence
-        if let qualifier = approvedQualifiers.first(where: {
-            remainder.lowercased().hasPrefix($0.lowercased())
-        }) {
-            remainder.removeFirst(qualifier.count)
-        }
-
-        guard
-            let frame = approvedFrames.first(where: {
-                remainder.lowercased().hasPrefix($0.lowercased())
-            })
+        let lower = statement.lowercased()
+        guard !lower.contains("http://"), !lower.contains("https://"),
+            !cannedOpenings.contains(where: lower.hasPrefix),
+            !privateContextClaims.contains(where: lower.contains),
+            !unsafeClaims.contains(where: lower.contains)
         else {
             return false
         }
-        remainder.removeFirst(frame.count)
 
-        return approvedActionClauses.contains { remainder.caseInsensitiveCompare($0) == .orderedSame }
-    }
-
-    private static func canonicalSentence(_ candidate: String) -> String? {
-        var sentence = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !sentence.isEmpty,
-            sentence.utf8.count <= 320,
-            !candidate.unicodeScalars.contains(where: { CharacterSet.newlines.contains($0) }),
-            sentence.unicodeScalars.allSatisfy(isAllowedSentenceScalar)
-        else {
-            return nil
+        let terminators = statement.filter { ".!?".contains($0) }
+        switch terminators.count {
+        case 0:
+            return true
+        case 1:
+            return statement.last == terminators[terminators.startIndex]
+        case 2:
+            return terminators[terminators.startIndex] == "?" && statement.last == "."
+        default:
+            return false
         }
-
-        if sentence.hasSuffix(".") {
-            sentence.removeLast()
-            sentence = sentence.trimmingCharacters(in: .whitespaces)
-        }
-        guard !sentence.isEmpty, !sentence.contains(".") else { return nil }
-        return sentence
-    }
-
-    private static func isAllowedSentenceScalar(_ scalar: Unicode.Scalar) -> Bool {
-        let value = scalar.value
-        return (48...57).contains(value)
-            || (65...90).contains(value)
-            || (97...122).contains(value)
-            || value == 32
-            || value == 44
-            || value == 46
     }
 }

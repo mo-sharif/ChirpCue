@@ -31,9 +31,15 @@ struct MeetingWindow: View {
                 SuggestionsPane(
                     quick: model.quickSuggestion,
                     deep: model.deepSuggestion,
+                    deepFailure: model.brownouts.sorted(by: { $0.rawValue < $1.rawValue })
+                        .first(where: \.isDeepResponseFailure),
                     canDismiss: model.canDismissSuggestion,
+                    canRetry: model.canCoachCurrentTurn && !model.isPerformingMeetingAction,
                     dismiss: {
                         Task { await model.dismissSuggestion() }
+                    },
+                    retry: {
+                        Task { await model.coachCurrentTurn() }
                     }
                 )
                 .frame(minWidth: 320, idealWidth: 370)
@@ -461,8 +467,11 @@ private struct TranscriptRow: View {
 private struct SuggestionsPane: View {
     let quick: SuggestionCard?
     let deep: SuggestionCard?
+    let deepFailure: BrownoutReason?
     let canDismiss: Bool
+    let canRetry: Bool
     let dismiss: () -> Void
+    let retry: () -> Void
 
     var body: some View {
         ScrollView {
@@ -511,7 +520,7 @@ private struct SuggestionsPane: View {
                 if let quick {
                     SuggestionCardView(
                         title: quick.stage == .bridge ? "Say now" : "Quick answer",
-                        subtitle: "Locked for this turn",
+                        subtitle: deepFailure == nil ? "While I check" : "Temporary bridge",
                         card: quick,
                         tint: .blue,
                         systemImage: "lock.fill",
@@ -530,6 +539,24 @@ private struct SuggestionsPane: View {
                         symbolAccessibilityLabel: presentation.accessibilityLabel
                     )
                     .accessibilitySortPriority(1)
+                } else if let deepFailure, quick != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(
+                            deepFailure.suggestionFailureTitle,
+                            systemImage: "exclamationmark.arrow.triangle.2.circlepath"
+                        )
+                        .font(.caption.weight(.semibold))
+                        Text("The temporary bridge is complete; no deeper answer arrived.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Retry Answer", action: retry)
+                            .buttonStyle(.glass)
+                            .controlSize(.small)
+                            .disabled(!canRetry)
+                            .accessibilityLabel("Retry Deep Answer")
+                            .accessibilityIdentifier("meeting.retry-deep")
+                    }
+                    .accessibilityElement(children: .contain)
                 } else if quick != nil {
                     HStack(spacing: 8) {
                         ProgressView()
@@ -854,6 +881,17 @@ extension TranscriptSource {
 }
 
 extension BrownoutReason {
+    var suggestionFailureTitle: String {
+        switch self {
+        case .deepLimited: "ChirpCue's local Deep limit was reached"
+        case .deepBusy: "Deep answer is still busy"
+        case .deepTimedOut: "Deep answer timed out"
+        case .deepUnavailable: "Deep provider is unavailable"
+        case .deepRejected: "Deep answer failed validation"
+        default: "Deep answer is unavailable"
+        }
+    }
+
     func userTitle(for provider: MeetingInferenceProvider) -> String {
         switch self {
         case .systemAudioLost: "Meeting output disconnected"
@@ -861,6 +899,7 @@ extension BrownoutReason {
         case .microphoneDisabled: "Microphone is off"
         case .outputDisabled: "Meeting output is off"
         case .transcriptUncertain: "Transcript confidence is low"
+        case .transcriptionUnavailable: "On-device transcription stopped"
         case .transcriberAssetMissing: "Speech model is unavailable"
         case .codexOffline: "AI provider is offline"
         case .authenticationExpired:
@@ -871,7 +910,11 @@ extension BrownoutReason {
             "\(provider.shortTitle) version is unsupported"
         case .appServerCrashed: "\(provider.shortTitle) process stopped"
         case .quickLimited: "Quick coaching is rate-limited"
-        case .deepLimited: "Deep coaching is rate-limited"
+        case .deepLimited: "ChirpCue's local Deep limit was reached"
+        case .deepBusy: "Deep coaching is already running"
+        case .deepTimedOut: "Deep coaching timed out"
+        case .deepUnavailable: "Deep coaching is unavailable"
+        case .deepRejected: "Deep answer failed validation"
         case .repositoryChanged: "Repository changed"
         case .snapshotBlocked: "Repository snapshot blocked"
         case .snapshotBusy: "Repository is changing"
@@ -888,6 +931,8 @@ extension BrownoutReason {
         case .microphoneDisabled: "Automatic turn detection is off. Use Coach Current Turn."
         case .outputDisabled: "Only microphone speech is available."
         case .transcriptUncertain: "Confirm the question before speaking a suggestion."
+        case .transcriptionUnavailable:
+            "Stop and restart this meeting. Audio capture is still connected."
         case .transcriberAssetMissing: "Download the required Apple speech asset, then retry."
         case .codexOffline: "Suggestions are paused until the selected provider connection returns."
         case .authenticationExpired:
@@ -901,7 +946,14 @@ extension BrownoutReason {
         case .appServerCrashed:
             "Reconnect \(provider.shortTitle) from setup. Existing cards stay visible."
         case .quickLimited: "A deterministic bridge may appear while capacity recovers."
-        case .deepLimited: "Use the SAY NOW bridge; deeper coaching is temporarily paused."
+        case .deepLimited:
+            "Wait up to one minute, then use Retry Answer. This local pause does not mean your \(provider.shortTitle) subscription is exhausted."
+        case .deepBusy: "Wait for the active answer or retry after it finishes."
+        case .deepTimedOut: "Use Retry Answer; capture and transcription are still active."
+        case .deepUnavailable:
+            "Reconnect the selected provider, then use Retry Answer."
+        case .deepRejected:
+            "Retry once, or attach the relevant repository for evidence-backed facts."
         case .repositoryChanged: "The sealed snapshot is stale. Reselect the repository."
         case .snapshotBlocked: "Review excluded and suspicious files before grounding."
         case .snapshotBusy: "Wait for repository writes to settle, then seal it again."

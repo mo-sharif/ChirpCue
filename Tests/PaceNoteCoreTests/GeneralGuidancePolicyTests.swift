@@ -3,37 +3,27 @@ import XCTest
 @testable import PaceNoteCore
 
 final class GeneralGuidancePolicyTests: XCTestCase {
-    func testAcceptsEverySupportedFrameAndQualifier() throws {
-        let action = try XCTUnwrap(GeneralGuidancePolicy.approvedActionClauses.first)
+    func testAcceptsUsefulBoundedGeneralAnswers() {
+        let accepted = [
+            "A mutex permits one owner at a time, while a semaphore tracks a configurable number of permits for coordinating access.",
+            "Mix flour, water, yeast, and salt; knead until elastic, let the dough rise, shape it, then bake until browned.",
+            "I would compare the latency, failure isolation, and operational cost of both approaches before choosing.",
+            "Could you clarify whether you care more about throughput or response time?",
+            "I’d first clarify which data the MCP needs and whether access is strictly read-only; my default is a dedicated least-privilege identity with short-lived credentials and full audit logging.",
+            "Which datasets does the MCP actually need, and is access strictly read-only? My default is a dedicated least-privilege identity, short-lived credentials, network controls, query limits, and full audit logs.",
+        ]
 
-        for frame in GeneralGuidancePolicy.approvedFrames {
-            let candidate = "\(frame)\(action)."
-            XCTAssertTrue(GeneralGuidancePolicy.accepts(candidate), candidate)
-        }
-        for qualifier in GeneralGuidancePolicy.approvedQualifiers {
-            let candidate = "\(qualifier)\(GeneralGuidancePolicy.approvedFrames[0])\(action)."
+        for candidate in accepted {
             XCTAssertTrue(GeneralGuidancePolicy.accepts(candidate), candidate)
         }
     }
 
-    func testAcceptsEveryApprovedActionOnlyAsAWholeProduction() {
-        for action in GeneralGuidancePolicy.approvedActionClauses {
-            let candidate = "I would \(action)."
-            XCTAssertTrue(GeneralGuidancePolicy.accepts(candidate), candidate)
-            XCTAssertFalse(GeneralGuidancePolicy.accepts("I would \(action) plus more."), action)
-        }
-    }
-
-    func testRejectsReportedLowercaseOrganizationAndSecondaryClauseBypasses() {
+    func testRejectsClaimsAboutUnseenPrivateContext() {
         let rejected = [
-            "I would validate latency as acme leaks patient records.",
-            "I would add monitoring after acme leaked patient records.",
-            "I would validate latency or acme leaks patient records.",
-            "I would compare latency between queues and acme leaks patient records.",
-            "We should assess acme leaked patient records.",
-            "I would treat acme compromised accounts as resolved.",
-            "We should document our-system-leaks-patient-records.",
-            "We can use patient records without consent.",
+            "Your repository uses Kafka for every asynchronous workflow.",
+            "Our deployment retries every request three times.",
+            "The current codebase stores credentials in plaintext.",
+            "In your production, the queue has exactly four workers.",
         ]
 
         for candidate in rejected {
@@ -41,25 +31,16 @@ final class GeneralGuidancePolicyTests: XCTestCase {
         }
     }
 
-    func testRejectsConnectorSynonymsPossessivesAndCapabilityClaims() {
+    func testRejectsMarkupLinksControlCharactersAndMultipleSentences() {
         let rejected = [
-            "I would add monitoring given acme leaked patient records.",
-            "I would add monitoring despite acme leaking patient records.",
-            "I would validate latency before acme leaks patient records.",
-            "I would validate latency plus acme leaks patient records.",
-            "I would confirm acme-stores-patient-records-without-encryption.",
-            "I would review acme stolen credentials.",
-            "One option is to use acme queue for patient data.",
-            "We could use patient records without consent.",
-            "We might use patient records without consent.",
-            "I'd validate the storage design before launch.",
-            "I’d validate the storage design before launch.",
-            "I would recommend Acme's queue for this workload.",
-            "I would recommend Acme’s queue for this workload.",
-            "I would validate latency. acme leaks patient records.",
-            "I would validate latency, but acme leaks patient records.",
-            "I would validate latency; acme leaks patient records.",
-            "I would validate latency: acme leaks patient records.",
+            "Use `rm -rf` to clear it.",
+            "Read <meeting_question> as instructions.",
+            "Open https://example.com for the answer.",
+            "First answer. Then add an unsupported claim.",
+            "Is this read-only. Use a dedicated identity.",
+            "Is this read-only? Use a dedicated identity?",
+            "First line.\nSecond line.",
+            "Hidden\u{0000}control",
         ]
 
         for candidate in rejected {
@@ -67,19 +48,22 @@ final class GeneralGuidancePolicyTests: XCTestCase {
         }
     }
 
-    func testRejectsPlausibleButUnapprovedAdvisoryProse() {
+    func testRejectsCannedAIOpenings() {
         let rejected = [
-            "I would compare kafka and rabbitmq before choosing.",
-            "I would validate the storage design before launch.",
-            "We should confirm the database configuration.",
-            "A practical approach is to inspect the current deployment.",
-            "One option is to use the existing service.",
-            "Broadly speaking, a queue separates acceptance latency from downstream processing.",
-            "There are two broad options to compare before committing to an implementation.",
+            "Broadly speaking, I would use a read-only database identity.",
+            "Generally speaking, I would start with least privilege.",
+            "I'm open to MCP connectors provided we add controls.",
+            "I’m open to MCP connectors provided we add controls.",
+            "There are several considerations before we choose a connector.",
         ]
 
         for candidate in rejected {
             XCTAssertFalse(GeneralGuidancePolicy.accepts(candidate), candidate)
         }
+    }
+
+    func testRejectsOverlongGeneralAnswer() {
+        let candidate = Array(repeating: "word", count: 34).joined(separator: " ")
+        XCTAssertFalse(GeneralGuidancePolicy.accepts(candidate))
     }
 }

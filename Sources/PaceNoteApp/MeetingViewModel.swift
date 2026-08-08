@@ -1393,9 +1393,13 @@ final class MeetingViewModel {
         case .thinking:
             statusDetail = "Preparing a response."
         case .suggesting:
-            statusDetail =
-                deepSuggestion.map { Self.deepSuggestionStatus(for: $0.deepKind) }
-                ?? "A quick response is ready while deeper context is checked."
+            if let deepSuggestion {
+                statusDetail = Self.deepSuggestionStatus(for: deepSuggestion.deepKind)
+            } else if brownouts.contains(where: \.isDeepResponseFailure) {
+                statusDetail = "The temporary bridge is ready, but no deeper answer arrived."
+            } else {
+                statusDetail = "A quick response is ready while deeper context is checked."
+            }
         case .paused:
             statusDetail = "Capture and coaching are paused."
         case .brownout:

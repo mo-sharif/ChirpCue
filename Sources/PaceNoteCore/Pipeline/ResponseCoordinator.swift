@@ -6,11 +6,20 @@ public protocol ResponseGenerating: Sendable {
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation
 }
 
+public enum ResponseCoordinatorFailure: String, Equatable, Sendable {
+    case rateLimited
+    case busy
+    case timedOut
+    case providerUnavailable
+    case responseRejected
+    case groundingUnavailable
+}
+
 public enum ResponseCoordinatorEvent: Equatable, Sendable {
     case cue(CueEnvelope)
     case deep(BoundDeep)
     case quickUnavailable(String)
-    case deepUnavailable(String)
+    case deepUnavailable(ResponseCoordinatorFailure)
     case discardedStale(TurnIdentity)
 }
 
@@ -107,20 +116,20 @@ public actor ResponseCoordinator {
         }
 
         switch deepResult {
-        case .failure(let error):
-            continuation.yield(.deepUnavailable(error))
+        case .failure(let failure):
+            continuation.yield(.deepUnavailable(failure))
         case .timedOut:
             deepOperation.task.cancel()
-            continuation.yield(.discardedStale(turn.identity))
+            continuation.yield(.deepUnavailable(.timedOut))
         case .cancelled:
-            continuation.yield(.deepUnavailable("Cancelled"))
+            continuation.yield(.deepUnavailable(.providerUnavailable))
         case .success(let draft):
             guard clock.now <= resultDeadline else {
                 continuation.yield(.discardedStale(turn.identity))
                 return
             }
             guard Self.valid(draft, for: turn) else {
-                continuation.yield(.deepUnavailable("Deep returned an invalid or mismatched envelope."))
+                continuation.yield(.deepUnavailable(.responseRejected))
                 return
             }
 
@@ -158,12 +167,12 @@ public actor ResponseCoordinator {
                     basis: draft.basis
                 )
                 guard Self.wordCount(bound.composedText) <= 40 else {
-                    continuation.yield(.deepUnavailable("Bound Deep exceeded the speakable word limit."))
+                    continuation.yield(.deepUnavailable(.responseRejected))
                     return
                 }
                 continuation.yield(.deep(bound))
             } catch {
-                continuation.yield(.deepUnavailable(Self.safeError(error)))
+                continuation.yield(.deepUnavailable(Self.classify(error)))
             }
         }
     }
@@ -203,7 +212,7 @@ public actor ResponseCoordinator {
             case .answer:
                 return Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
             case .generalAnswer:
-                return Reconciliation(relationship: .continueAnswer, transition: "Broadly speaking,")
+                return Reconciliation(relationship: .continueAnswer, transition: "")
             case .clarification:
                 return Reconciliation(relationship: .clarify, transition: "The detail I need is:")
             case .abstention:
@@ -225,13 +234,13 @@ public actor ResponseCoordinator {
         switch await outcome(from: operation.gate, deadline: deadline) {
         case .success(let reconciliation):
             return reconciliation
-        case .failure(let error):
-            continuation.yield(.deepUnavailable(error))
+        case .failure(let failure):
+            continuation.yield(.deepUnavailable(failure))
         case .timedOut:
-            continuation.yield(.discardedStale(identity))
+            continuation.yield(.deepUnavailable(.timedOut))
         case .cancelled:
             if !Task.isCancelled {
-                continuation.yield(.deepUnavailable("Cancelled"))
+                continuation.yield(.deepUnavailable(.providerUnavailable))
             }
         }
         return nil
@@ -257,7 +266,7 @@ public actor ResponseCoordinator {
                     await gate.resolve(.timedOut)
                     return
                 }
-                await gate.resolve(.failure(safeError(error)))
+                await gate.resolve(.failure(classify(error)))
             }
         }
         return PendingOperation(gate: gate, task: task)
@@ -327,15 +336,29 @@ public actor ResponseCoordinator {
         text.split(whereSeparator: { $0.isWhitespace }).count
     }
 
-    private static func safeError(_ error: any Error) -> String {
-        if error is CancellationError { return "Cancelled" }
-        return String(describing: error).prefix(160).description
+    private static func classify(_ error: any Error) -> ResponseCoordinatorFailure {
+        guard let responseError = error as? MeetingResponseError else {
+            return .providerUnavailable
+        }
+        switch responseError {
+        case .quickRateLimited, .deepRateLimited:
+            return .rateLimited
+        case .deepAlreadyActive:
+            return .busy
+        case .invalidOutput:
+            return .responseRejected
+        case .groundingUnavailable, .groundingMismatch, .skillPolicyMismatch:
+            return .groundingUnavailable
+        case .signInRequired, .credentialStoreUnavailable, .accountMismatch,
+            .protocolUnsupported, .runtimeUnavailable, .notPrepared, .cleanupFailed:
+            return .providerUnavailable
+        }
     }
 }
 
 private enum DeadlineOutcome<Value: Sendable>: Sendable {
     case success(Value)
-    case failure(String)
+    case failure(ResponseCoordinatorFailure)
     case timedOut
     case cancelled
 }

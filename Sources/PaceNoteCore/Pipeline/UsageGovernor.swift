@@ -20,7 +20,7 @@ public struct UsageGovernor: Sendable {
     private var deepStarts: [Date] = []
     private var deepActive = false
 
-    public init(quickPerMinute: Int = 8, deepPerMinute: Int = 2) {
+    public init(quickPerMinute: Int = 8, deepPerMinute: Int = 6) {
         self.quickPerMinute = quickPerMinute
         self.deepPerMinute = deepPerMinute
     }
