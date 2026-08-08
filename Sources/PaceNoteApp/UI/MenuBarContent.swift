@@ -24,7 +24,9 @@ struct MenuBarContent: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("PaceNote status: \(model.phase.statusTitle). \(model.statusDetail)")
+            .accessibilityLabel(
+                "\(AppBrand.displayName) status: \(model.phase.statusTitle). \(model.statusDetail)"
+            )
 
             VStack(alignment: .leading, spacing: 5) {
                 Label(
@@ -35,7 +37,10 @@ struct MenuBarContent: View {
                     model.outputEnabled ? model.systemAudioPermission.shortLabel : "Off",
                     systemImage: model.outputEnabled ? "speaker.wave.2.fill" : "speaker.slash"
                 )
-                Label(model.codexState.shortLabel, systemImage: "person.crop.circle")
+                Label(
+                    "\(model.selectedProvider.shortTitle): \(model.selectedProviderState.shortLabel)",
+                    systemImage: "person.crop.circle"
+                )
                 Label(
                     model.repositoryName ?? "No repository",
                     systemImage: model.repositoryState.isReady ? "checkmark.shield.fill" : "folder"
@@ -55,14 +60,14 @@ struct MenuBarContent: View {
 
             Divider()
 
-            Button("Open PaceNote") {
+            Button("Open \(AppBrand.displayName)") {
                 openMeetingWindow()
             }
             .keyboardShortcut("o")
-            .accessibilityLabel("Open PaceNote")
+            .accessibilityLabel("Open \(AppBrand.displayName)")
             .accessibilityIdentifier("menu-bar.open")
             .paceNoteAssistiveControl(
-                label: "Open PaceNote",
+                label: "Open \(AppBrand.displayName)",
                 identifier: "menu-bar.open",
                 action: openMeetingWindow
             )
@@ -153,13 +158,13 @@ struct MenuBarContent: View {
                 }
 
             Divider()
-            Button("Quit PaceNote") {
+            Button("Quit \(AppBrand.displayName)") {
                 NSApplication.shared.terminate(nil)
             }
-            .accessibilityLabel("Quit PaceNote")
+            .accessibilityLabel("Quit \(AppBrand.displayName)")
             .accessibilityIdentifier("menu-bar.quit")
             .paceNoteAssistiveControl(
-                label: "Quit PaceNote",
+                label: "Quit \(AppBrand.displayName)",
                 identifier: "menu-bar.quit"
             ) {
                 NSApplication.shared.terminate(nil)

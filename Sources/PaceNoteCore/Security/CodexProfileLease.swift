@@ -10,16 +10,16 @@ public enum CodexProfileLeaseError: Error, Equatable, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidProfileRoot, .invalidLockFile:
-            "PaceNote rejected an unsafe Codex profile lock path."
+            "PrismCue rejected an unsafe Codex profile lock path."
         case .alreadyInUse:
-            "The dedicated PaceNote Codex profile is already in use. Quit PaceNote and any live probe before trying again."
+            "The dedicated PrismCue Codex profile is already in use. Quit PrismCue and any live probe before trying again."
         case .unavailable:
-            "PaceNote could not acquire exclusive access to its dedicated Codex profile."
+            "PrismCue could not acquire exclusive access to its dedicated Codex profile."
         }
     }
 }
 
-/// Holds an advisory lock for the lifetime of one PaceNote profile owner.
+/// Holds an advisory lock for the lifetime of one PrismCue profile owner.
 ///
 /// The lock file is a stable sibling of the profile rather than a child of it, so profile
 /// sanitization cannot remove the locked inode. The file intentionally remains on disk after

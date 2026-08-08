@@ -16,7 +16,7 @@ struct SystemAudioPermissionProbeOperations: @unchecked Sendable {
             let description = CATapDescription(
                 stereoGlobalTapButExcludeProcesses: []
             )
-            description.name = "PaceNote permission check"
+            description.name = "PrismCue permission check"
             description.isPrivate = true
             description.muteBehavior = .unmuted
             return try AudioHardwareSystem.shared.makeProcessTap(description: description)?.id

@@ -3,9 +3,9 @@
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-app_bundle="$project_root/dist/PaceNote.app"
-notary_zip="$project_root/dist/PaceNote-notary.zip"
-release_zip="$project_root/dist/PaceNote-arm64.zip"
+app_bundle="$project_root/dist/PrismCue.app"
+notary_zip="$project_root/dist/PrismCue-notary.zip"
+release_zip="$project_root/dist/PrismCue-arm64.zip"
 
 : "${PACE_NOTE_SIGN_IDENTITY:?PACE_NOTE_SIGN_IDENTITY is required}"
 : "${PACE_NOTE_NOTARY_KEY_PATH:?PACE_NOTE_NOTARY_KEY_PATH is required}"

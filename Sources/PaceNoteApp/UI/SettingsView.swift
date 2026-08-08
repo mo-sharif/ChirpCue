@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     @Bindable var model: MeetingViewModel
+    @State private var confirmingClaudeAccountChange = false
     @AppStorage("paceNote.defaultMicrophoneEnabled") private var defaultMicrophoneEnabled = true
     @AppStorage("paceNote.defaultOutputEnabled") private var defaultOutputEnabled = true
     @AppStorage("paceNote.defaultOutputScope") private var defaultOutputScope = OutputCaptureScope.meetingApplication
@@ -69,29 +70,45 @@ struct SettingsView: View {
             .tabItem { Label("General", systemImage: "gear") }
 
             Form {
-                Section("ChatGPT-authenticated Codex") {
+                Section("Meeting inference provider") {
+                    Picker("Provider", selection: $model.selectedProvider) {
+                        ForEach(MeetingInferenceProvider.allCases) { provider in
+                            Text(provider.title).tag(provider)
+                        }
+                    }
+                    .accessibilityLabel("Meeting Inference Provider")
+                    .accessibilityIdentifier("settings.inference-provider")
+                    .disabled(!model.canManageProviderAccounts || !model.canPresentSetup)
+                    Text(
+                        "Changing providers revokes the current provider-processing consent. You must confirm it again before starting."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Button("Recheck Accounts") {
+                        Task { await model.refreshEnvironment() }
+                    }
+                    .accessibilityLabel("Recheck Accounts")
+                    .accessibilityIdentifier("settings.recheck-account")
+                    .paceNoteAssistiveControl(
+                        label: "Recheck Accounts",
+                        identifier: "settings.recheck-account",
+                        isEnabled: model.canManageProviderAccounts
+                    ) {
+                        Task { await model.refreshEnvironment() }
+                    }
+                    .disabled(!model.canManageProviderAccounts)
+                }
+                Section("Codex via ChatGPT") {
                     LabeledContent("Status", value: model.codexState.shortLabel)
-                    Text(model.codexState.detail)
+                    Text(model.codexState.detail(for: .codex))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(
-                        "PaceNote uses an app-owned isolated Codex profile and your ChatGPT subscription. It does not use an API key."
+                        "\(AppBrand.displayName) uses an app-owned isolated Codex profile and your ChatGPT subscription. It does not use an API key."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     HStack {
-                        Button("Recheck Account") {
-                            Task { await model.refreshEnvironment() }
-                        }
-                        .accessibilityLabel("Recheck Account")
-                        .accessibilityIdentifier("settings.recheck-account")
-                        .paceNoteAssistiveControl(
-                            label: "Recheck Account",
-                            identifier: "settings.recheck-account",
-                            isEnabled: !model.isBootstrapping && !model.isPerformingMeetingAction
-                        ) {
-                            Task { await model.refreshEnvironment() }
-                        }
                         if !model.codexState.isReady {
                             Button("Sign in to Codex with ChatGPT") {
                                 Task { await model.signInToCodex() }
@@ -101,7 +118,7 @@ struct SettingsView: View {
                             .paceNoteAssistiveControl(
                                 label: "Sign in to Codex with ChatGPT",
                                 identifier: "settings.codex-sign-in",
-                                isEnabled: !model.isBootstrapping && !model.isPerformingMeetingAction
+                                isEnabled: model.canManageProviderAccounts
                             ) {
                                 Task { await model.signInToCodex() }
                             }
@@ -115,19 +132,51 @@ struct SettingsView: View {
                             .paceNoteAssistiveControl(
                                 label: "Sign Out and Forget Profile",
                                 identifier: "settings.codex-sign-out",
-                                isEnabled: !model.isBootstrapping && !model.isPerformingMeetingAction
+                                isEnabled: model.canForgetCodexProfile
                             ) {
                                 Task { await model.forgetCodexProfile() }
                             }
                         }
                     }
-                    .disabled(model.isBootstrapping || model.isPerformingMeetingAction)
+                    .disabled(!model.canManageProviderAccounts)
+                }
+                Section("Claude subscription") {
+                    LabeledContent("Status", value: model.claudeState.shortLabel)
+                    Text(model.claudeState.detail(for: .claude))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(
+                        "\(AppBrand.displayName) uses the signed-in Claude subscription through the local Claude CLI. It does not use an Anthropic API key."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if model.claudeState.isSignedOut {
+                        Text("Sign in with `claude auth login --claudeai`, then Recheck.")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
+                    if model.canConfirmClaudeAccountChange {
+                        Button("Use Current Claude Account") {
+                            confirmingClaudeAccountChange = true
+                        }
+                        .accessibilityLabel("Use Current Claude Account")
+                        .accessibilityIdentifier("settings.claude-confirm-account")
+                        .paceNoteAssistiveControl(
+                            label: "Use Current Claude Account",
+                            identifier: "settings.claude-confirm-account",
+                            isEnabled: model.canManageProviderAccounts
+                        ) {
+                            confirmingClaudeAccountChange = true
+                        }
+                        .disabled(!model.canManageProviderAccounts)
+                    }
                 }
                 Section("Capture permissions") {
                     LabeledContent("Microphone", value: model.microphonePermission.shortLabel)
                     LabeledContent("System audio", value: model.systemAudioPermission.shortLabel)
                     Text(
-                        "PaceNote never interprets a settings toggle as macOS permission. Permission status comes from the local capture preflight."
+                        "\(AppBrand.displayName) never interprets a settings toggle as macOS permission. Permission status comes from the local capture preflight."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -143,12 +192,14 @@ struct SettingsView: View {
                         detail: "Audio is not intentionally stored. Transcript and suggestions clear when you stop."
                     )
                     PrivacySettingRow(
-                        title: "OpenAI processing",
-                        detail: PaceNoteDisclosureText.openAIProcessingSummary
+                        title: "\(model.selectedProvider.processorName) processing",
+                        detail: PaceNoteDisclosureText.processingSummary(
+                            for: model.selectedProvider
+                        )
                     )
                     PrivacySettingRow(
                         title: "No automatic response",
-                        detail: "PaceNote never speaks, pastes, sends, or clicks for you."
+                        detail: "\(AppBrand.displayName) never speaks, pastes, sends, or clicks for you."
                     )
                     PrivacySettingRow(
                         title: "Screen-share protected",
@@ -160,7 +211,7 @@ struct SettingsView: View {
                     PrivacySettingRow(
                         title: "Sealed and read-only",
                         detail:
-                            "Codex receives only the reviewed private snapshot, never the live working tree or credentials. Every displayed repository claim must pass local evidence checks."
+                            "Codex receives only the reviewed private snapshot. Claude v1 receives only bounded host-selected lines from that snapshot and excludes instruction files and skills. Neither provider receives the live working tree or credentials, and every displayed repository claim must pass local evidence checks."
                     )
                 }
                 Section {
@@ -197,6 +248,20 @@ struct SettingsView: View {
             if model.canPresentSetup, let scope = OutputCaptureScope(rawValue: value) {
                 model.outputScope = scope
             }
+        }
+        .confirmationDialog(
+            "Use the current Claude account?",
+            isPresented: $confirmingClaudeAccountChange,
+            titleVisibility: .visible
+        ) {
+            Button("Confirm Current Claude Account") {
+                Task { await model.confirmClaudeAccountChange() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "PrismCue will bind future meetings to the currently signed-in Claude subscription. Provider-processing consent will be cleared and must be confirmed again."
+            )
         }
     }
 }

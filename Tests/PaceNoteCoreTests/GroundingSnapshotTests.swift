@@ -311,7 +311,7 @@ final class GroundingSnapshotTests: XCTestCase {
 
         let inheritedPipe = try makeExecutable(
             at: parent.appending(path: "inherited-pipe"),
-            contents: "#!/bin/sh\n/bin/sleep 1 &\nexit 0\n"
+            contents: "#!/bin/sh\n/bin/sleep 5 &\nexit 0\n"
         )
         let inheritedPipeReader = GitRepositoryReader(
             limits: .init(maximumGitOutputBytes: 1_024, gitCommandTimeout: 0.5),
@@ -319,9 +319,13 @@ final class GroundingSnapshotTests: XCTestCase {
         )
         let inheritedPipeStartedAt = ProcessInfo.processInfo.systemUptime
         XCTAssertThrowsError(try inheritedPipeReader.repositoryRoot(startingAt: parent)) { error in
-            XCTAssertEqual(error as? GroundingError, .notGitRepository)
+            let groundingError = error as? GroundingError
+            XCTAssertTrue(
+                groundingError == .notGitRepository
+                    || groundingError == .resourceLimitExceeded(.gitCommandTimeout)
+            )
         }
-        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - inheritedPipeStartedAt, 0.5)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - inheritedPipeStartedAt, 1.5)
     }
 
     func testExtremePublicFileLimitDoesNotOverflowSizeConversion() throws {

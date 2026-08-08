@@ -3,7 +3,7 @@
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-app_bundle=${1:-"$project_root/dist/PaceNote.app"}
+app_bundle=${1:-"$project_root/dist/PrismCue.app"}
 plist="$app_bundle/Contents/Info.plist"
 executable="$app_bundle/Contents/MacOS/PaceNote"
 skill_root="$app_bundle/Contents/Resources/PaceNote_PaceNoteCore.bundle/Resources/Skills/pacenote-meeting-coach"
@@ -13,6 +13,8 @@ test -x "$executable"
 plutil -lint "$plist"
 
 bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+display_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist")
+bundle_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist")
 minimum_os=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")
 microphone_reason=$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$plist")
 audio_reason=$(/usr/libexec/PlistBuddy -c 'Print :NSAudioCaptureUsageDescription' "$plist")
@@ -22,6 +24,8 @@ bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 expected_version=$(tr -d '[:space:]' < "$project_root/VERSION")
 
 test "$bundle_id" = "com.mosharif.pacenote"
+test "$display_name" = "PrismCue"
+test "$bundle_name" = "PrismCue"
 test "$minimum_os" = "26.0"
 test -n "$microphone_reason"
 test -n "$audio_reason"

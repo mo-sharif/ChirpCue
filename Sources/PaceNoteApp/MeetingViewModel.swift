@@ -28,12 +28,40 @@ enum CapturePermissionState: Equatable, Sendable {
     }
 }
 
-enum CodexConnectionState: Equatable, Sendable {
+enum MeetingInferenceProvider: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
+    case codex
+    case claude
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .codex: "Codex via ChatGPT"
+        case .claude: "Claude via Claude subscription"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .codex: "Codex"
+        case .claude: "Claude"
+        }
+    }
+
+    var processorName: String {
+        switch self {
+        case .codex: "OpenAI"
+        case .claude: "Anthropic"
+        }
+    }
+}
+
+enum InferenceConnectionState: Equatable, Sendable {
     case notChecked
     case checking
     case signedOut
     case authenticationExpired(String)
-    case ready(CodexAccountSummary)
+    case ready(InferenceAccountSummary)
     case limited(String)
     case unavailable(String)
 
@@ -43,7 +71,7 @@ enum CodexConnectionState: Equatable, Sendable {
     }
 }
 
-struct CodexAccountSummary: Equatable, Sendable {
+struct InferenceAccountSummary: Equatable, Sendable {
     let accountLabel: String
     let planLabel: String
     let modelCount: Int
@@ -52,6 +80,33 @@ struct CodexAccountSummary: Equatable, Sendable {
         self.accountLabel = accountLabel
         self.planLabel = planLabel
         self.modelCount = modelCount
+    }
+}
+
+typealias CodexConnectionState = InferenceConnectionState
+typealias CodexAccountSummary = InferenceAccountSummary
+
+private extension MeetingInferenceProvider {
+    func setupBlocker(for state: InferenceConnectionState) -> String {
+        switch self {
+        case .codex:
+            "Sign in to ChatGPT through the local Codex app-server."
+        case .claude:
+            switch state {
+            case .signedOut:
+                "Sign in with `claude auth login --claudeai`, then Recheck."
+            case .authenticationExpired:
+                "Confirm the intended Claude account in Settings before starting."
+            case .checking:
+                "Wait for the Claude subscription check to finish."
+            case .notChecked:
+                "Recheck the Claude subscription before starting."
+            case .limited, .unavailable:
+                "Resolve the Claude subscription status shown above, then Recheck."
+            case .ready:
+                ""
+            }
+        }
     }
 }
 
@@ -86,16 +141,30 @@ enum OutputCaptureScope: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum PaceNoteDisclosureText {
-    static let firstRunOpenAIProcessing =
-        "I understand transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my signed-in ChatGPT account."
+    static let firstRunProviderProcessing =
+        "I understand Codex may send transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output to OpenAI. Claude v1 may send transcript slices and bounded host-selected lines from the reviewed sealed snapshot to Anthropic, but excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. The provider uses my applicable subscription terms. \(AppBrand.displayName) makes no zero-retention claim."
     static let meetingParticipantPermission =
         "I have informed all participants about live transcription and AI assistance, and I have permission to capture and process this meeting."
-    static let meetingOpenAIProcessing =
-        "I understand this meeting's transcript slices, any selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my ChatGPT account."
-    static let openAIProcessingSummary =
-        "Transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac for processing under the signed-in ChatGPT account's applicable OpenAI terms. PaceNote makes no zero-retention claim."
     static let soleNearbySpeaker =
         "I am the only person near this Mac's microphone. Label microphone speech as YOU."
+
+    static func meetingProcessing(for provider: MeetingInferenceProvider) -> String {
+        switch provider {
+        case .codex:
+            "I understand this meeting's transcript slices, any selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my ChatGPT account. \(AppBrand.displayName) makes no zero-retention claim."
+        case .claude:
+            "I understand this meeting's transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac and be processed by Anthropic through my Claude subscription. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+        }
+    }
+
+    static func processingSummary(for provider: MeetingInferenceProvider) -> String {
+        switch provider {
+        case .codex:
+            "Transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac for processing under the signed-in ChatGPT account's applicable OpenAI terms. \(AppBrand.displayName) makes no zero-retention claim."
+        case .claude:
+            "Transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac for processing under the signed-in Claude subscription's applicable Anthropic terms. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+        }
+    }
 }
 
 struct OutputSourceOption: Identifiable, Hashable, Sendable {
@@ -114,18 +183,21 @@ struct PaceNoteEnvironmentSnapshot: Equatable, Sendable {
     let microphonePermission: CapturePermissionState
     let systemAudioPermission: CapturePermissionState
     let codex: CodexConnectionState
+    let claude: InferenceConnectionState
     let outputSources: [OutputSourceOption]
 
     init(
         microphonePermission: CapturePermissionState,
         systemAudioPermission: CapturePermissionState,
         codex: CodexConnectionState,
-        outputSources: [OutputSourceOption]
+        outputSources: [OutputSourceOption],
+        claude: InferenceConnectionState = .notChecked
     ) {
         self.microphonePermission = microphonePermission
         self.systemAudioPermission = systemAudioPermission
         self.codex = codex
         self.outputSources = outputSources
+        self.claude = claude
     }
 }
 
@@ -264,6 +336,7 @@ struct MeetingStartRequest: Equatable, Sendable {
     let sealedSnapshotID: UUID?
     let selectedDomainSkillName: String?
     let soleNearbySpeakerConfirmed: Bool
+    let provider: MeetingInferenceProvider
 
     init(
         consentConfirmed: Bool,
@@ -273,7 +346,8 @@ struct MeetingStartRequest: Equatable, Sendable {
         outputSourceID: String?,
         sealedSnapshotID: UUID?,
         selectedDomainSkillName: String?,
-        soleNearbySpeakerConfirmed: Bool = false
+        soleNearbySpeakerConfirmed: Bool = false,
+        provider: MeetingInferenceProvider = .codex
     ) {
         self.consentConfirmed = consentConfirmed
         self.microphoneEnabled = microphoneEnabled
@@ -283,6 +357,7 @@ struct MeetingStartRequest: Equatable, Sendable {
         self.sealedSnapshotID = sealedSnapshotID
         self.selectedDomainSkillName = selectedDomainSkillName
         self.soleNearbySpeakerConfirmed = soleNearbySpeakerConfirmed
+        self.provider = provider
     }
 }
 
@@ -304,7 +379,7 @@ enum PaceNoteActionError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .serviceNotConnected:
-            "PaceNote's local service is not connected yet."
+            "\(AppBrand.displayName)'s local service is not connected yet."
         case .audioTeardown(let lane):
             "The \(lane.rawValue) audio route could not be fully stopped. Retry Stop before starting or resuming."
         case .safeMessage(let message):
@@ -319,6 +394,7 @@ struct MeetingActions: Sendable {
     var requestCapturePermission: @Sendable (CapturePermissionKind) async -> CapturePermissionState
     var beginCodexSignIn: @Sendable () async -> CodexConnectionState
     var forgetCodexProfile: @Sendable () async throws -> Void
+    var confirmClaudeAccountChange: @Sendable () async throws -> InferenceConnectionState
     var reloadOutputSources: @Sendable () async -> [OutputSourceOption]
     var inspectRepository: @Sendable (URL) async throws -> GroundingReviewSummary
     var sealRepository: @Sendable (RepositorySealRequest) async throws -> SealedRepositorySummary
@@ -329,7 +405,9 @@ struct MeetingActions: Sendable {
     var stopMeeting: @Sendable () async throws -> Void
     var coachCurrentTurn: @Sendable (String?) async throws -> Void
 
-    static let unwired = unavailable(reason: "PaceNote's local service is not connected yet.")
+    static let unwired = unavailable(
+        reason: "\(AppBrand.displayName)'s local service is not connected yet."
+    )
 
     static func unavailable(reason: String) -> MeetingActions {
         MeetingActions(
@@ -345,6 +423,7 @@ struct MeetingActions: Sendable {
             requestCapturePermission: { _ in .unavailable(reason) },
             beginCodexSignIn: { .unavailable(reason) },
             forgetCodexProfile: { throw PaceNoteActionError.safeMessage(reason) },
+            confirmClaudeAccountChange: { throw PaceNoteActionError.safeMessage(reason) },
             reloadOutputSources: { [] },
             inspectRepository: { _ in throw PaceNoteActionError.safeMessage(reason) },
             sealRepository: { _ in throw PaceNoteActionError.safeMessage(reason) },
@@ -361,6 +440,16 @@ struct MeetingActions: Sendable {
 @MainActor
 @Observable
 final class MeetingViewModel {
+    static let inferenceProviderDefaultsKey = "paceNote.inferenceProvider"
+
+    static func persistedInferenceProvider(
+        in defaults: UserDefaults = .standard
+    ) -> MeetingInferenceProvider {
+        MeetingInferenceProvider(
+            rawValue: defaults.string(forKey: inferenceProviderDefaultsKey) ?? ""
+        ) ?? .codex
+    }
+
     var phase: MeetingPhase = .idle
     private(set) var isCaptureActive = false
     private(set) var transcript: [TranscriptSegment] = []
@@ -396,6 +485,7 @@ final class MeetingViewModel {
     private(set) var microphonePermission: CapturePermissionState = .notChecked
     private(set) var systemAudioPermission: CapturePermissionState = .notChecked
     private(set) var codexState: CodexConnectionState = .notChecked
+    private(set) var claudeState: InferenceConnectionState = .notChecked
     private(set) var repositoryState: RepositorySetupState = .none
     private(set) var isBootstrapping = false
     private(set) var isPerformingMeetingAction = false
@@ -412,6 +502,18 @@ final class MeetingViewModel {
         }
     }
     var approvedSoftFindingIDs: Set<String> = []
+    var selectedProvider: MeetingInferenceProvider {
+        didSet {
+            guard oldValue != selectedProvider else { return }
+            providerDefaults?.set(selectedProvider.rawValue, forKey: Self.inferenceProviderDefaultsKey)
+            meetingConsent.openAIProcessingConfirmed = false
+            if selectedProvider == .claude {
+                selectedDomainSkillName = nil
+            }
+            meetingStartConfigurationDidChange()
+            refreshReadyPhase()
+        }
+    }
     var selectedDomainSkillName: String? {
         didSet {
             if oldValue != selectedDomainSkillName {
@@ -421,6 +523,7 @@ final class MeetingViewModel {
     }
 
     private let actions: MeetingActions
+    private let providerDefaults: UserDefaults?
     private var selectedRepositoryURL: URL?
     private var didBootstrap = false
     private var privacyReturnSheet: PaceNoteSheet?
@@ -441,13 +544,17 @@ final class MeetingViewModel {
         hasCompletedFirstRun: Bool = false,
         microphoneEnabled: Bool = true,
         outputEnabled: Bool = true,
-        outputScope: OutputCaptureScope = .meetingApplication
+        outputScope: OutputCaptureScope = .meetingApplication,
+        selectedProvider: MeetingInferenceProvider = .codex,
+        providerDefaults: UserDefaults? = nil
     ) {
         self.actions = actions
+        self.providerDefaults = providerDefaults
         self.hasCompletedFirstRun = hasCompletedFirstRun
         self.microphoneEnabled = microphoneEnabled
         self.outputEnabled = outputEnabled
         self.outputScope = outputScope
+        self.selectedProvider = selectedProvider
         if !hasCompletedFirstRun {
             presentedSheet = .firstRun
         }
@@ -459,19 +566,26 @@ final class MeetingViewModel {
         outputSources.first { $0.id == selectedOutputSourceID }
     }
 
+    var selectedProviderState: InferenceConnectionState {
+        switch selectedProvider {
+        case .codex: codexState
+        case .claude: claudeState
+        }
+    }
+
     var canPresentSetup: Bool {
-        !hasIncompleteAudioTeardown && !isPerformingMeetingAction
+        !hasIncompleteAudioTeardown && !isPerformingMeetingAction && !isBootstrapping
             && (phase == .idle || phase == .ready || phase == .ended
                 || phase == .permissionRequired)
     }
 
     var canStart: Bool {
         !hasIncompleteAudioTeardown && !isMeetingActive && pendingMeetingStart == nil
-            && setupBlockers.isEmpty && !isPerformingMeetingAction
+            && setupBlockers.isEmpty && !isPerformingMeetingAction && !isBootstrapping
     }
 
     var canCoach: Bool {
-        !hasIncompleteAudioTeardown && codexState.isReady && !isPerformingMeetingAction
+        !hasIncompleteAudioTeardown && selectedProviderState.isReady && !isPerformingMeetingAction
             && isMeetingActive && phase != .paused
     }
 
@@ -481,7 +595,7 @@ final class MeetingViewModel {
 
     var canForgetCodexProfile: Bool {
         guard !hasIncompleteAudioTeardown, !isMeetingActive,
-            !isPerformingMeetingAction, pendingMeetingStart == nil
+            !isPerformingMeetingAction, !isBootstrapping, pendingMeetingStart == nil
         else { return false }
         switch codexState {
         case .notChecked, .checking, .signedOut:
@@ -489,6 +603,19 @@ final class MeetingViewModel {
         case .authenticationExpired, .ready, .limited, .unavailable:
             return true
         }
+    }
+
+    var canConfirmClaudeAccountChange: Bool {
+        guard !hasIncompleteAudioTeardown, !isMeetingActive,
+            !isPerformingMeetingAction, !isBootstrapping, pendingMeetingStart == nil
+        else { return false }
+        if case .authenticationExpired = claudeState { return true }
+        return false
+    }
+
+    var canManageProviderAccounts: Bool {
+        !hasIncompleteAudioTeardown && !isMeetingActive && pendingMeetingStart == nil
+            && !isPerformingMeetingAction && !isBootstrapping
     }
 
     var canPause: Bool {
@@ -513,8 +640,8 @@ final class MeetingViewModel {
         if outputEnabled && outputScope == .meetingApplication && selectedOutputSourceID == nil {
             blockers.append("Choose the meeting application to capture.")
         }
-        if !codexState.isReady {
-            blockers.append("Sign in to ChatGPT through the local Codex app-server.")
+        if !selectedProviderState.isReady {
+            blockers.append(selectedProvider.setupBlocker(for: selectedProviderState))
         }
         if repositoryState.isPending {
             blockers.append("Finish or cancel the repository review.")
@@ -532,6 +659,10 @@ final class MeetingViewModel {
         guard !didBootstrap else { return }
         didBootstrap = true
         isBootstrapping = true
+        defer {
+            isBootstrapping = false
+            refreshReadyPhase()
+        }
         let events = await actions.sessionEvents()
         runtimeEventTask = Task { [weak self] in
             for await event in events {
@@ -543,10 +674,9 @@ final class MeetingViewModel {
         microphonePermission = snapshot.microphonePermission
         systemAudioPermission = snapshot.systemAudioPermission
         codexState = snapshot.codex
+        claudeState = snapshot.claude
         outputSources = snapshot.outputSources
         selectFirstOutputSourceIfNeeded()
-        isBootstrapping = false
-        refreshReadyPhase()
     }
 
     func completeFirstRun() {
@@ -604,24 +734,40 @@ final class MeetingViewModel {
     }
 
     func refreshEnvironment() async {
+        guard !isBootstrapping else { return }
+        guard canManageProviderAccounts else {
+            actionError = "Stop the current meeting before rechecking provider accounts."
+            return
+        }
         isBootstrapping = true
+        defer {
+            isBootstrapping = false
+            refreshReadyPhase()
+        }
         actionError = nil
         let snapshot = await actions.checkEnvironment()
         microphonePermission = snapshot.microphonePermission
         systemAudioPermission = snapshot.systemAudioPermission
         codexState = snapshot.codex
+        claudeState = snapshot.claude
         outputSources = snapshot.outputSources
         selectFirstOutputSourceIfNeeded()
-        isBootstrapping = false
-        refreshReadyPhase()
     }
 
     func signInToCodex() async {
-        guard !isPerformingMeetingAction else { return }
+        guard !isBootstrapping else { return }
+        guard canManageProviderAccounts else {
+            actionError = "Stop the current meeting before changing the Codex account."
+            return
+        }
+        isBootstrapping = true
+        defer {
+            isBootstrapping = false
+            refreshReadyPhase()
+        }
         actionError = nil
         codexState = .checking
         codexState = await actions.beginCodexSignIn()
-        refreshReadyPhase()
     }
 
     func forgetCodexProfile() async {
@@ -637,6 +783,30 @@ final class MeetingViewModel {
             codexState = .signedOut
             statusDetail = "The isolated Codex profile was forgotten."
             refreshReadyPhase()
+        } catch {
+            actionError = safeMessage(for: error)
+        }
+        isPerformingMeetingAction = false
+    }
+
+    func confirmClaudeAccountChange() async {
+        guard canConfirmClaudeAccountChange else {
+            actionError = "Stop the current meeting before confirming a different Claude account."
+            return
+        }
+        isPerformingMeetingAction = true
+        actionError = nil
+        claudeState = .checking
+        do {
+            claudeState = try await actions.confirmClaudeAccountChange()
+            let accountWasConfirmed = claudeState.isReady
+            if accountWasConfirmed {
+                meetingConsent.openAIProcessingConfirmed = false
+            }
+            refreshReadyPhase()
+            if accountWasConfirmed {
+                statusDetail = "The current Claude subscription account is now confirmed."
+            }
         } catch {
             actionError = safeMessage(for: error)
         }
@@ -749,7 +919,8 @@ final class MeetingViewModel {
             sealedSnapshotID: sealedSnapshotID,
             selectedDomainSkillName: selectedDomainSkillName,
             soleNearbySpeakerConfirmed: microphoneEnabled
-                && meetingConsent.soleNearbySpeakerConfirmed
+                && meetingConsent.soleNearbySpeakerConfirmed,
+            provider: selectedProvider
         )
     }
 
@@ -1026,7 +1197,7 @@ final class MeetingViewModel {
     }
 
     private func refreshAfterRevokedStart(detail: String) {
-        if codexState.isReady {
+        if selectedProviderState.isReady {
             phase = .ready
         } else {
             phase = .permissionRequired
@@ -1080,7 +1251,8 @@ final class MeetingViewModel {
         phase = .suggesting
         statusDetail =
             card.stage == .bridge
-            ? "A safe bridge is ready while PaceNote checks deeper context." : "A quick response is ready."
+            ? "A safe bridge is ready while \(AppBrand.displayName) checks deeper context."
+            : "A quick response is ready."
     }
 
     func receiveVerifiedDeepSuggestion(_ card: SuggestionCard) {
@@ -1108,7 +1280,8 @@ final class MeetingViewModel {
             if phase == .brownout { phase = .listening }
         } else if phase != .paused && phase != .ended {
             phase = .brownout
-            statusDetail = "PaceNote is in a limited mode. Review the visible recovery guidance."
+            statusDetail =
+                "\(AppBrand.displayName) is in a limited mode. Review the visible recovery guidance."
         }
     }
 
@@ -1190,7 +1363,7 @@ final class MeetingViewModel {
         case .idle:
             statusDetail = "Complete setup before listening."
         case .permissionRequired:
-            statusDetail = "Complete capture and ChatGPT setup before listening."
+            statusDetail = "Complete capture and \(selectedProvider.shortTitle) setup before listening."
         case .ready:
             statusDetail = "Ready to start the consented meeting."
         case .listening:
@@ -1206,7 +1379,8 @@ final class MeetingViewModel {
         case .paused:
             statusDetail = "Capture and coaching are paused."
         case .brownout:
-            statusDetail = "PaceNote is in a limited mode. Review the visible recovery guidance."
+            statusDetail =
+                "\(AppBrand.displayName) is in a limited mode. Review the visible recovery guidance."
         case .ended:
             statusDetail = "Meeting content was cleared."
         }
@@ -1231,7 +1405,7 @@ final class MeetingViewModel {
         case .clarification:
             "A safe clarification is ready."
         case .abstention:
-            "PaceNote could not verify an answer safely."
+            "\(AppBrand.displayName) could not verify an answer safely."
         case nil:
             "A Deep response is ready. Review it before speaking."
         }
@@ -1247,12 +1421,12 @@ final class MeetingViewModel {
     private func refreshReadyPhase() {
         guard !hasIncompleteAudioTeardown else { return }
         guard phase == .idle || phase == .permissionRequired || phase == .ready else { return }
-        if codexState.isReady {
+        if selectedProviderState.isReady {
             phase = .ready
             statusDetail = "Ready to configure a consented meeting."
         } else {
             phase = .permissionRequired
-            statusDetail = "Complete capture and ChatGPT setup before listening."
+            statusDetail = "Complete capture and \(selectedProvider.shortTitle) setup before listening."
         }
     }
 

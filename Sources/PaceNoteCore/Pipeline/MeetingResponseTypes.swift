@@ -65,17 +65,17 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .signInRequired:
-            "Sign in to the isolated PaceNote Codex profile with ChatGPT."
+            "Sign in to the selected subscription provider before starting."
         case .credentialStoreUnavailable:
-            "The dedicated PaceNote Codex profile cannot read ChatGPT credentials from the OS credential store."
+            "The selected provider cannot read its subscription credentials from the OS credential store."
         case .accountMismatch:
-            "The signed-in ChatGPT account does not match this PaceNote profile."
+            "The signed-in provider account does not match the account confirmed for PrismCue."
         case .protocolUnsupported:
-            "This Codex build cannot prove PaceNote's required read-only protocol."
+            "The installed provider client cannot prove PrismCue's required read-only protocol."
         case .runtimeUnavailable:
-            "The isolated local Codex runtime is unavailable."
+            "The selected provider's isolated local runtime is unavailable."
         case .notPrepared:
-            "PaceNote's Codex response runtime is not ready."
+            "PrismCue's response runtime is not ready."
         case .quickRateLimited:
             "Fast suggestions are temporarily rate limited."
         case .deepRateLimited:
@@ -87,11 +87,11 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
         case .groundingMismatch:
             "The grounded answer did not match the current sealed repository snapshot."
         case .skillPolicyMismatch:
-            "The effective Codex skill set did not match PaceNote's explicit allowlist."
+            "The effective Codex skill set did not match PrismCue's explicit allowlist."
         case .invalidOutput:
-            "Codex returned a response that did not pass PaceNote's strict output checks."
+            "The selected provider returned a response that did not pass PrismCue's strict output checks."
         case .cleanupFailed:
-            "PaceNote could not confirm deletion of all transcript-bearing Codex work."
+            "PrismCue could not confirm deletion of all transcript-bearing inference work."
         }
     }
 }

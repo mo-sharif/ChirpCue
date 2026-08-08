@@ -4,7 +4,7 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dist_root="$project_root/dist"
-app_bundle="$dist_root/PaceNote.app"
+app_bundle="$dist_root/PrismCue.app"
 contents="$app_bundle/Contents"
 macos_dir="$contents/MacOS"
 resources_dir="$contents/Resources"
@@ -15,7 +15,7 @@ version=$(tr -d '[:space:]' < "$project_root/VERSION")
 build_number=${PACE_NOTE_BUILD_NUMBER:-1}
 
 case "$app_bundle" in
-    "$project_root"/dist/PaceNote.app) ;;
+    "$project_root"/dist/PrismCue.app) ;;
     *) printf '%s\n' "Refusing unsafe app bundle path: $app_bundle" >&2; exit 1 ;;
 esac
 

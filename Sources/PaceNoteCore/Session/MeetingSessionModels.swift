@@ -140,15 +140,15 @@ public struct MeetingBrownout: Identifiable, Equatable, Sendable {
         case .transcriberAssetMissing:
             "The local transcription language is not ready."
         case .codexOffline:
-            "Codex is unavailable."
+            "The selected AI provider is unavailable."
         case .authenticationExpired:
-            "Sign in to the isolated Codex profile to continue."
+            "Sign in to the selected AI provider to continue."
         case .accountMismatch:
-            "The active Codex account does not match this profile."
+            "The active AI-provider account does not match this profile."
         case .protocolUnsupported:
-            "This Codex build is not compatible with PaceNote."
+            "The selected provider version is not compatible with PrismCue."
         case .appServerCrashed:
-            "The Codex service stopped unexpectedly."
+            "The selected provider process stopped unexpectedly."
         case .quickLimited:
             "The quick response path is temporarily limited."
         case .deepLimited:
@@ -257,19 +257,19 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
         case .transcriptionAssetUnavailable:
             "The local transcription language could not be prepared."
         case .responseSignInRequired:
-            "Sign in to the isolated Codex profile before starting."
+            "Sign in to the selected AI provider before starting."
         case .responseAccountMismatch:
-            "The Codex account does not match the selected PaceNote profile."
+            "The selected provider account does not match the confirmed PrismCue profile."
         case .responseProtocolUnsupported:
-            "The installed Codex build is not compatible with PaceNote."
+            "The installed provider version is not compatible with PrismCue."
         case .responseUnavailable:
-            "The Codex response runtime could not be prepared."
+            "The selected provider response runtime could not be prepared."
         case .captureUnavailable(let lane):
             "The \(lane.rawValue) audio route could not be started."
         case .captureTeardownFailed(let lane):
             "The \(lane.rawValue) audio route could not be fully stopped. Retry Stop before starting or resuming."
         case .systemAudioPermissionDenied:
-            "System audio capture permission is denied. Allow PaceNote in System Settings, then try again."
+            "System audio capture permission is denied. Allow PrismCue in System Settings, then try again."
         case .noCandidateQuestion:
             "No recent question from the other party is available to coach yet."
         case .emptyManualQuestion:

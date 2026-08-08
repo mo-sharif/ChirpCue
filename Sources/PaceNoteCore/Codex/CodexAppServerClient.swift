@@ -21,7 +21,7 @@ public struct CodexAppServerConfiguration: Sendable {
         versionPolicy: CodexVersionPolicy = .tested,
         requestTimeout: Duration = .seconds(15),
         clientName: String = "pacenote",
-        clientTitle: String = "PaceNote",
+        clientTitle: String = "PrismCue",
         clientVersion: String,
         serviceName: String = "pacenote",
         permissionProfileID: String = ":read-only",
@@ -441,7 +441,7 @@ public actor CodexAppServerClient {
                             "content": [
                                 [
                                     "type": "output_text",
-                                    "text": "PaceNote evidence context initialized.",
+                                    "text": "PrismCue evidence context initialized.",
                                 ]
                             ],
                         ]

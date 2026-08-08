@@ -25,6 +25,7 @@ public struct CodexIsolatedRuntime: Equatable, Sendable {
 public enum CodexIsolatedRuntimeError: Error, Equatable, LocalizedError, Sendable {
     case invalidProfileRoot
     case invalidTemporaryRoot
+    case invalidUserHome
     case invalidPermissionProfile
     case unsafeExistingConfiguration
     case credentialMaterialPresent(String)
@@ -33,17 +34,19 @@ public enum CodexIsolatedRuntimeError: Error, Equatable, LocalizedError, Sendabl
     public var errorDescription: String? {
         switch self {
         case .invalidProfileRoot:
-            "The PaceNote Codex profile root is invalid."
+            "The PrismCue Codex profile root is invalid."
         case .invalidTemporaryRoot:
-            "The PaceNote Codex temporary directory is invalid."
+            "The PrismCue Codex temporary directory is invalid."
+        case .invalidUserHome:
+            "PrismCue could not resolve the signed-in macOS user's home directory for Keychain access."
         case .invalidPermissionProfile:
-            "The PaceNote Codex permission profile name is invalid."
+            "The PrismCue Codex permission profile name is invalid."
         case .unsafeExistingConfiguration:
-            "The PaceNote Codex configuration path is not a regular private file."
+            "The PrismCue Codex configuration path is not a regular private file."
         case .credentialMaterialPresent:
-            "The PaceNote Codex profile contains credential material outside the OS credential store."
+            "The PrismCue Codex profile contains credential material outside the OS credential store."
         case .cannotPrepareProfile:
-            "PaceNote could not prepare its isolated Codex profile."
+            "PrismCue could not prepare its isolated Codex profile."
         }
     }
 }
@@ -58,6 +61,7 @@ public enum CodexIsolatedRuntimeBuilder {
         codexExecutableURL: URL = URL(
             fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"
         ),
+        userHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         inheritedEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) throws -> CodexIsolatedRuntime {
@@ -105,6 +109,11 @@ public enum CodexIsolatedRuntimeBuilder {
                 temporaryRoot ?? root.appendingPathComponent("tmp", isDirectory: true),
                 fileManager: fileManager
             )
+            let homeDirectory = try validatedUserHomeDirectory(
+                userHomeDirectory,
+                isolatedProfileRoot: root,
+                fileManager: fileManager
+            )
 
             let configURL = root.appendingPathComponent("config.toml", isDirectory: false)
             if fileManager.fileExists(atPath: configURL.path) {
@@ -129,6 +138,7 @@ public enum CodexIsolatedRuntimeBuilder {
                     inheritedEnvironment,
                     profileRoot: root,
                     temporaryRoot: temporaryDirectory,
+                    userHomeDirectory: homeDirectory,
                     codexExecutableURL: codexExecutableURL
                 )
             )
@@ -177,7 +187,7 @@ public enum CodexIsolatedRuntimeBuilder {
         inherit = "none"
 
         [permissions.\(permissionProfileID)]
-        description = "PaceNote sealed snapshot read-only"
+        description = "PrismCue sealed snapshot read-only"
 
         [permissions.\(permissionProfileID).filesystem]
         ":root" = "deny"
@@ -204,6 +214,7 @@ public enum CodexIsolatedRuntimeBuilder {
         _ inherited: [String: String],
         profileRoot: URL,
         temporaryRoot: URL,
+        userHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         codexExecutableURL: URL = URL(
             fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"
         )
@@ -217,7 +228,10 @@ public enum CodexIsolatedRuntimeBuilder {
         let path = [executableDirectory, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
             .joined(separator: ":")
         var result: [String: String] = [
-            "HOME": profileRoot.path,
+            // Security.framework resolves the user's default Keychain relative to HOME.
+            // CODEX_HOME still owns every Codex config/state path; only HOME retains the
+            // canonical macOS user identity required for Keychain-backed ChatGPT auth.
+            "HOME": userHomeDirectory.standardizedFileURL.path,
             "CODEX_HOME": profileRoot.path,
             "TMPDIR": temporaryRoot.path,
             "PATH": path,
@@ -227,6 +241,26 @@ public enum CodexIsolatedRuntimeBuilder {
             result[key] = value
         }
         return result
+    }
+
+    private static func validatedUserHomeDirectory(
+        _ userHomeDirectory: URL,
+        isolatedProfileRoot: URL,
+        fileManager: FileManager
+    ) throws -> URL {
+        let home = userHomeDirectory.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard home.isFileURL,
+            home.path.hasPrefix("/"),
+            !home.path.contains("\0"),
+            home.path.utf8.count <= 4_096,
+            home != isolatedProfileRoot,
+            fileManager.fileExists(atPath: home.path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            throw CodexIsolatedRuntimeError.invalidUserHome
+        }
+        return home
     }
 
     private static func prepareTemporaryRoot(

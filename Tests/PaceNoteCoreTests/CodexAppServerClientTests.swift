@@ -354,7 +354,7 @@ final class CodexAppServerClientTests: XCTestCase {
                     "content": [
                         [
                             "type": "output_text",
-                            "text": "PaceNote evidence context initialized.",
+                            "text": "PrismCue evidence context initialized.",
                         ]
                     ],
                 ]

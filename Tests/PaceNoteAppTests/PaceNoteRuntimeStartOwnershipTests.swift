@@ -19,6 +19,39 @@ final class PaceNoteRuntimeStartOwnershipTests: XCTestCase {
         let firstStart = Task { try await runtime.startMeeting(request) }
         await barrier.waitUntilSuspended()
 
+        let blockedEnvironment = await runtime.checkEnvironment()
+        XCTAssertEqual(
+            blockedEnvironment.codex,
+            .limited(
+                "Stop or finish the current meeting before rechecking provider accounts."
+            )
+        )
+        let blockedSignIn = await runtime.beginCodexSignIn()
+        XCTAssertEqual(
+            blockedSignIn,
+            .unavailable(
+                "Stop or finish the current meeting before changing the Codex account."
+            )
+        )
+        do {
+            try await runtime.forgetCodexProfile()
+            XCTFail("Forget must not overlap a reserved meeting start.")
+        } catch let error as PaceNoteActionError {
+            XCTAssertEqual(
+                error.errorDescription,
+                "Stop or finish the current meeting before forgetting the Codex profile."
+            )
+        }
+        do {
+            _ = try await runtime.confirmClaudeAccountChange()
+            XCTFail("Claude account rebind must not overlap a reserved meeting start.")
+        } catch let error as PaceNoteActionError {
+            XCTAssertEqual(
+                error.errorDescription,
+                "Stop or finish the current meeting before confirming a different Claude account."
+            )
+        }
+
         do {
             try await runtime.startMeeting(request)
             XCTFail("A second start must not enter while the first attempt owns the runtime.")
@@ -43,6 +76,107 @@ final class PaceNoteRuntimeStartOwnershipTests: XCTestCase {
         await runtime.shutdown()
     }
 
+    func testEnvironmentRecheckReservesRuntimeBeforeStartCanEnter() async throws {
+        let fixture = try RuntimeOwnershipFixture()
+        defer { fixture.remove() }
+        let barrier = RuntimeStartSuspensionBarrier()
+        let runtime = try PaceNoteRuntime(
+            applicationSupportRoot: fixture.supportRoot,
+            preverifiedSubscription: (planType: "pro", identityHash: "fixture-account"),
+            providerOperationSuspensionBarrier: {
+                await barrier.suspendIgnoringCancellation()
+            }
+        )
+
+        let recheck = Task { await runtime.checkEnvironment() }
+        await barrier.waitUntilSuspended()
+
+        do {
+            try await runtime.startMeeting(staleOutputSourceRequest())
+            XCTFail("Start must not overlap an environment recheck.")
+        } catch let error as PaceNoteActionError {
+            XCTAssertEqual(
+                error.errorDescription,
+                "Finish the provider account operation before starting a meeting."
+            )
+        }
+
+        recheck.cancel()
+        await barrier.waitUntilCancellationObserved()
+        await barrier.release()
+        let canceledSnapshot = await recheck.value
+        XCTAssertEqual(
+            canceledSnapshot.codex,
+            .limited("The provider account recheck was canceled.")
+        )
+        await runtime.shutdown()
+    }
+
+    func testCodexSignInReservesRuntimeAndRejectsDuplicateSignIn() async throws {
+        let fixture = try RuntimeOwnershipFixture()
+        defer { fixture.remove() }
+        let barrier = RuntimeStartSuspensionBarrier()
+        let runtime = try PaceNoteRuntime(
+            applicationSupportRoot: fixture.supportRoot,
+            preverifiedSubscription: (planType: "pro", identityHash: "fixture-account"),
+            providerOperationSuspensionBarrier: {
+                await barrier.suspendIgnoringCancellation()
+            }
+        )
+
+        let firstSignIn = Task { await runtime.beginCodexSignIn() }
+        await barrier.waitUntilSuspended()
+
+        let duplicateState = await runtime.beginCodexSignIn()
+        XCTAssertEqual(
+            duplicateState,
+            .unavailable("Another provider account operation is already in progress.")
+        )
+        do {
+            try await runtime.startMeeting(staleOutputSourceRequest())
+            XCTFail("Start must not overlap Codex sign-in.")
+        } catch let error as PaceNoteActionError {
+            XCTAssertEqual(
+                error.errorDescription,
+                "Finish the provider account operation before starting a meeting."
+            )
+        }
+
+        firstSignIn.cancel()
+        await barrier.waitUntilCancellationObserved()
+        await barrier.release()
+        let canceledState = await firstSignIn.value
+        XCTAssertEqual(canceledState, .signedOut)
+        await runtime.shutdown()
+    }
+
+    func testShutdownCancelsAndAwaitsOwnedProviderOperation() async throws {
+        let fixture = try RuntimeOwnershipFixture()
+        defer { fixture.remove() }
+        let barrier = RuntimeStartSuspensionBarrier()
+        let runtime = try PaceNoteRuntime(
+            applicationSupportRoot: fixture.supportRoot,
+            preverifiedSubscription: (planType: "pro", identityHash: "fixture-account"),
+            providerOperationSuspensionBarrier: {
+                await barrier.suspendIgnoringCancellation()
+            }
+        )
+
+        let recheck = Task { await runtime.checkEnvironment() }
+        await barrier.waitUntilSuspended()
+        let shutdown = Task { await runtime.shutdown() }
+        await barrier.waitUntilCancellationObserved()
+        let closingState = await runtime.shutdownStateForTesting()
+        XCTAssertFalse(closingState.isClosed)
+
+        await barrier.release()
+        let shutdownCompleted = await shutdown.value
+        _ = await recheck.value
+        let closedState = await runtime.shutdownStateForTesting()
+        XCTAssertTrue(shutdownCompleted)
+        XCTAssertTrue(closedState.isClosed)
+    }
+
     func testRuntimeHoldsExclusiveDedicatedProfileLease() async throws {
         let fixture = try RuntimeOwnershipFixture()
         defer { fixture.remove() }
@@ -59,7 +193,7 @@ final class PaceNoteRuntimeStartOwnershipTests: XCTestCase {
         ) { error in
             XCTAssertEqual(
                 (error as? PaceNoteActionError)?.errorDescription,
-                "The dedicated PaceNote Codex profile is already in use. Quit PaceNote and any live probe before trying again."
+                "The dedicated PrismCue Codex profile is already in use. Quit PrismCue and any live probe before trying again."
             )
         }
 
@@ -221,7 +355,7 @@ final class PaceNoteRuntimeStartOwnershipTests: XCTestCase {
         let blockedMessage = await staleSourceFailureMessage(from: runtime)
         XCTAssertEqual(
             blockedMessage,
-            "Private meeting cleanup is incomplete. Quit and reopen PaceNote before starting another meeting."
+            "Private meeting cleanup is incomplete. Quit and reopen PrismCue before starting another meeting."
         )
         let entriesWhileBlocked = try await fixture.journalEntries()
         XCTAssertEqual(removalCounter.value, 1)

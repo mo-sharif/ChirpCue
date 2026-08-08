@@ -19,6 +19,7 @@ struct PaceNoteApp: App {
             OutputCaptureScope(
                 rawValue: defaults.string(forKey: "paceNote.defaultOutputScope") ?? ""
             ) ?? .meetingApplication
+        let selectedProvider = MeetingViewModel.persistedInferenceProvider(in: defaults)
         let runtime: PaceNoteRuntime?
         let actions: MeetingActions
         do {
@@ -29,12 +30,12 @@ struct PaceNoteApp: App {
             runtime = nil
             actions = .unavailable(
                 reason: error.errorDescription
-                    ?? "PaceNote could not initialize its private local service."
+                    ?? "\(AppBrand.displayName) could not initialize its private local service."
             )
         } catch {
             runtime = nil
             actions = .unavailable(
-                reason: "PaceNote could not initialize its private local service."
+                reason: "\(AppBrand.displayName) could not initialize its private local service."
             )
         }
         self.runtime = runtime
@@ -44,15 +45,18 @@ struct PaceNoteApp: App {
                 hasCompletedFirstRun: defaults.bool(forKey: Self.firstRunKey),
                 microphoneEnabled: microphoneEnabled,
                 outputEnabled: outputEnabled,
-                outputScope: outputScope
+                outputScope: outputScope,
+                selectedProvider: selectedProvider,
+                providerDefaults: defaults
             )
         )
     }
 
     var body: some Scene {
-        WindowGroup("PaceNote", id: "meeting") {
+        WindowGroup(AppBrand.displayName, id: "meeting") {
             MeetingWindow(model: model)
                 .frame(minWidth: 820, minHeight: 600)
+                .tint(AppBrand.cyan)
                 .task {
                     appDelegate.runtime = runtime
                 }
@@ -68,15 +72,17 @@ struct PaceNoteApp: App {
         }
 
         MenuBarExtra(
-            "PaceNote",
-            systemImage: model.isCaptureActive ? "record.circle.fill" : "waveform.circle"
+            AppBrand.displayName,
+            systemImage: model.isCaptureActive ? "record.circle.fill" : "quote.bubble"
         ) {
             MenuBarContent(model: model)
+                .tint(AppBrand.cyan)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(model: model)
+                .tint(AppBrand.cyan)
         }
     }
 }
@@ -117,10 +123,10 @@ final class PaceNoteApplicationDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "PaceNote is still verifying capture teardown"
+        alert.messageText = "\(AppBrand.displayName) is still verifying capture teardown"
         alert.informativeText =
-            "Quit was canceled because PaceNote could not verify that every audio route stopped. Use Retry Stop in PaceNote, then quit again."
-        alert.addButton(withTitle: "Keep PaceNote Open")
+            "Quit was canceled because \(AppBrand.displayName) could not verify that every audio route stopped. Use Retry Stop in \(AppBrand.displayName), then quit again."
+        alert.addButton(withTitle: "Keep \(AppBrand.displayName) Open")
         alert.runModal()
     }
 }

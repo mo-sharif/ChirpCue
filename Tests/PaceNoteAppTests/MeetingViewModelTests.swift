@@ -435,15 +435,20 @@ final class MeetingViewModelTests: XCTestCase {
         XCTAssertEqual(OutputCaptureScope.allSystemAudio.sessionScope, .allSystemAudio)
     }
 
-    func testConsentDisclosuresNameParticipantsAndEveryOpenAIDataClass() {
+    func testConsentDisclosuresMatchEachProvidersOutboundDataBoundary() {
         let participant = PaceNoteDisclosureText.meetingParticipantPermission.lowercased()
         XCTAssertTrue(participant.contains("informed all participants"))
         XCTAssertTrue(participant.contains("permission"))
 
+        let firstRun = PaceNoteDisclosureText.firstRunProviderProcessing.lowercased()
+        XCTAssertTrue(firstRun.contains("openai"))
+        XCTAssertTrue(firstRun.contains("anthropic"))
+        XCTAssertTrue(firstRun.contains("claude v1"))
+        XCTAssertTrue(firstRun.contains("excludes agents.md"))
+
         for disclosure in [
-            PaceNoteDisclosureText.firstRunOpenAIProcessing,
-            PaceNoteDisclosureText.meetingOpenAIProcessing,
-            PaceNoteDisclosureText.openAIProcessingSummary,
+            PaceNoteDisclosureText.meetingProcessing(for: .codex),
+            PaceNoteDisclosureText.processingSummary(for: .codex),
         ] {
             let normalized = disclosure.lowercased()
             XCTAssertTrue(normalized.contains("agents.md instructions"))
@@ -451,7 +456,310 @@ final class MeetingViewModelTests: XCTestCase {
             XCTAssertTrue(normalized.contains("tool output"))
             XCTAssertTrue(normalized.contains("repository excerpts"))
             XCTAssertTrue(normalized.contains("transcript slices"))
+            XCTAssertTrue(normalized.contains("no zero-retention claim"))
         }
+
+        for disclosure in [
+            PaceNoteDisclosureText.meetingProcessing(for: .claude),
+            PaceNoteDisclosureText.processingSummary(for: .claude),
+        ] {
+            let normalized = disclosure.lowercased()
+            XCTAssertTrue(normalized.contains("anthropic"))
+            XCTAssertTrue(normalized.contains("transcript slices"))
+            XCTAssertTrue(normalized.contains("bounded host-selected lines"))
+            XCTAssertTrue(normalized.contains("excludes agents.md"))
+            XCTAssertTrue(normalized.contains("claude.md"))
+            XCTAssertTrue(normalized.contains(".claude content"))
+            XCTAssertTrue(normalized.contains("skill content"))
+            XCTAssertTrue(normalized.contains("tools"))
+            XCTAssertTrue(normalized.contains("tool output"))
+            XCTAssertTrue(normalized.contains("no zero-retention claim"))
+        }
+    }
+
+    func testProviderDefaultsPersistAndLegacyRequestDefaultsToCodex() {
+        let suiteName = "MeetingViewModelTests.provider.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(MeetingViewModel.persistedInferenceProvider(in: defaults), .codex)
+        let model = MeetingViewModel(
+            hasCompletedFirstRun: true,
+            providerDefaults: defaults
+        )
+        model.selectedProvider = .claude
+
+        XCTAssertEqual(MeetingViewModel.persistedInferenceProvider(in: defaults), .claude)
+        XCTAssertEqual(
+            PaceNoteEnvironmentSnapshot(
+                microphonePermission: .authorized,
+                systemAudioPermission: .authorized,
+                codex: .signedOut,
+                outputSources: []
+            ).claude,
+            .notChecked
+        )
+        XCTAssertEqual(
+            MeetingStartRequest(
+                consentConfirmed: true,
+                microphoneEnabled: true,
+                outputEnabled: false,
+                outputScope: .meetingApplication,
+                outputSourceID: nil,
+                sealedSnapshotID: nil,
+                selectedDomainSkillName: nil
+            ).provider,
+            .codex
+        )
+    }
+
+    func testSelectedProviderControlsReadinessAndClaudeSignInBlocker() async {
+        let events = EventHarness()
+        let model = MeetingViewModel(
+            actions: Self.actions(events: events, claudeState: .signedOut),
+            hasCompletedFirstRun: true,
+            selectedProvider: .claude
+        )
+        await model.bootstrap()
+        model.phase = .listening
+
+        XCTAssertFalse(model.canCoach)
+        XCTAssertTrue(
+            model.setupBlockers.contains(
+                "Sign in with `claude auth login --claudeai`, then Recheck."
+            )
+        )
+
+        model.selectedProvider = .codex
+        XCTAssertTrue(model.canCoach)
+    }
+
+    func testExplicitClaudeAccountConfirmationRebindsTheCurrentSubscription() async {
+        let events = EventHarness()
+        let confirmed = InferenceAccountSummary(
+            accountLabel: "c…@example.invalid",
+            planLabel: "Claude Max",
+            modelCount: 1
+        )
+        var actions = Self.actions(
+            events: events,
+            claudeState: .authenticationExpired("A different Claude account is signed in.")
+        )
+        actions.confirmClaudeAccountChange = { .ready(confirmed) }
+        let model = MeetingViewModel(
+            actions: actions,
+            hasCompletedFirstRun: true,
+            selectedProvider: .claude
+        )
+        await model.bootstrap()
+        model.meetingConsent.openAIProcessingConfirmed = true
+
+        XCTAssertTrue(model.canConfirmClaudeAccountChange)
+        await model.confirmClaudeAccountChange()
+
+        XCTAssertEqual(model.claudeState, .ready(confirmed))
+        XCTAssertFalse(model.canConfirmClaudeAccountChange)
+        XCTAssertFalse(model.meetingConsent.openAIProcessingConfirmed)
+        XCTAssertEqual(
+            model.statusDetail,
+            "The current Claude subscription account is now confirmed."
+        )
+    }
+
+    func testProviderBrownoutsUseTheSelectedProviderNameAndRecoveryPath() {
+        XCTAssertEqual(
+            BrownoutReason.accountMismatch.userTitle(for: .claude),
+            "Claude account changed"
+        )
+        XCTAssertEqual(
+            BrownoutReason.authenticationExpired.recoveryGuidance(for: .claude),
+            "Run `claude auth login --claudeai`, then Recheck."
+        )
+        XCTAssertEqual(
+            BrownoutReason.protocolUnsupported.userTitle(for: .codex),
+            "Codex version is unsupported"
+        )
+    }
+
+    func testProviderAccountActionsAreBlockedDuringAnActiveMeeting() async {
+        let events = EventHarness()
+        let model = MeetingViewModel(
+            actions: Self.actions(events: events),
+            hasCompletedFirstRun: true
+        )
+        await model.bootstrap()
+        model.phase = .listening
+
+        XCTAssertFalse(model.canManageProviderAccounts)
+        await model.signInToCodex()
+
+        XCTAssertEqual(
+            model.actionError,
+            "Stop the current meeting before changing the Codex account."
+        )
+    }
+
+    func testRecheckDisablesStartUntilTheEnvironmentOperationFinishes() async {
+        let events = EventHarness()
+        let account = InferenceAccountSummary(
+            accountLabel: "m•••@example.com",
+            planLabel: "ChatGPT Pro",
+            modelCount: 2
+        )
+        let snapshot = PaceNoteEnvironmentSnapshot(
+            microphonePermission: .authorized,
+            systemAudioPermission: .authorized,
+            codex: .ready(account),
+            outputSources: []
+        )
+        let recheckBarrier = AsyncValueBarrier(
+            value: snapshot,
+            suspendOnCall: 2
+        )
+        let starts = StartRequestRecorder()
+        var actions = Self.actions(events: events)
+        actions.checkEnvironment = { await recheckBarrier.call() }
+        actions.startMeeting = { request in await starts.record(request) }
+        let model = MeetingViewModel(
+            actions: actions,
+            hasCompletedFirstRun: true,
+            microphoneEnabled: true,
+            outputEnabled: false
+        )
+        await model.bootstrap()
+        model.meetingConsent.participantPermission = true
+        model.meetingConsent.captureScopeConfirmed = true
+        model.meetingConsent.openAIProcessingConfirmed = true
+        XCTAssertTrue(model.canStart)
+
+        let recheck = Task { @MainActor in await model.refreshEnvironment() }
+        await recheckBarrier.waitUntilEntered()
+
+        XCTAssertTrue(model.isBootstrapping)
+        XCTAssertFalse(model.canManageProviderAccounts)
+        XCTAssertFalse(model.canStart)
+        await model.startMeeting()
+        let requestDuringRecheck = await starts.request()
+        XCTAssertNil(requestDuringRecheck)
+
+        await recheckBarrier.release()
+        await recheck.value
+        XCTAssertFalse(model.isBootstrapping)
+        XCTAssertTrue(model.canStart)
+    }
+
+    func testSignInDisablesStartAndCoalescesDuplicateSignInAction() async {
+        let events = EventHarness()
+        let account = InferenceAccountSummary(
+            accountLabel: "m•••@example.com",
+            planLabel: "ChatGPT Pro",
+            modelCount: 2
+        )
+        let signInBarrier = AsyncValueBarrier<CodexConnectionState>(
+            value: .ready(account),
+            suspendOnCall: 1
+        )
+        let starts = StartRequestRecorder()
+        var actions = Self.actions(events: events)
+        actions.beginCodexSignIn = { await signInBarrier.call() }
+        actions.startMeeting = { request in await starts.record(request) }
+        let model = MeetingViewModel(
+            actions: actions,
+            hasCompletedFirstRun: true,
+            microphoneEnabled: true,
+            outputEnabled: false
+        )
+        await model.bootstrap()
+        model.meetingConsent.participantPermission = true
+        model.meetingConsent.captureScopeConfirmed = true
+        model.meetingConsent.openAIProcessingConfirmed = true
+        XCTAssertTrue(model.canStart)
+
+        let firstSignIn = Task { @MainActor in await model.signInToCodex() }
+        await signInBarrier.waitUntilEntered()
+
+        XCTAssertTrue(model.isBootstrapping)
+        XCTAssertFalse(model.canStart)
+        await model.signInToCodex()
+        await model.startMeeting()
+        let signInCalls = await signInBarrier.callCount()
+        let requestDuringSignIn = await starts.request()
+        XCTAssertEqual(signInCalls, 1)
+        XCTAssertNil(requestDuringSignIn)
+
+        await signInBarrier.release()
+        await firstSignIn.value
+        XCTAssertFalse(model.isBootstrapping)
+        XCTAssertEqual(model.codexState, .ready(account))
+        XCTAssertTrue(model.canStart)
+    }
+
+    func testClaudeStartRequestUsesClaudeWhenSubscriptionIsReady() async throws {
+        let events = EventHarness()
+        let recorder = StartRequestRecorder()
+        let claudeAccount = InferenceAccountSummary(
+            accountLabel: "Claude account",
+            planLabel: "Claude Max",
+            modelCount: 1
+        )
+        var actions = Self.actions(events: events, claudeState: .ready(claudeAccount))
+        actions.startMeeting = { request in await recorder.record(request) }
+        let model = MeetingViewModel(
+            actions: actions,
+            hasCompletedFirstRun: true,
+            microphoneEnabled: true,
+            outputEnabled: false,
+            selectedProvider: .claude
+        )
+        await model.bootstrap()
+        model.meetingConsent.participantPermission = true
+        model.meetingConsent.captureScopeConfirmed = true
+        model.meetingConsent.openAIProcessingConfirmed = true
+
+        await model.startMeeting()
+
+        let recordedRequest = await recorder.request()
+        XCTAssertEqual(try XCTUnwrap(recordedRequest).provider, .claude)
+    }
+
+    func testSwitchingToClaudeRevokesProcessingConsentAndClearsOnlyTheSkill() async {
+        let events = EventHarness()
+        var actions = Self.actions(events: events)
+        actions.inspectRepository = { _ in
+            GroundingReviewSummary(
+                repositoryAlias: "fixture",
+                branch: "main",
+                revision: "abc123",
+                includedFileCount: 3,
+                hardExclusions: [],
+                softFindings: [],
+                instructionFiles: []
+            )
+        }
+        actions.sealRepository = { _ in
+            SealedRepositorySummary(
+                snapshotID: UUID(),
+                repositoryAlias: "fixture",
+                branch: "main",
+                revision: "abc123",
+                includedFileCount: 3,
+                instructionFileCount: 0,
+                domainSkills: [DomainSkillOption(name: "incident-response")]
+            )
+        }
+        let model = MeetingViewModel(actions: actions, hasCompletedFirstRun: true)
+        await model.bootstrap()
+        await model.selectRepository(URL(fileURLWithPath: "/tmp/fixture", isDirectory: true))
+        await model.sealRepository()
+        model.selectedDomainSkillName = "incident-response"
+        model.meetingConsent.openAIProcessingConfirmed = true
+
+        model.selectedProvider = .claude
+
+        XCTAssertFalse(model.meetingConsent.openAIProcessingConfirmed)
+        XCTAssertNil(model.selectedDomainSkillName)
+        XCTAssertEqual(model.repositoryName, "fixture")
+        XCTAssertTrue(model.repositoryState.isReady)
     }
 
     func testCurrentTurnCoachingRequiresSystemOutputButManualQuestionDoesNot() async {
@@ -969,7 +1277,15 @@ final class MeetingViewModelTests: XCTestCase {
 
     private static func actions(
         events: EventHarness,
-        outputSources: [OutputSourceOption] = []
+        outputSources: [OutputSourceOption] = [],
+        codexState: InferenceConnectionState = .ready(
+            InferenceAccountSummary(
+                accountLabel: "m•••@example.com",
+                planLabel: "ChatGPT Pro",
+                modelCount: 2
+            )
+        ),
+        claudeState: InferenceConnectionState = .notChecked
     ) -> MeetingActions {
         MeetingActions(
             sessionEvents: { await events.stream() },
@@ -977,19 +1293,15 @@ final class MeetingViewModelTests: XCTestCase {
                 PaceNoteEnvironmentSnapshot(
                     microphonePermission: .authorized,
                     systemAudioPermission: .authorized,
-                    codex: .ready(
-                        CodexAccountSummary(
-                            accountLabel: "m•••@example.com",
-                            planLabel: "ChatGPT Pro",
-                            modelCount: 2
-                        )
-                    ),
-                    outputSources: outputSources
+                    codex: codexState,
+                    outputSources: outputSources,
+                    claude: claudeState
                 )
             },
             requestCapturePermission: { _ in .authorized },
             beginCodexSignIn: { .signedOut },
             forgetCodexProfile: {},
+            confirmClaudeAccountChange: { .signedOut },
             reloadOutputSources: { [] },
             inspectRepository: { _ in throw PaceNoteActionError.serviceNotConnected },
             sealRepository: { _ in throw PaceNoteActionError.serviceNotConnected },
@@ -1038,6 +1350,51 @@ private actor EventHarness {
     func emit(_ event: MeetingSessionEvent) {
         pair.continuation.yield(event)
     }
+}
+
+private actor AsyncValueBarrier<Value: Sendable> {
+    private let value: Value
+    private let suspendedCallNumber: Int
+    private var calls = 0
+    private var entered = false
+    private var released = false
+    private var enteredContinuations: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+
+    init(value: Value, suspendOnCall: Int) {
+        self.value = value
+        suspendedCallNumber = suspendOnCall
+    }
+
+    func call() async -> Value {
+        calls += 1
+        guard calls == suspendedCallNumber else { return value }
+        entered = true
+        let waiters = enteredContinuations
+        enteredContinuations.removeAll()
+        for waiter in waiters { waiter.resume() }
+        guard !released else { return value }
+        await withCheckedContinuation { continuation in
+            releaseContinuations.append(continuation)
+        }
+        return value
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { continuation in
+            enteredContinuations.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseContinuations
+        releaseContinuations.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func callCount() -> Int { calls }
 }
 
 private actor RetryingStopAction {

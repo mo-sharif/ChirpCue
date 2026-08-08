@@ -219,7 +219,7 @@ public actor SystemAudioCaptureService: AudioCapturing {
             routeScope = .globalOutput
         }
 
-        tapDescription.name = "PaceNote meeting output"
+        tapDescription.name = "PrismCue meeting output"
         tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
 
@@ -244,7 +244,7 @@ public actor SystemAudioCaptureService: AudioCapturing {
             let newRing = RealtimeAudioRing(lane: .output, format: formatDescription)
             ring = newRing
             let aggregateDescription: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "PaceNote Capture",
+                kAudioAggregateDeviceNameKey: "PrismCue Capture",
                 kAudioAggregateDeviceUIDKey: UUID().uuidString,
                 kAudioAggregateDeviceIsPrivateKey: true,
                 kAudioAggregateDeviceTapAutoStartKey: true,

@@ -1,4 +1,4 @@
-# PaceNote: Codex Meeting Copilot
+# PrismCue: Subscription Meeting Coach
 
 Status: Release candidate; live subscription, audio, UI, latency, and optional distribution gates remain
 Date: 2026-08-08
@@ -13,11 +13,13 @@ Build a native, local-first macOS meeting coach that:
 - shows a live source-aware transcript, using YOU and THEM only when mic and meeting-output attribution is trustworthy;
 - produces a short, speakable cue first;
 - automatically follows with either an extractively verified repo-grounded continuation or fixed local clarification or abstention text;
-- uses the user's ChatGPT-managed Codex subscription through Codex app-server, not an OpenAI API key;
-- reads only sanitized snapshots of explicitly selected repositories and skills;
+- uses either the user's ChatGPT-managed Codex subscription or first-party Claude.ai subscription, never an OpenAI or Anthropic API key;
+- lets Codex read only sanitized snapshots and reviewed skills, while Claude receives only bounded host-selected exact lines from the same sealed snapshot;
 - never speaks, sends, pastes, or changes code for the user.
 
-This is implemented as a personal release candidate. It does not embed Codex Voice. Apple frameworks handle local audio capture and transcription, while Codex handles response generation and repository reasoning. The integration point is Codex app-server authenticated through the user's ChatGPT account. Live subscription, signed-app audio, UI, and latency gates remain open in the production-readiness ledger.
+This is implemented as a personal release candidate. It does not embed a provider voice mode. Apple frameworks handle local audio capture and transcription. The selected Deep path is either Codex app-server authenticated through the user's ChatGPT account or a one-turn, tool-free Claude Code process authenticated through the user's first-party Claude subscription. Live generation, signed-app audio, UI, and latency gates remain open in the production-readiness ledger.
+
+Codex-specific protocol, thread, permission-profile, AGENTS.md, and skill sections below apply only when Codex is selected. Claude never uses those surfaces; section 9.4 defines its narrower execution contract.
 
 The core product promise is:
 
@@ -33,16 +35,16 @@ For a personal Mac app, this is the simplest credible architecture:
 2. AVAudioEngine captures the microphone.
 3. Apple's on-device Speech framework creates two timestamped transcript lanes.
 4. A local turn detector decides when the other party has probably asked a question.
-5. For every eligible turn, PaceNote immediately shows one fixed local bridge while Deep runs under a deny-by-default permission profile. Deep uses an empty private context for general guidance or a sanitized repo and skill snapshot for repository-specific claims. The production coordinator never invokes model Quick.
+5. For every eligible turn, PrismCue immediately shows one fixed local bridge while Deep runs. Codex uses a deny-by-default permission profile over an empty private context or sanitized repo/skill snapshot. Claude uses no tools and receives only an empty general payload or bounded exact lines selected locally from the sealed snapshot. The production coordinator never invokes model Quick.
 6. The UI keeps the bridge and the later visibly unverified general guidance, verified repository continuation, or fixed local clarification or hold state separate.
 
 This avoids the cost and latency of sending continuous audio to a realtime API. It also avoids pretending that a Codex subscription is a general-purpose OpenAI API allowance.
 
 ### 2.1 Product wedge
 
-Transcription and generic meeting summaries are not the wedge. PaceNote is differentiated by:
+Transcription and generic meeting summaries are not the wedge. PrismCue is differentiated by:
 
-- repo, AGENTS.md, and skill-aware technical answers;
+- repo-aware technical answers, with AGENTS.md and reviewed skill support limited to Codex;
 - useful general guidance when no repository is attached, explicitly labeled as unverified;
 - an instant cue that is structurally unable to invent repo facts;
 - an extractively verified repository continuation, a labeled general continuation, or fixed local clarification or abstention text;
@@ -59,7 +61,7 @@ Transcription and generic meeting summaries are not the wedge. PaceNote is diffe
 - Separate microphone and meeting-output transcript lanes.
 - English transcription first.
 - Zero or one explicitly selected repository. Repository-specific questions route to one AGENTS scope within its sealed snapshot; repository-free turns have no file access and cannot claim codebase facts.
-- Explicitly selected read-only skills.
+- Explicitly selected read-only skills when Codex is selected; Claude v1 remains skill-free.
 - SAY NOW bridge and Deep suggestion cards.
 - Independent mic and output controls plus start, pause, resume, stop, dismiss, and Coach Current Turn controls.
 - Ephemeral meeting context by default.
@@ -479,7 +481,19 @@ A Codex subscription is not general API credit. PaceNote works without an API ke
 
 Every connection must complete initialize and receive its response, then send initialized before calling account, model, thread, turn, or skill methods. The client opts into experimentalApi only for the pinned named-permission-profile surface and rejects any unplanned experimental feature. A failed handshake, missing permission-profile support, or schema mismatch enters PROTOCOL_UNSUPPORTED and stops repo-grounded inference.
 
-### 9.4 App-server methods needed
+### 9.4 Claude subscription route
+
+Claude is a parallel provider, not a Codex app-server adapter. PrismCue accepts only the official user-local Claude launcher resolving to a versioned executable owned by the current user, not writable by group or world, signed by Anthropic Team ID `Q6L2SF6YDW` with identifier `com.anthropic.claude-code`, and inside the tested `2.1.218..<2.2.0` range. Its file identity and signature are revalidated before launch.
+
+Authentication accepts only `loggedIn=true`, `authMethod=claude.ai`, `apiProvider=firstParty`, a normalized identity, and a personal Pro or Max subscription. Team and Enterprise status fail closed because server-managed policy can override command-line isolation. Endpoint-managed macOS preferences, system managed-settings files and drop-ins, and managed MCP configuration are rechecked and rejected before every Claude process launch. Console, API-key, gateway, Bedrock, Vertex, Foundry, and inherited cloud credentials also fail closed. macOS `HOME`, `USER`, and `LOGNAME` come from the current OS account so Keychain lookup works; meeting data never enters arguments, environment values, or the working-directory path.
+
+Each Deep turn runs `claude -p` in safe mode from an empty private directory with tools, MCP, hooks, plugins, agents, skills, slash commands, Chrome, and session persistence disabled. It runs one Sonnet/high turn under a strict JSON schema. The transcript slice and optional bounded evidence pack enter only over stdin. Input, stdout, stderr, wall time, termination, cancellation, and reaping are bounded.
+
+Claude cannot open the sealed snapshot. A host-side builder re-reads and hash-checks it, excludes control and skill paths, ranks at most 12 exact lines under a 16 KiB pack limit, and sends only those lines. Every displayed repository answer must cite one supplied line and pass the same local freshness, path, hash, fingerprint, claim, and exact-answer verification as Codex. Account changes require explicit confirmation and clear provider-processing consent.
+
+Anthropic currently treats programmatic subscription use as a separate Agent SDK credit pool; plan limits and extra-usage terms may apply. PrismCue does not claim it consumes the normal interactive allowance or can never incur extra usage.
+
+### 9.5 Codex app-server methods needed
 
 | Capability | App-server method or event |
 |---|---|
@@ -659,6 +673,8 @@ Provenance and evidence validation are never silently removed to save time.
 | Transcript sent to Codex | Minimum recent slice in an ephemeral turn. |
 | Repo code and docs sent to Codex | Only excerpts the Deep worker reads from the sanitized snapshot. Hard-denied and unresolved soft-suspicious files are absent. |
 | AGENTS.md and selected skill content sent to Codex | The approved snapshot contents required to instruct the Deep worker. |
+| Transcript sent to Claude | Minimum recent slice over bounded stdin to one non-persistent turn. |
+| Repo evidence sent to Claude | At most 12 locally selected exact lines under a 16 KiB pack; no live path, instruction file, skill, tool, or tool output. |
 | Sealed repo and skill snapshots | Private local temporary storage, content-hashed, deleted at meeting end and startup cleanup. |
 | Transcript-free repo base thread | App-owned and tracked for deletion on stop or restart; meeting text is injected only into ephemeral forks. |
 | Dedicated PaceNote Codex profile | Stable so its Keychain-backed ChatGPT sign-in survives; history is disabled, transient app-server state is sanitized after each meeting, and residual canaries are audited. |
@@ -666,7 +682,7 @@ Provenance and evidence validation are never silently removed to save time.
 | OAuth credential | macOS Keychain through Codex keyring storage. |
 | Saved notes or transcript | Out of scope until separately designed and explicitly enabled. |
 
-Transcript slices, repo excerpts, tool output, AGENTS.md instructions, and selected skill content leave the Mac and are processed by OpenAI through the user's Codex account. Hard-denied and unresolved soft-suspicious files are never added to the model-readable snapshot. A user-approved soft false positive is treated as included only for that meeting and only at its approved content hash. OpenAI-side handling follows the user's account and plan policies. PaceNote must not claim server-side zero retention.
+When Codex is selected, transcript slices, repo excerpts, tool output, AGENTS.md instructions, and selected skill content leave the Mac and are processed by OpenAI through the user's Codex account. When Claude is selected, transcript slices and bounded host-selected exact lines are processed by Anthropic through the user's Claude.ai subscription; instruction files, skills, tools, and tool output are excluded. Hard-denied and unresolved soft-suspicious files are never added to the model-readable snapshot. A user-approved soft false positive is treated as included only for that meeting and only at its approved content hash. Provider-side handling follows the user's account and plan policies. PrismCue must not claim server-side zero retention.
 
 “Memory only” describes intentional app persistence, not an absolute hardware guarantee. M0 must audit swap, crash-report, app-server, unified-log, and diagnostic paths; sensitive buffers should use locked memory where practical and must never be copied into crash metadata.
 
@@ -846,7 +862,7 @@ Expected focused effort for a useful personal MVP, including M0: roughly 4 to 6 
 
 ## 16. Core verification harness
 
-The project includes text-only and Swift test harnesses alongside the native app. Before PaceNote is called production-ready, those harnesses must prove the following against the dedicated PaceNote profile and pinned app-server:
+The project includes text-only and Swift test harnesses alongside the native app. Before PrismCue is called production-ready, those harnesses must prove the common response invariants and the provider-specific Codex and Claude boundaries documented above:
 
 Input:
 
@@ -880,21 +896,21 @@ Resolve these through the M0 and M1 evaluations:
 2. At what exact silence and stability thresholds does Google Meet feel responsive without cutting people off?
 3. Does Terra medium meet technical quality for narrow lookups, or should every repo question route to Sol high for this personal, low-volume use?
 4. Which read-only skills materially improve answers within the Deep latency budget?
-5. Can the system-output tap reliably exclude PaceNote across output-route changes?
+5. Can the system-output tap reliably exclude PrismCue across output-route changes?
 6. Which content-free metrics are sufficient for tuning without creating a sensitive derived meeting log?
 
 ## 18. Sources and verified platform facts
 
 OpenAI:
 
-- [Codex app-server](https://learn.chatgpt.com/docs/app-server): product integration, ChatGPT-managed authentication, threads, turns, streaming, approvals, skills, and rate-limit events.
-- [Codex authentication](https://learn.chatgpt.com/docs/auth#credential-storage): Keychain credential storage, workspace binding, and logout behavior.
-- [Codex permission profiles](https://learn.chatgpt.com/docs/permissions): deny-read filesystem rules, workspace roots, and tool-network controls.
-- [Codex AGENTS.md guidance](https://learn.chatgpt.com/docs/agent-configuration/agents-md): repository instruction discovery.
-- [Codex advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced#history-persistence): local history and plaintext-log behavior used by the persistence audit.
-- [Codex environment variables](https://learn.chatgpt.com/docs/config-file/environment-variables): isolated CODEX_HOME behavior.
-- [Codex pricing and model access](https://learn.chatgpt.com/docs/pricing): plan-based access and model availability.
-- [GPT-5.6 prompting guidance](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6.md): role-aware routing, explicit effort, lean contracts, evidence, and abstention.
+- [Codex authentication](https://developers.openai.com/codex/auth/): ChatGPT subscription login and Keychain credential storage.
+- [Codex configuration reference](https://developers.openai.com/codex/config-reference/): `CODEX_HOME`, credential-store, history, feature, and environment controls.
+
+Anthropic:
+
+- [Claude authentication](https://code.claude.com/docs/en/authentication): first-party subscription login and macOS Keychain behavior.
+- [Claude programmatic usage](https://code.claude.com/docs/en/headless): print mode, structured output, and Agent SDK credit boundary.
+- [Claude CLI reference](https://code.claude.com/docs/en/cli-usage): safe-mode, tool, MCP, session, model, effort, and schema flags.
 
 Apple:
 
@@ -902,4 +918,4 @@ Apple:
 - [SpeechTranscriber progressive transcription](https://developer.apple.com/documentation/speech/speechtranscriber/preset/timeindexedprogressivetranscription): immediate transcript updates with audio timecodes.
 - [SpeechTranscriber presets](https://developer.apple.com/documentation/speech/speechtranscriber/preset): progressive and time-indexed transcription modes.
 
-Platform facts and model names in this specification were checked on 2026-08-07. Runtime discovery remains mandatory because Codex models, limits, and app-server schemas can change.
+Platform facts and model names in this specification were checked on 2026-08-08. Runtime discovery remains mandatory because provider clients, models, limits, schemas, and subscription terms can change.

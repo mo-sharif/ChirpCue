@@ -11,13 +11,10 @@ struct FirstRunConsentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Image(systemName: "waveform.and.person.filled")
-                            .font(.system(size: 38))
-                            .foregroundStyle(.tint)
-                            .accessibilityHidden(true)
-                        Text("Welcome to PaceNote")
+                        AppBrandMark(size: 72)
+                        Text("Welcome to \(AppBrand.displayName)")
                             .font(.largeTitle.weight(.semibold))
-                        Text("A private, consent-first speaking coach for meetings on your Mac.")
+                        Text(AppBrand.tagline)
                             .font(.title3)
                             .foregroundStyle(.secondary)
                     }
@@ -27,19 +24,19 @@ struct FirstRunConsentView: View {
                             systemImage: "record.circle",
                             title: "You start every capture",
                             detail:
-                                "PaceNote never listens in the background before you explicitly start a meeting. A visible red status remains on while capture is active."
+                                "\(AppBrand.displayName) never listens in the background before you explicitly start a meeting. A visible red status remains on while capture is active."
                         )
                         FirstRunPrinciple(
                             systemImage: "person.2.badge.gearshape",
                             title: "You are responsible for consent",
                             detail:
-                                "Use PaceNote only when everyone has been appropriately informed and you have permission under the rules that apply to the meeting."
+                                "Use \(AppBrand.displayName) only when everyone has been appropriately informed and you have permission under the rules that apply to the meeting."
                         )
                         FirstRunPrinciple(
                             systemImage: "key.slash",
-                            title: "ChatGPT subscription, no API key",
+                            title: "Subscription access, no API key",
                             detail:
-                                "PaceNote signs in to Codex with ChatGPT through an app-owned isolated Codex profile. It never asks for an OpenAI API key."
+                                "Choose Codex through an app-owned ChatGPT profile or Claude through your signed-in Claude subscription. \(AppBrand.displayName) never asks for an OpenAI or Anthropic API key."
                         )
                         FirstRunPrinciple(
                             systemImage: "lock.shield",
@@ -51,23 +48,23 @@ struct FirstRunConsentView: View {
                             systemImage: "person.wave.2",
                             title: "Suggestions stay suggestions",
                             detail:
-                                "PaceNote never speaks, sends, pastes, or responds for you. You decide whether to say anything."
+                                "\(AppBrand.displayName) never speaks, sends, pastes, or responds for you. You decide whether to say anything."
                         )
                     }
 
                     GroupBox("Before continuing") {
                         VStack(alignment: .leading, spacing: 12) {
                             Toggle(
-                                "I understand PaceNote captures only after I manually start a meeting.",
+                                "I understand \(AppBrand.displayName) captures only after I manually start a meeting.",
                                 isOn: $model.firstRunAcknowledgement.manualStartOnly
                             )
                             .accessibilityLabel(
-                                "I understand PaceNote captures only after I manually start a meeting."
+                                "I understand \(AppBrand.displayName) captures only after I manually start a meeting."
                             )
                             .accessibilityIdentifier("first-run.manual-start")
                             .paceNoteAssistiveControl(
                                 label:
-                                    "I understand PaceNote captures only after I manually start a meeting.",
+                                    "I understand \(AppBrand.displayName) captures only after I manually start a meeting.",
                                 identifier: "first-run.manual-start",
                                 role: .checkBox,
                                 value: model.firstRunAcknowledgement.manualStartOnly
@@ -75,16 +72,16 @@ struct FirstRunConsentView: View {
                                 model.firstRunAcknowledgement.manualStartOnly.toggle()
                             }
                             Toggle(
-                                "I will use PaceNote only with appropriate participant permission.",
+                                "I will use \(AppBrand.displayName) only with appropriate participant permission.",
                                 isOn: $model.firstRunAcknowledgement.consentResponsibility
                             )
                             .accessibilityLabel(
-                                "I will use PaceNote only with appropriate participant permission."
+                                "I will use \(AppBrand.displayName) only with appropriate participant permission."
                             )
                             .accessibilityIdentifier("first-run.participant-permission")
                             .paceNoteAssistiveControl(
                                 label:
-                                    "I will use PaceNote only with appropriate participant permission.",
+                                    "I will use \(AppBrand.displayName) only with appropriate participant permission.",
                                 identifier: "first-run.participant-permission",
                                 role: .checkBox,
                                 value: model.firstRunAcknowledgement.consentResponsibility
@@ -92,14 +89,14 @@ struct FirstRunConsentView: View {
                                 model.firstRunAcknowledgement.consentResponsibility.toggle()
                             }
                             Toggle(
-                                PaceNoteDisclosureText.firstRunOpenAIProcessing,
+                                PaceNoteDisclosureText.firstRunProviderProcessing,
                                 isOn: $model.firstRunAcknowledgement.openAIProcessing
                             )
-                            .accessibilityLabel(PaceNoteDisclosureText.firstRunOpenAIProcessing)
-                            .accessibilityIdentifier("first-run.openai-processing")
+                            .accessibilityLabel(PaceNoteDisclosureText.firstRunProviderProcessing)
+                            .accessibilityIdentifier("first-run.provider-processing")
                             .paceNoteAssistiveControl(
-                                label: PaceNoteDisclosureText.firstRunOpenAIProcessing,
-                                identifier: "first-run.openai-processing",
+                                label: PaceNoteDisclosureText.firstRunProviderProcessing,
+                                identifier: "first-run.provider-processing",
                                 role: .checkBox,
                                 value: model.firstRunAcknowledgement.openAIProcessing
                             ) {
@@ -130,7 +127,7 @@ struct FirstRunConsentView: View {
                 Button("Continue") {
                     model.completeFirstRun()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .disabled(!model.firstRunAcknowledgement.isComplete)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityLabel("Continue")
@@ -196,13 +193,14 @@ struct MeetingSetupView: View {
                 } label: {
                     Label("Recheck", systemImage: "arrow.clockwise")
                 }
-                .disabled(model.isBootstrapping || model.isPerformingMeetingAction)
+                .buttonStyle(.glass)
+                .disabled(!model.canManageProviderAccounts)
                 .accessibilityLabel("Recheck Setup")
                 .accessibilityIdentifier("meeting-setup.recheck")
                 .paceNoteAssistiveControl(
                     label: "Recheck Setup",
                     identifier: "meeting-setup.recheck",
-                    isEnabled: !model.isBootstrapping && !model.isPerformingMeetingAction
+                    isEnabled: model.canManageProviderAccounts
                 ) {
                     Task { await model.refreshEnvironment() }
                 }
@@ -213,7 +211,7 @@ struct MeetingSetupView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     CaptureSetupSection(model: model)
-                    CodexSetupSection(model: model)
+                    ProviderSetupSection(model: model)
                     RepositorySetupSection(
                         model: model,
                         chooseRepository: { isChoosingRepository = true }
@@ -277,7 +275,7 @@ struct MeetingSetupView: View {
                 Button("Start Meeting") {
                     Task { await model.startMeeting() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .disabled(!model.canStart)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityLabel("Start Meeting")
@@ -344,7 +342,7 @@ private struct CaptureSetupSection: View {
                 if model.microphoneEnabled {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(
-                            "Uses the current macOS default input. PaceNote does not enumerate an exact microphone device here."
+                            "Uses the current macOS default input. \(AppBrand.displayName) does not enumerate an exact microphone device here."
                         )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -438,7 +436,7 @@ private struct CaptureSetupSection: View {
                 if !model.microphoneEnabled {
                     Label(
                         model.outputEnabled
-                            ? "Meeting output will still be transcribed. With the microphone off, PaceNote waits for you to press Coach Current Turn instead of suggesting automatically."
+                            ? "Meeting output will still be transcribed. With the microphone off, \(AppBrand.displayName) waits for you to press Coach Current Turn instead of suggesting automatically."
                             : "Capture is off. Enable the microphone or meeting output before starting.",
                         systemImage: "info.circle"
                     )
@@ -490,43 +488,54 @@ private struct PermissionSetupStatus: View {
     }
 }
 
-private struct CodexSetupSection: View {
+private struct ProviderSetupSection: View {
     @Bindable var model: MeetingViewModel
 
     var body: some View {
-        GroupBox("ChatGPT and Codex") {
+        GroupBox("Meeting inference provider") {
             VStack(alignment: .leading, spacing: 10) {
+                Picker("Provider", selection: $model.selectedProvider) {
+                    ForEach(MeetingInferenceProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityLabel("Meeting Inference Provider")
+                .accessibilityIdentifier("meeting-setup.inference-provider")
+                .disabled(!model.canManageProviderAccounts)
+
                 HStack(alignment: .top) {
                     Image(
-                        systemName: model.codexState.isReady
+                        systemName: model.selectedProviderState.isReady
                             ? "checkmark.circle.fill" : "person.crop.circle.badge.exclamationmark"
                     )
-                    .foregroundStyle(model.codexState.tint)
+                    .foregroundStyle(model.selectedProviderState.tint)
                     .font(.title2)
                     .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(model.codexState.setupTitle)
-                            .font(.headline)
-                        Text(model.codexState.detail)
+                        Text(
+                            model.selectedProviderState.setupTitle(
+                                for: model.selectedProvider
+                            )
+                        )
+                        .font(.headline)
+                        Text(model.selectedProviderState.detail(for: model.selectedProvider))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if !model.codexState.isReady {
+                    if model.selectedProvider == .codex && !model.codexState.isReady {
                         VStack(alignment: .trailing, spacing: 6) {
                             Button("Sign in to Codex with ChatGPT") {
                                 Task { await model.signInToCodex() }
                             }
-                            .disabled(
-                                model.codexState == .checking || model.isPerformingMeetingAction
-                            )
+                            .disabled(!model.canManageProviderAccounts)
                             .accessibilityLabel("Sign in to Codex with ChatGPT")
                             .accessibilityIdentifier("meeting-setup.codex-sign-in")
                             .paceNoteAssistiveControl(
                                 label: "Sign in to Codex with ChatGPT",
                                 identifier: "meeting-setup.codex-sign-in",
-                                isEnabled: model.codexState != .checking
-                                    && !model.isPerformingMeetingAction
+                                isEnabled: model.canManageProviderAccounts
                             ) {
                                 Task { await model.signInToCodex() }
                             }
@@ -546,12 +555,27 @@ private struct CodexSetupSection: View {
                         }
                     }
                 }
-                Text(
-                    "PaceNote uses an app-owned isolated Codex profile and your ChatGPT subscription. No API key or separate API billing is used. Connected confirms account and model access; final protocol, permission-profile, and skill-policy checks run before capture can begin."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                if model.selectedProvider == .codex {
+                    Text(
+                        "\(AppBrand.displayName) uses an app-owned isolated Codex profile and your ChatGPT subscription. No API key or separate API billing is used. Connected confirms account and model access; final protocol, permission-profile, and skill-policy checks run before capture can begin."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(
+                        "\(AppBrand.displayName) uses your signed-in Claude subscription through the local Claude CLI. No Anthropic API key or separate API billing is used."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    if model.claudeState.isSignedOut {
+                        Text("Sign in with `claude auth login --claudeai`, then Recheck.")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
+                }
             }
             .padding(6)
         }
@@ -568,7 +592,7 @@ private struct RepositorySetupSection: View {
                 switch model.repositoryState {
                 case .none:
                     Text(
-                        "Without a repository, PaceNote can offer general guidance but cannot make codebase-specific claims."
+                        "Without a repository, \(AppBrand.displayName) can offer general guidance but cannot make codebase-specific claims."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -588,7 +612,15 @@ private struct RepositorySetupSection: View {
                         Text("\(summary.branch) at \(summary.revision), \(summary.includedFileCount) included files")
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
-                        if !summary.domainSkills.isEmpty {
+                        if model.selectedProvider == .claude {
+                            Label(
+                                "Repository skills are Codex-only in Claude v1. Sealed-snapshot grounding remains available through bounded host-selected lines; instruction files and skills stay excluded.",
+                                systemImage: "lock.shield"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("meeting-setup.repository-skill-claude-note")
+                        } else if !summary.domainSkills.isEmpty {
                             Picker("Optional repository skill", selection: $model.selectedDomainSkillName) {
                                 Text("Meeting coach only").tag(String?.none)
                                 ForEach(summary.domainSkills) { skill in
@@ -668,7 +700,7 @@ private struct RepositorySetupSection: View {
                 }
 
                 Text(
-                    "The model receives only a read-only sealed snapshot. Credentials, hard-excluded files, and the live working tree are never provided to Codex."
+                    "Codex can receive only the reviewed read-only snapshot. Claude v1 can receive only bounded host-selected lines from that snapshot and excludes instruction files and skills. Credentials, hard-excluded files, and the live working tree are never provided to either provider."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -716,14 +748,16 @@ private struct MeetingConsentSection: View {
                     model.meetingConsent.captureScopeConfirmed.toggle()
                 }
                 Toggle(
-                    PaceNoteDisclosureText.meetingOpenAIProcessing,
+                    PaceNoteDisclosureText.meetingProcessing(for: model.selectedProvider),
                     isOn: $model.meetingConsent.openAIProcessingConfirmed
                 )
-                .accessibilityLabel(PaceNoteDisclosureText.meetingOpenAIProcessing)
-                .accessibilityIdentifier("meeting-setup.consent-openai-processing")
+                .accessibilityLabel(
+                    PaceNoteDisclosureText.meetingProcessing(for: model.selectedProvider)
+                )
+                .accessibilityIdentifier("meeting-setup.consent-provider-processing")
                 .paceNoteAssistiveControl(
-                    label: PaceNoteDisclosureText.meetingOpenAIProcessing,
-                    identifier: "meeting-setup.consent-openai-processing",
+                    label: PaceNoteDisclosureText.meetingProcessing(for: model.selectedProvider),
+                    identifier: "meeting-setup.consent-provider-processing",
                     role: .checkBox,
                     value: model.meetingConsent.openAIProcessingConfirmed
                 ) {
@@ -862,9 +896,11 @@ private struct RepositoryReviewContent: View {
                                         .font(.caption.monospaced())
                                 }
                             }
-                            Text("PaceNote applies the effective path-scoped instruction chain for each cited file.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text(
+                                "\(AppBrand.displayName) applies the effective path-scoped instruction chain for each cited file."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                         .padding(5)
                     }
@@ -901,7 +937,7 @@ private struct RepositoryReviewContent: View {
                 Button("Seal Approved Snapshot") {
                     Task { await model.sealRepository() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .disabled(!allSoftFindingsApproved || !isReviewState)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityLabel("Seal Approved Snapshot")
@@ -956,7 +992,7 @@ struct PrivacyDetailsView: View {
                     PrivacyDetailRow(
                         title: "Manual, visible capture",
                         detail:
-                            "Capture begins only after per-meeting setup and a deliberate Start Meeting action. PaceNote does not support covert capture."
+                            "Capture begins only after per-meeting setup and a deliberate Start Meeting action. \(AppBrand.displayName) does not support covert capture."
                     )
                     PrivacyDetailRow(
                         title: "Ephemeral meeting content",
@@ -964,23 +1000,33 @@ struct PrivacyDetailsView: View {
                             "Audio is held in a short memory buffer and is not intentionally written to disk. Transcript and suggestions are cleared when you stop."
                     )
                     PrivacyDetailRow(
-                        title: "OpenAI processing",
-                        detail: PaceNoteDisclosureText.openAIProcessingSummary
+                        title: "\(model.selectedProvider.processorName) processing",
+                        detail: PaceNoteDisclosureText.processingSummary(
+                            for: model.selectedProvider
+                        )
                     )
-                    PrivacyDetailRow(
-                        title: "Isolated subscription sign-in",
-                        detail:
-                            "PaceNote uses an app-owned isolated Codex profile authenticated with ChatGPT. It does not request, store, or bill an OpenAI API key."
-                    )
+                    if model.selectedProvider == .codex {
+                        PrivacyDetailRow(
+                            title: "Isolated subscription sign-in",
+                            detail:
+                                "\(AppBrand.displayName) uses an app-owned isolated Codex profile authenticated with ChatGPT. It does not request, store, or bill an OpenAI API key."
+                        )
+                    } else {
+                        PrivacyDetailRow(
+                            title: "Claude subscription sign-in",
+                            detail:
+                                "\(AppBrand.displayName) uses the signed-in Claude subscription through the local Claude CLI. It does not request, store, or bill an Anthropic API key."
+                        )
+                    }
                     PrivacyDetailRow(
                         title: "Read-only repository grounding",
                         detail:
-                            "Only a reviewed, private sealed snapshot is available to Codex. Hard exclusions cannot be overridden, suspicious paths require explicit review, and claims are displayed only after local evidence checks."
+                            "Codex can receive only the reviewed private snapshot. Claude v1 can receive only bounded host-selected lines from that snapshot and excludes instruction files and skills. Hard exclusions cannot be overridden, suspicious paths require explicit review, and claims are displayed only after local evidence checks."
                     )
                     PrivacyDetailRow(
                         title: "You speak for yourself",
                         detail:
-                            "PaceNote never speaks, sends, pastes, or clicks for you. Suggestions remain visible prompts that you may use, change, or ignore."
+                            "\(AppBrand.displayName) never speaks, sends, pastes, or clicks for you. Suggestions remain visible prompts that you may use, change, or ignore."
                     )
                 }
                 .padding(24)
@@ -989,6 +1035,7 @@ struct PrivacyDetailsView: View {
             HStack {
                 Spacer()
                 Button("Done") { model.closePrivacyDetails() }
+                    .buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction)
                     .accessibilityLabel("Done")
                     .accessibilityIdentifier("privacy-details.done")
@@ -1039,16 +1086,18 @@ private struct PrivacyDetailRow: View {
     }
 #endif
 
-private extension CodexConnectionState {
-    var setupTitle: String {
+private extension InferenceConnectionState {
+    func setupTitle(for provider: MeetingInferenceProvider) -> String {
         switch self {
-        case .ready: "Account preflight passed"
-        case .authenticationExpired: "ChatGPT sign-in expired"
-        case .signedOut: "Sign in with ChatGPT"
-        case .checking: "Checking Codex account"
-        case .limited: "Codex preflight is limited"
-        case .unavailable: "Codex is unavailable"
-        case .notChecked: "Codex account not checked"
+        case .ready: "\(provider.shortTitle) subscription preflight passed"
+        case .authenticationExpired:
+            provider == .claude
+                ? "Claude account needs confirmation" : "Codex sign-in expired"
+        case .signedOut: "Sign in to \(provider.shortTitle)"
+        case .checking: "Checking \(provider.shortTitle) subscription"
+        case .limited: "\(provider.shortTitle) preflight is limited"
+        case .unavailable: "\(provider.shortTitle) is unavailable"
+        case .notChecked: "\(provider.shortTitle) subscription not checked"
         }
     }
 }

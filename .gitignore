@@ -11,6 +11,8 @@
 .pace-note/
 PaceNote.app/
 PaceNote-*.zip
+PrismCue.app/
+PrismCue-*.zip
 
 # Other SuperIdea work retained locally but outside the PaceNote repository.
 /AI_RELEASE_QUEST_ENGINE_SPEC.md

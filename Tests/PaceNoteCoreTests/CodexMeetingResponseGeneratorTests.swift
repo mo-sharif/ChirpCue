@@ -683,12 +683,17 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
     }
 
     func testIsolatedRuntimeWritesPrivateLockedConfigAndScrubsSecrets() throws {
-        let root = FileManager.default.temporaryDirectory
+        let testRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("pacenote-isolation-test-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = testRoot.appendingPathComponent("profile", isDirectory: true)
+        let trustedHome = testRoot.appendingPathComponent("user-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: trustedHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: testRoot) }
         let runtime = try CodexIsolatedRuntimeBuilder.prepare(
             profileRoot: root,
+            userHomeDirectory: trustedHome,
             inheritedEnvironment: [
+                "HOME": "/untrusted/inherited/home",
                 "TMPDIR": "/tmp/example/",
                 "LANG": "en_US.UTF-8",
                 "GH_TOKEN": "secret",
@@ -703,7 +708,11 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(rootMode, 0o700)
         XCTAssertEqual(configMode, 0o600)
         XCTAssertEqual(runtime.processEnvironment["CODEX_HOME"], root.path)
-        XCTAssertEqual(runtime.processEnvironment["HOME"], root.path)
+        XCTAssertEqual(runtime.processEnvironment["HOME"], trustedHome.path)
+        XCTAssertNotEqual(
+            runtime.processEnvironment["HOME"],
+            runtime.processEnvironment["CODEX_HOME"]
+        )
         XCTAssertEqual(
             runtime.processEnvironment["TMPDIR"],
             root.appendingPathComponent("tmp", isDirectory: true).path
@@ -858,6 +867,24 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
     private static func mode(_ url: URL) throws -> Int {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return try XCTUnwrap((attributes[.posixPermissions] as? NSNumber)?.intValue) & 0o777
+    }
+
+    func testIsolatedRuntimeRejectsUsingTheCodexProfileAsUserHome() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "pacenote-keychain-home-rejection-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertThrowsError(
+            try CodexIsolatedRuntimeBuilder.prepare(
+                profileRoot: root,
+                userHomeDirectory: root
+            )
+        ) { error in
+            XCTAssertEqual(error as? CodexIsolatedRuntimeError, .invalidUserHome)
+        }
     }
 }
 

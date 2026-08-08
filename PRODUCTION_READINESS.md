@@ -1,4 +1,4 @@
-# PaceNote production-readiness ledger
+# PrismCue production-readiness ledger
 
 This is the completion contract for the personal production build. A checked item has current local evidence. Opt-in subscription generation, signed-app audio, visual review, real-meeting latency, and distribution checks are intentionally separate from automated fixture coverage.
 
@@ -17,13 +17,28 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Version and schema preflight subprocesses have timeout, output-cap, cancellation, force-kill, process-reaping, no-follow regular-file, and schema-size coverage.
 - [x] The JSONL client, strict output decoding, handshake ordering, cancellation, process shutdown, and malformed-output paths have fixture coverage.
 - [x] Required app-server methods, generated schema, and a zero-generation read-only lifecycle have been probed on the development environment.
-- [x] The dedicated PaceNote profile enforces Keychain credential storage, `history.persistence = "none"`, a scrubbed environment, restrictive features, and rejection of plaintext credential files.
+- [x] The dedicated PrismCue profile enforces Keychain credential storage, `history.persistence = "none"`, a scrubbed environment, restrictive features, and rejection of plaintext credential files.
+- [x] Codex subprocesses keep the authoritative macOS `HOME` so Security.framework can resolve the default Keychain while `CODEX_HOME` remains isolated; inherited `HOME` values and profile-as-home regressions are covered.
 - [x] Deep model routing is capability-discovered rather than assuming permanent model availability.
-- [ ] One-time ChatGPT sign-in is completed in the dedicated PaceNote profile on the target Mac.
+- [ ] One-time ChatGPT sign-in is completed in the dedicated PrismCue profile on the target Mac.
 - [ ] A zero-generation preflight proves the dedicated profile's account, model, permission, skill, thread create/delete, cleanup, and no-`auth.json` behavior.
 - [ ] Bounded real general and repository-grounded Deep generations pass on the target subscription, including strict schemas, visible trust labeling, evidence where required, latency capture, thread deletion, profile sanitization, and canary audit.
 - [ ] The Deep model route meets measured latency and quality targets on the target account.
 - [ ] A newer or unknown app-server version is accepted only after the compatibility suite passes.
+
+## Claude subscription path
+
+- [x] Claude discovery accepts only the official user-local launcher resolving directly to a versioned Anthropic-signed executable owned by the current user and not writable by group or world.
+- [x] The installed binary must match Anthropic Team ID `Q6L2SF6YDW`, signing identifier `com.anthropic.claude-code`, and the tested `2.1.218..<2.2.0` range; a file-identity trust snapshot is revalidated immediately before launch.
+- [x] Authentication parsing accepts only first-party personal `claude.ai` Pro or Max status and rejects Team, Enterprise, signed-out, API-key, Console, gateway, Bedrock, Vertex, Foundry, malformed, missing-identity, and unsupported-plan states.
+- [x] Server-managed policy is excluded by the personal-plan gate; macOS managed preferences, system managed-settings files and drop-ins, and managed MCP configuration are rechecked and rejected before every Claude process launch.
+- [x] The runtime derives `HOME`, `USER`, and `LOGNAME` from the current macOS account for Keychain access, inherits only validated locale values, and scrubs API credentials, auth tokens, cloud routes, proxies, custom headers, helpers, and configuration overrides.
+- [x] Deep runs in Claude safe mode with no tools, MCP, hooks, plugins, skills, agents, ambient instructions, Chrome, or session persistence. One schema-bound turn receives meeting and evidence data only over bounded stdin.
+- [x] Process coverage includes input, output, stderr, timeout, cancellation, termination, force-kill, and reaping limits without surfacing raw model or auth output in errors.
+- [x] Claude grounding is host-selected from the sealed snapshot under deterministic count, line, pack, path, hash, and freshness limits; displayed claims still pass the shared local evidence verifier.
+- [x] The auth-only smoke passes against the target Claude subscription without issuing a model request.
+- [ ] One bounded paid general and one bounded paid repository-grounded Deep generation pass with tools/config leakage probes, latency capture, cancellation, runtime deletion, and no residual session state.
+- [ ] A newer Claude Code build is accepted only after the compatibility, safe-mode, auth, structured-output, process, and adversarial-isolation suites pass.
 
 ## Audio and transcription
 
@@ -33,7 +48,7 @@ This is the completion contract for the personal production build. A checked ite
 - [x] The system-audio permission probe retains and retries a tap whose destruction fails instead of silently dropping its handle.
 - [x] The current locale's speech-asset requirement is checked before capture.
 - [ ] Microphone and selected-process output capture work in the packaged app after TCC approval.
-- [ ] Global-output fallback excludes PaceNote output.
+- [ ] Global-output fallback excludes PrismCue output.
 - [ ] Google Meet in Chrome and at least one native meeting app pass capture tests.
 - [ ] Headphone, speaker echo, browser-helper restart, device switch, permission denial, and permission revocation cases pass.
 - [ ] Two-lane host-clock skew stays within the specification target for 30 minutes.
@@ -63,7 +78,7 @@ This is the completion contract for the personal production build. A checked ite
 
 ## Privacy and lifecycle
 
-- [x] Product privacy and security contracts document ChatGPT processing, consent, retention limits, and failure boundaries.
+- [x] Product privacy and security contracts document OpenAI and Anthropic subscription processing, consent, retention limits, and failure boundaries.
 - [x] Transcript-bearing model work is designed as ephemeral forks; base threads are transcript-free and journaled for deletion.
 - [x] Automated cleanup tests cover journal recovery, expected-cwd lookup, thread deletion, snapshot and private-root deletion, stable-profile sanitization, residual scanning, and fail-closed reports.
 - [x] The dedicated stable Codex profile has an exclusive cross-process lease outside the sanitizer root; runtime and opt-in profile probes reject concurrent ownership.

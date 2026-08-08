@@ -17,7 +17,7 @@ struct MeetingWindow: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
             if !model.brownouts.isEmpty {
-                BrownoutBanner(reasons: model.brownouts)
+                BrownoutBanner(reasons: model.brownouts, provider: model.selectedProvider)
             }
             Divider()
             HSplitView {
@@ -44,7 +44,7 @@ struct MeetingWindow: View {
                 }
             )
         }
-        .background(.ultraThinMaterial)
+        .background { AppBrandBackdrop() }
         .background(WindowSharingProtection())
         .sheet(item: $model.presentedSheet) { destination in
             switch destination {
@@ -87,18 +87,71 @@ private struct MeetingHeader: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(
-                    "PaceNote status: \(model.phase.statusTitle). "
+                    "\(AppBrand.displayName) status: \(model.phase.statusTitle). "
                         + (model.isCaptureActive ? "Capture active. " : "Capture inactive. ")
                         + model.statusDetail
                 )
 
                 Spacer(minLength: 12)
+                MeetingActionControls(model: model)
+            }
 
+            HStack(spacing: 8) {
+                CaptureStatusChip(
+                    title: "Mic",
+                    systemImage: model.microphoneEnabled ? "mic.fill" : "mic.slash",
+                    state: model.microphoneEnabled ? model.microphonePermission : .unavailable("Off for this meeting")
+                )
+                CaptureStatusChip(
+                    title: "Output",
+                    systemImage: model.outputEnabled ? "speaker.wave.2.fill" : "speaker.slash",
+                    state: model.outputEnabled ? model.systemAudioPermission : .unavailable("Off for this meeting")
+                )
+                ProviderStatusChip(
+                    provider: model.selectedProvider,
+                    state: model.selectedProviderState
+                )
+                if let repositoryName = model.repositoryName {
+                    StatusChip(
+                        title: repositoryName,
+                        detail: model.repositoryState.isReady ? "Sealed snapshot" : "Not ready",
+                        systemImage: model.repositoryState.isReady
+                            ? "checkmark.shield.fill" : "folder.badge.questionmark",
+                        tint: model.repositoryState.isReady ? .green : .orange
+                    )
+                } else {
+                    StatusChip(
+                        title: "No repository",
+                        detail: "General coaching",
+                        systemImage: "folder.badge.minus",
+                        tint: .secondary
+                    )
+                }
+                Spacer()
+                if model.isBootstrapping || model.isPerformingMeetingAction {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("\(AppBrand.displayName) is working")
+                }
+            }
+        }
+        .padding(14)
+        .background(.bar)
+    }
+}
+
+private struct MeetingActionControls: View {
+    @Bindable var model: MeetingViewModel
+
+    var body: some View {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 8) {
                 Button {
                     Task { await model.coachCurrentTurn() }
                 } label: {
                     Label("Coach Now", systemImage: "sparkles")
                 }
+                .buttonStyle(.glass)
                 .disabled(!model.canCoachCurrentTurn)
                 .help("Generate a response for the current turn (Command-Shift-Return)")
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
@@ -118,6 +171,7 @@ private struct MeetingHeader: View {
                     } label: {
                         Label("Resume", systemImage: "play.fill")
                     }
+                    .buttonStyle(.glass)
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(model.isPerformingMeetingAction)
                     .accessibilityLabel("Resume")
@@ -135,6 +189,7 @@ private struct MeetingHeader: View {
                     } label: {
                         Label("Pause", systemImage: "pause.fill")
                     }
+                    .buttonStyle(.glass)
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                     .disabled(model.isPerformingMeetingAction || !model.canPause)
                     .accessibilityLabel("Pause")
@@ -153,6 +208,8 @@ private struct MeetingHeader: View {
                 } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }
+                .buttonStyle(.glass)
+                .tint(.red)
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(model.isPerformingMeetingAction || model.phase == .idle || model.phase == .ended)
                 .help("Stop and clear this meeting (Command-Period)")
@@ -175,7 +232,7 @@ private struct MeetingHeader: View {
                         systemImage: "waveform.badge.plus"
                     )
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .keyboardShortcut("l", modifiers: [.command, .shift])
                 .disabled(!model.canPresentSetup || model.isPerformingMeetingAction)
                 .accessibilityLabel(model.phase == .ended ? "New Meeting" : "Set Up Meeting")
@@ -188,45 +245,7 @@ private struct MeetingHeader: View {
                     model.presentMeetingSetup()
                 }
             }
-
-            HStack(spacing: 8) {
-                CaptureStatusChip(
-                    title: "Mic",
-                    systemImage: model.microphoneEnabled ? "mic.fill" : "mic.slash",
-                    state: model.microphoneEnabled ? model.microphonePermission : .unavailable("Off for this meeting")
-                )
-                CaptureStatusChip(
-                    title: "Output",
-                    systemImage: model.outputEnabled ? "speaker.wave.2.fill" : "speaker.slash",
-                    state: model.outputEnabled ? model.systemAudioPermission : .unavailable("Off for this meeting")
-                )
-                CodexStatusChip(state: model.codexState)
-                if let repositoryName = model.repositoryName {
-                    StatusChip(
-                        title: repositoryName,
-                        detail: model.repositoryState.isReady ? "Sealed snapshot" : "Not ready",
-                        systemImage: model.repositoryState.isReady
-                            ? "checkmark.shield.fill" : "folder.badge.questionmark",
-                        tint: model.repositoryState.isReady ? .green : .orange
-                    )
-                } else {
-                    StatusChip(
-                        title: "No repository",
-                        detail: "General coaching",
-                        systemImage: "folder.badge.minus",
-                        tint: .secondary
-                    )
-                }
-                Spacer()
-                if model.isBootstrapping || model.isPerformingMeetingAction {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("PaceNote is working")
-                }
-            }
         }
-        .padding(14)
-        .background(.bar)
     }
 }
 
@@ -245,12 +264,13 @@ private struct CaptureStatusChip: View {
     }
 }
 
-private struct CodexStatusChip: View {
-    let state: CodexConnectionState
+private struct ProviderStatusChip: View {
+    let provider: MeetingInferenceProvider
+    let state: InferenceConnectionState
 
     var body: some View {
         StatusChip(
-            title: "Codex",
+            title: provider.shortTitle,
             detail: state.shortLabel,
             systemImage: state.isReady ? "checkmark.circle.fill" : "person.crop.circle.badge.exclamationmark",
             tint: state.tint
@@ -318,6 +338,7 @@ private struct ActionErrorBanner: View {
 
 private struct BrownoutBanner: View {
     let reasons: Set<BrownoutReason>
+    let provider: MeetingInferenceProvider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -325,9 +346,9 @@ private struct BrownoutBanner: View {
                 .font(.subheadline.weight(.semibold))
             ForEach(reasons.sorted(by: { $0.rawValue < $1.rawValue }), id: \.self) { reason in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(reason.userTitle)
+                    Text(reason.userTitle(for: provider))
                         .font(.caption.weight(.semibold))
-                    Text(reason.recoveryGuidance)
+                    Text(reason.recoveryGuidance(for: provider))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -386,7 +407,7 @@ private struct TranscriptPane: View {
                 }
             }
         }
-        .background(.background.opacity(0.84))
+        .background(.regularMaterial)
         .accessibilityIdentifier("meeting.transcript")
     }
 }
@@ -481,7 +502,7 @@ private struct SuggestionsPane: View {
             }
             .padding(16)
         }
-        .background(.quaternary.opacity(0.25))
+        .background(.thinMaterial)
     }
 
     private func deepPresentation(for card: SuggestionCard) -> DeepSuggestionPresentation {
@@ -512,7 +533,7 @@ private struct SuggestionsPane: View {
                 subtitle: "Could not verify safely",
                 tint: .secondary,
                 systemImage: "hand.raised.fill",
-                accessibilityLabel: "PaceNote abstained"
+                accessibilityLabel: "\(AppBrand.displayName) abstained"
             )
         case nil:
             DeepSuggestionPresentation(
@@ -591,6 +612,7 @@ private struct SuggestionCardView: View {
             }
         }
         .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
@@ -631,29 +653,35 @@ private struct ManualQuestionBar: View {
                 .accessibilityHint("This text is sent only when you activate Coach Question")
                 .accessibilityIdentifier("meeting.manual-question")
 
-            Button("Coach Question", action: coachQuestion)
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(!isEnabled || isBusy || !hasQuestion)
-                .accessibilityLabel("Coach Question")
-                .accessibilityIdentifier("meeting.coach-question")
-                .paceNoteAssistiveControl(
-                    label: "Coach Question",
-                    identifier: "meeting.coach-question",
-                    isEnabled: isEnabled && !isBusy && hasQuestion,
-                    action: coachQuestion
-                )
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button("Coach Question", action: coachQuestion)
+                        .buttonStyle(.glassProminent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!isEnabled || isBusy || !hasQuestion)
+                        .accessibilityLabel("Coach Question")
+                        .accessibilityIdentifier("meeting.coach-question")
+                        .paceNoteAssistiveControl(
+                            label: "Coach Question",
+                            identifier: "meeting.coach-question",
+                            isEnabled: isEnabled && !isBusy && hasQuestion,
+                            action: coachQuestion
+                        )
 
-            Button("Coach Current Turn", action: coachCurrentTurn)
-                .disabled(!isCurrentTurnEnabled || isBusy)
-                .help("Use the recent transcript without adding a manual question")
-                .accessibilityLabel("Coach Current Turn")
-                .accessibilityIdentifier("meeting.coach-current-turn")
-                .paceNoteAssistiveControl(
-                    label: "Coach Current Turn",
-                    identifier: "meeting.coach-current-turn",
-                    isEnabled: isCurrentTurnEnabled && !isBusy,
-                    action: coachCurrentTurn
-                )
+                    Button("Coach Current Turn", action: coachCurrentTurn)
+                        .buttonStyle(.glass)
+                        .disabled(!isCurrentTurnEnabled || isBusy)
+                        .help("Use the recent transcript without adding a manual question")
+                        .accessibilityLabel("Coach Current Turn")
+                        .accessibilityIdentifier("meeting.coach-current-turn")
+                        .paceNoteAssistiveControl(
+                            label: "Coach Current Turn",
+                            identifier: "meeting.coach-current-turn",
+                            isEnabled: isCurrentTurnEnabled && !isBusy,
+                            action: coachCurrentTurn
+                        )
+                }
+            }
         }
         .padding(12)
         .background(.bar)
@@ -718,7 +746,9 @@ extension CapturePermissionState {
     }
 }
 
-extension CodexConnectionState {
+extension InferenceConnectionState {
+    var isSignedOut: Bool { self == .signedOut }
+
     var shortLabel: String {
         switch self {
         case .notChecked: "Not checked"
@@ -740,14 +770,23 @@ extension CodexConnectionState {
         }
     }
 
-    var detail: String {
+    func detail(for provider: MeetingInferenceProvider) -> String {
         switch self {
-        case .notChecked: "Codex app-server has not been checked."
-        case .checking: "Checking the local Codex session."
-        case .signedOut: "No ChatGPT account is signed in through Codex."
-        case .authenticationExpired(let message): "ChatGPT sign-in expired. \(message)"
+        case .notChecked: "\(provider.shortTitle) subscription access has not been checked."
+        case .checking: "Checking the local \(provider.shortTitle) subscription session."
+        case .signedOut:
+            switch provider {
+            case .codex: "No ChatGPT account is signed in through Codex."
+            case .claude:
+                "Claude is signed out. Run `claude auth login --claudeai` in Terminal, then Recheck."
+            }
+        case .authenticationExpired(let message):
+            switch provider {
+            case .codex: "ChatGPT sign-in expired. \(message)"
+            case .claude: "Claude account needs confirmation. \(message)"
+            }
         case .ready(let account):
-            "\(account.accountLabel), \(account.planLabel), \(account.modelCount) available models"
+            "\(account.accountLabel), \(account.planLabel), \(account.modelCount) available model\(account.modelCount == 1 ? "" : "s")"
         case .limited(let message), .unavailable(let message): message
         }
     }
@@ -774,7 +813,7 @@ extension TranscriptSource {
 }
 
 extension BrownoutReason {
-    var userTitle: String {
+    func userTitle(for provider: MeetingInferenceProvider) -> String {
         switch self {
         case .systemAudioLost: "Meeting output disconnected"
         case .microphoneLost: "Microphone disconnected"
@@ -782,11 +821,14 @@ extension BrownoutReason {
         case .outputDisabled: "Meeting output is off"
         case .transcriptUncertain: "Transcript confidence is low"
         case .transcriberAssetMissing: "Speech model is unavailable"
-        case .codexOffline: "Codex is offline"
-        case .authenticationExpired: "ChatGPT sign-in expired"
-        case .accountMismatch: "ChatGPT account changed"
-        case .protocolUnsupported: "Codex version is unsupported"
-        case .appServerCrashed: "Codex app-server stopped"
+        case .codexOffline: "AI provider is offline"
+        case .authenticationExpired:
+            provider == .codex ? "ChatGPT sign-in expired" : "Claude sign-in expired"
+        case .accountMismatch:
+            provider == .codex ? "ChatGPT account changed" : "Claude account changed"
+        case .protocolUnsupported:
+            "\(provider.shortTitle) version is unsupported"
+        case .appServerCrashed: "\(provider.shortTitle) process stopped"
         case .quickLimited: "Quick coaching is rate-limited"
         case .deepLimited: "Deep coaching is rate-limited"
         case .repositoryChanged: "Repository changed"
@@ -798,7 +840,7 @@ extension BrownoutReason {
         }
     }
 
-    var recoveryGuidance: String {
+    func recoveryGuidance(for provider: MeetingInferenceProvider) -> String {
         switch self {
         case .systemAudioLost: "Reopen setup and select the meeting app again."
         case .microphoneLost: "Reconnect the current Mac microphone or use manual coaching."
@@ -806,11 +848,17 @@ extension BrownoutReason {
         case .outputDisabled: "Only microphone speech is available."
         case .transcriptUncertain: "Confirm the question before speaking a suggestion."
         case .transcriberAssetMissing: "Download the required Apple speech asset, then retry."
-        case .codexOffline: "Suggestions are paused until the local Codex connection returns."
-        case .authenticationExpired: "Sign in to ChatGPT again from meeting setup."
-        case .accountMismatch: "Stop the meeting and confirm the intended ChatGPT account."
-        case .protocolUnsupported: "Install the tested Codex version before continuing."
-        case .appServerCrashed: "Restart Codex from setup. Existing cards stay visible."
+        case .codexOffline: "Suggestions are paused until the selected provider connection returns."
+        case .authenticationExpired:
+            provider == .codex
+                ? "Sign in to ChatGPT again from meeting setup."
+                : "Run `claude auth login --claudeai`, then Recheck."
+        case .accountMismatch:
+            "Stop the meeting and confirm the intended \(provider.shortTitle) account."
+        case .protocolUnsupported:
+            "Install the tested \(provider.shortTitle) version before continuing."
+        case .appServerCrashed:
+            "Reconnect \(provider.shortTitle) from setup. Existing cards stay visible."
         case .quickLimited: "A deterministic bridge may appear while capacity recovers."
         case .deepLimited: "Use the SAY NOW bridge; deeper coaching is temporarily paused."
         case .repositoryChanged: "The sealed snapshot is stale. Reselect the repository."

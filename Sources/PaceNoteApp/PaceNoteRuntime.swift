@@ -15,6 +15,12 @@ actor PaceNoteRuntime {
         let task: Task<Void, any Error>
     }
 
+    private struct ProviderOperation: Sendable {
+        let id: UUID
+        let cancel: @Sendable () -> Void
+        let waitForCompletion: @Sendable () async -> Void
+    }
+
     private struct RepositoryInspectionContext: Sendable {
         let selectedURL: URL
         let inspection: GroundingInspection
@@ -52,6 +58,7 @@ actor PaceNoteRuntime {
     private let sourceDiscovery = SystemAudioSourceDiscovery()
     private let preverifiedSubscription: VerifiedMeetingSubscription?
     private let startSuspensionBarrier: (@Sendable () async -> Void)?
+    private let providerOperationSuspensionBarrier: (@Sendable () async -> Void)?
 
     private var outputSourcesByID: [String: SystemAudioSource] = [:]
     private var repositoryInspection: RepositoryInspectionContext?
@@ -63,16 +70,19 @@ actor PaceNoteRuntime {
     private var startupCleanupHealthy = false
     private var lifecycle = Lifecycle.open
     private var startOperation: StartOperation?
+    private var providerOperation: ProviderOperation?
     private var shutdownTask: Task<Bool, Never>?
 
     init(
         fileManager: FileManager = .default,
         applicationSupportRoot: URL? = nil,
         preverifiedSubscription: (planType: String?, identityHash: String)? = nil,
-        startSuspensionBarrier: (@Sendable () async -> Void)? = nil
+        startSuspensionBarrier: (@Sendable () async -> Void)? = nil,
+        providerOperationSuspensionBarrier: (@Sendable () async -> Void)? = nil
     ) throws {
         self.fileManager = fileManager
         self.startSuspensionBarrier = startSuspensionBarrier
+        self.providerOperationSuspensionBarrier = providerOperationSuspensionBarrier
         self.preverifiedSubscription = preverifiedSubscription.map {
             VerifiedMeetingSubscription(planType: $0.planType, identityHash: $0.identityHash)
         }
@@ -86,7 +96,9 @@ actor PaceNoteRuntime {
         ).first {
             supportRoot = defaultSupportRoot
         } else {
-            throw PaceNoteActionError.safeMessage("PaceNote could not open its private application data directory.")
+            throw PaceNoteActionError.safeMessage(
+                "\(AppBrand.displayName) could not open its private application data directory."
+            )
         }
 
         let applicationRoot =
@@ -112,7 +124,7 @@ actor PaceNoteRuntime {
         } catch let error as CodexProfileLeaseError {
             throw PaceNoteActionError.safeMessage(
                 error.errorDescription
-                    ?? "PaceNote could not acquire its dedicated Codex profile."
+                    ?? "\(AppBrand.displayName) could not acquire its dedicated Codex profile."
             )
         }
         self.journal = try CleanupJournalStore(
@@ -136,23 +148,60 @@ actor PaceNoteRuntime {
     }
 
     func checkEnvironment() async -> PaceNoteEnvironmentSnapshot {
+        if let reason = providerOperationBlockReason(
+            action: "rechecking provider accounts"
+        ) {
+            return Self.blockedEnvironmentSnapshot(reason: reason)
+        }
+
+        let operationID = UUID()
+        let task = Task { [self] in
+            if let providerOperationSuspensionBarrier {
+                await providerOperationSuspensionBarrier()
+                guard !Task.isCancelled else {
+                    return Self.blockedEnvironmentSnapshot(
+                        reason: "The provider account recheck was canceled."
+                    )
+                }
+            }
+            return await performEnvironmentCheck()
+        }
+        providerOperation = ProviderOperation(
+            id: operationID,
+            cancel: { task.cancel() },
+            waitForCompletion: { _ = await task.result }
+        )
+        let snapshot = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        finishProviderOperation(operationID)
+        return snapshot
+    }
+
+    private func performEnvironmentCheck() async -> PaceNoteEnvironmentSnapshot {
         let cleanupIsHealthy = await ensureStartupCleanup()
         let microphone = await microphonePermission.status()
         let systemAudio = await systemAudioPermission.status()
         let sources = await reloadOutputSources()
         let codex: CodexConnectionState
+        let claude: InferenceConnectionState
         if cleanupIsHealthy {
             codex = await subscriptionState()
+            claude = await claudeSubscriptionState()
         } else {
-            codex = .limited(
-                "PaceNote could not finish cleanup from an earlier session. Capture remains blocked."
-            )
+            let reason =
+                "\(AppBrand.displayName) could not finish cleanup from an earlier session. Capture remains blocked."
+            codex = .limited(reason)
+            claude = .limited(reason)
         }
         return PaceNoteEnvironmentSnapshot(
             microphonePermission: Self.capturePermissionState(microphone),
             systemAudioPermission: Self.capturePermissionState(systemAudio),
             codex: codex,
-            outputSources: sources
+            outputSources: sources,
+            claude: claude
         )
     }
 
@@ -170,9 +219,38 @@ actor PaceNoteRuntime {
     }
 
     func beginCodexSignIn() async -> CodexConnectionState {
+        if let reason = providerOperationBlockReason(
+            action: "changing the Codex account"
+        ) {
+            return .unavailable(reason)
+        }
+
+        let operationID = UUID()
+        let task = Task { [self] in
+            if let providerOperationSuspensionBarrier {
+                await providerOperationSuspensionBarrier()
+                guard !Task.isCancelled else { return CodexConnectionState.signedOut }
+            }
+            return await performCodexSignIn()
+        }
+        providerOperation = ProviderOperation(
+            id: operationID,
+            cancel: { task.cancel() },
+            waitForCompletion: { _ = await task.result }
+        )
+        let state = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        finishProviderOperation(operationID)
+        return state
+    }
+
+    private func performCodexSignIn() async -> CodexConnectionState {
         guard await ensureStartupCleanup() else {
             return .limited(
-                "PaceNote must finish cleanup from an earlier session before signing in."
+                "\(AppBrand.displayName) must finish cleanup from an earlier session before signing in."
             )
         }
         let client: CodexAppServerClient
@@ -196,7 +274,9 @@ actor PaceNoteRuntime {
                 await MainActor.run(body: { NSWorkspace.shared.open(url) })
             else {
                 await client.shutdown()
-                return .unavailable("PaceNote could not open the secure ChatGPT sign-in page.")
+                return .unavailable(
+                    "\(AppBrand.displayName) could not open the secure ChatGPT sign-in page."
+                )
             }
 
             for _ in 0..<120 {
@@ -222,12 +302,38 @@ actor PaceNoteRuntime {
     }
 
     func forgetCodexProfile() async throws {
-        guard activeMeeting == nil else {
-            throw PaceNoteActionError.safeMessage("Stop the current meeting before forgetting the Codex profile.")
+        if let reason = providerOperationBlockReason(
+            action: "forgetting the Codex profile"
+        ) {
+            throw PaceNoteActionError.safeMessage(reason)
         }
+
+        let operationID = UUID()
+        let task = Task { [self] in
+            if let providerOperationSuspensionBarrier {
+                await providerOperationSuspensionBarrier()
+                try Task.checkCancellation()
+            }
+            try await performForgetCodexProfile()
+        }
+        providerOperation = ProviderOperation(
+            id: operationID,
+            cancel: { task.cancel() },
+            waitForCompletion: { _ = await task.result }
+        )
+        let result = await withTaskCancellationHandler {
+            await task.result
+        } onCancel: {
+            task.cancel()
+        }
+        finishProviderOperation(operationID)
+        return try result.get()
+    }
+
+    private func performForgetCodexProfile() async throws {
         guard (try? await journal.entries().isEmpty) == true else {
             throw PaceNoteActionError.safeMessage(
-                "PaceNote must finish pending private-data cleanup before forgetting this profile."
+                "\(AppBrand.displayName) must finish pending private-data cleanup before forgetting this profile."
             )
         }
 
@@ -258,9 +364,60 @@ actor PaceNoteRuntime {
             )
         } catch {
             throw PaceNoteActionError.safeMessage(
-                "PaceNote could not safely erase and recreate the isolated Codex profile."
+                "\(AppBrand.displayName) could not safely erase and recreate the isolated Codex profile."
             )
         }
+    }
+
+    func confirmClaudeAccountChange() async throws -> InferenceConnectionState {
+        if let reason = providerOperationBlockReason(
+            action: "confirming a different Claude account"
+        ) {
+            throw PaceNoteActionError.safeMessage(reason)
+        }
+
+        let operationID = UUID()
+        let task = Task { [self] in
+            if let providerOperationSuspensionBarrier {
+                await providerOperationSuspensionBarrier()
+                try Task.checkCancellation()
+            }
+            return try await performConfirmClaudeAccountChange()
+        }
+        providerOperation = ProviderOperation(
+            id: operationID,
+            cancel: { task.cancel() },
+            waitForCompletion: { _ = await task.result }
+        )
+        let result = await withTaskCancellationHandler {
+            await task.result
+        } onCancel: {
+            task.cancel()
+        }
+        finishProviderOperation(operationID)
+        return try result.get()
+    }
+
+    private func performConfirmClaudeAccountChange() async throws -> InferenceConnectionState {
+        guard (try? await journal.entries().isEmpty) == true else {
+            throw PaceNoteActionError.safeMessage(
+                "\(AppBrand.displayName) must finish pending private-data cleanup before changing accounts."
+            )
+        }
+        let status: ClaudeSubscriptionStatus
+        do {
+            status = try await checkedClaudeSubscription()
+        } catch {
+            throw PaceNoteActionError.safeMessage(Self.safeClaudeMessage(for: error))
+        }
+        UserDefaults.standard.set(status.identityHash, forKey: Self.claudeAccountIdentityKey)
+        return .ready(
+            InferenceAccountSummary(
+                accountLabel: status.redactedLabel,
+                planLabel: Self.claudePlanLabel(status.planType),
+                modelCount: 1
+            )
+        )
     }
 
     func reloadOutputSources() async -> [OutputSourceOption] {
@@ -399,7 +556,12 @@ actor PaceNoteRuntime {
     func startMeeting(_ request: MeetingStartRequest) async throws {
         guard lifecycle == .open else {
             throw PaceNoteActionError.safeMessage(
-                "PaceNote is shutting down. Reopen it before starting another meeting."
+                "\(AppBrand.displayName) is shutting down. Reopen it before starting another meeting."
+            )
+        }
+        guard providerOperation == nil else {
+            throw PaceNoteActionError.safeMessage(
+                "Finish the provider account operation before starting a meeting."
             )
         }
         guard startOperation == nil else {
@@ -410,12 +572,12 @@ actor PaceNoteRuntime {
         }
         guard !pendingMeetingCleanupBlocked else {
             throw PaceNoteActionError.safeMessage(
-                "Private meeting cleanup is incomplete. Quit and reopen PaceNote before starting another meeting."
+                "Private meeting cleanup is incomplete. Quit and reopen \(AppBrand.displayName) before starting another meeting."
             )
         }
         guard request.consentConfirmed else {
             throw PaceNoteActionError.safeMessage(
-                "Confirm participant permission, capture scope, and OpenAI processing before capture starts."
+                "Confirm participant permission, capture scope, and selected-provider processing before capture starts."
             )
         }
         guard request.microphoneEnabled || request.outputEnabled else {
@@ -454,10 +616,12 @@ actor PaceNoteRuntime {
         try requireCurrentStart(attemptID)
         guard cleanupIsHealthy else {
             throw PaceNoteActionError.safeMessage(
-                "PaceNote must finish cleanup from an earlier session before capture can start."
+                "\(AppBrand.displayName) must finish cleanup from an earlier session before capture can start."
             )
         }
-        let verifiedSubscription = try await verifiedMeetingSubscription()
+        let verifiedSubscription = try await verifiedMeetingSubscription(
+            provider: request.provider
+        )
         try requireCurrentStart(attemptID)
 
         let context: PendingMeetingContext
@@ -498,7 +662,7 @@ actor PaceNoteRuntime {
                     throw cleanupError
                 }
                 throw PaceNoteActionError.safeMessage(
-                    "PaceNote could not create its private cleanup journal."
+                    "\(AppBrand.displayName) could not create its private cleanup journal."
                 )
             }
             do {
@@ -535,6 +699,11 @@ actor PaceNoteRuntime {
                 )
             }
             let availableDomainSkillNames = Set(try Self.domainSkills(in: context.snapshot).map(\.name))
+            if request.provider == .claude, request.selectedDomainSkillName != nil {
+                throw PaceNoteActionError.safeMessage(
+                    "Claude v1 is tool-free and cannot load repository skills. Clear the skill or choose Codex."
+                )
+            }
             if let selected = request.selectedDomainSkillName,
                 !availableDomainSkillNames.contains(selected)
             {
@@ -542,35 +711,58 @@ actor PaceNoteRuntime {
                     "The selected repository skill is not present in the sealed snapshot."
                 )
             }
-            let responseGenerator = CodexMeetingResponseGenerator(
-                configuration: MeetingResponseConfiguration(
-                    meetingID: context.meetingID,
-                    meetingPrivateRoot: context.privateRoot,
-                    codexProfileRoot: codexProfileRoot,
-                    executableURL: codexExecutableURL,
-                    clientVersion: Self.applicationVersion,
-                    subscriptionPlanType: verifiedSubscription.planType,
-                    expectedAccountIdentityHash: verifiedSubscription.identityHash,
-                    speakingStyle: Self.speakingStyle,
-                    groundingSnapshot: context.snapshot,
-                    selectedDomainSkillName: request.selectedDomainSkillName,
-                    deepComplexity: .hardTechnical
-                ),
-                journal: journal
-            )
-            let cleaner = DefaultMeetingSessionResourceCleaner(
-                privateRoot: context.privateRoot,
-                temporaryRoots: [
+            let responseGenerator: any MeetingResponseGenerating
+            let temporaryRoots: [URL]
+            let stableProfileRoot: URL?
+            switch request.provider {
+            case .codex:
+                responseGenerator = CodexMeetingResponseGenerator(
+                    configuration: MeetingResponseConfiguration(
+                        meetingID: context.meetingID,
+                        meetingPrivateRoot: context.privateRoot,
+                        codexProfileRoot: codexProfileRoot,
+                        executableURL: codexExecutableURL,
+                        clientVersion: Self.applicationVersion,
+                        subscriptionPlanType: verifiedSubscription.planType,
+                        expectedAccountIdentityHash: verifiedSubscription.identityHash,
+                        speakingStyle: Self.speakingStyle,
+                        groundingSnapshot: context.snapshot,
+                        selectedDomainSkillName: request.selectedDomainSkillName,
+                        deepComplexity: .hardTechnical
+                    ),
+                    journal: journal
+                )
+                temporaryRoots = [
                     context.privateRoot.appendingPathComponent("Grounding", isDirectory: true),
                     context.privateRoot.appendingPathComponent("quick-context", isDirectory: true),
                     context.privateRoot.appendingPathComponent("codex-tmp", isDirectory: true),
                     context.privateRoot.appendingPathComponent("skill-context", isDirectory: true),
-                ],
+                ]
+                stableProfileRoot = codexProfileRoot
+            case .claude:
+                responseGenerator = ClaudeMeetingResponseGenerator(
+                    configuration: ClaudeMeetingResponseConfiguration(
+                        meetingID: context.meetingID,
+                        meetingPrivateRoot: context.privateRoot,
+                        expectedAccountIdentityHash: verifiedSubscription.identityHash,
+                        speakingStyle: Self.speakingStyle,
+                        groundingSnapshot: context.snapshot
+                    )
+                )
+                temporaryRoots = [
+                    context.privateRoot.appendingPathComponent("Grounding", isDirectory: true),
+                    context.privateRoot.appendingPathComponent("claude-runtime", isDirectory: true),
+                ]
+                stableProfileRoot = nil
+            }
+            let cleaner = DefaultMeetingSessionResourceCleaner(
+                privateRoot: context.privateRoot,
+                temporaryRoots: temporaryRoots,
                 groundingManager: context.groundingManager,
                 groundingSnapshot: context.snapshot,
                 journal: journal,
                 applicationRoot: applicationRoot,
-                stableCodexProfileRoot: codexProfileRoot
+                stableCodexProfileRoot: stableProfileRoot
             )
             controller = MeetingSessionController(
                 configuration: MeetingSessionConfiguration(
@@ -726,6 +918,13 @@ actor PaceNoteRuntime {
     private func performShutdown() async -> Bool {
         defer { shutdownTask = nil }
 
+        if let providerOperation {
+            providerOperation.cancel()
+            await providerOperation.waitForCompletion()
+            if self.providerOperation?.id == providerOperation.id {
+                self.providerOperation = nil
+            }
+        }
         if let startOperation {
             startOperation.task.cancel()
             _ = await startOperation.task.result
@@ -785,6 +984,37 @@ actor PaceNoteRuntime {
             (activeMeeting != nil, lifecycle == .closed)
         }
     #endif
+
+    private func providerOperationBlockReason(action: String) -> String? {
+        guard lifecycle == .open else {
+            return "\(AppBrand.displayName) is shutting down. Reopen it before \(action)."
+        }
+        guard activeMeeting == nil, startOperation == nil else {
+            return "Stop or finish the current meeting before \(action)."
+        }
+        guard providerOperation == nil else {
+            return "Another provider account operation is already in progress."
+        }
+        return nil
+    }
+
+    private func finishProviderOperation(_ operationID: UUID) {
+        if providerOperation?.id == operationID {
+            providerOperation = nil
+        }
+    }
+
+    private static func blockedEnvironmentSnapshot(
+        reason: String
+    ) -> PaceNoteEnvironmentSnapshot {
+        PaceNoteEnvironmentSnapshot(
+            microphonePermission: .notChecked,
+            systemAudioPermission: .notChecked,
+            codex: .limited(reason),
+            outputSources: [],
+            claude: .limited(reason)
+        )
+    }
 
     private func requireCurrentStart(_ attemptID: UUID) throws {
         try Task.checkCancellation()
@@ -861,7 +1091,18 @@ actor PaceNoteRuntime {
         }
     }
 
-    private func verifiedMeetingSubscription() async throws -> VerifiedMeetingSubscription {
+    private func verifiedMeetingSubscription(
+        provider: MeetingInferenceProvider
+    ) async throws -> VerifiedMeetingSubscription {
+        switch provider {
+        case .codex:
+            return try await verifiedCodexMeetingSubscription()
+        case .claude:
+            return try await verifiedClaudeMeetingSubscription()
+        }
+    }
+
+    private func verifiedCodexMeetingSubscription() async throws -> VerifiedMeetingSubscription {
         if let preverifiedSubscription { return preverifiedSubscription }
 
         let client: CodexAppServerClient
@@ -888,7 +1129,7 @@ actor PaceNoteRuntime {
             {
                 await client.shutdown()
                 throw PaceNoteActionError.safeMessage(
-                    "A different ChatGPT account is signed in. Forget the PaceNote profile before switching accounts."
+                    "A different ChatGPT account is signed in. Forget the \(AppBrand.displayName) profile before switching accounts."
                 )
             }
             UserDefaults.standard.set(identityHash, forKey: Self.accountIdentityKey)
@@ -905,6 +1146,81 @@ actor PaceNoteRuntime {
         }
     }
 
+    private func verifiedClaudeMeetingSubscription() async throws -> VerifiedMeetingSubscription {
+        let status: ClaudeSubscriptionStatus
+        do {
+            status = try await checkedClaudeSubscription()
+        } catch {
+            throw PaceNoteActionError.safeMessage(Self.safeClaudeMessage(for: error))
+        }
+
+        if let expected = UserDefaults.standard.string(forKey: Self.claudeAccountIdentityKey),
+            expected != status.identityHash
+        {
+            throw PaceNoteActionError.safeMessage(
+                "A different Claude account is signed in. Confirm the current Claude account in Settings before using it."
+            )
+        }
+        UserDefaults.standard.set(status.identityHash, forKey: Self.claudeAccountIdentityKey)
+        return VerifiedMeetingSubscription(
+            planType: status.planType,
+            identityHash: status.identityHash
+        )
+    }
+
+    private func claudeSubscriptionState() async -> InferenceConnectionState {
+        do {
+            let status = try await checkedClaudeSubscription()
+            if let expected = UserDefaults.standard.string(forKey: Self.claudeAccountIdentityKey),
+                expected != status.identityHash
+            {
+                return .authenticationExpired(
+                    "A different Claude account is signed in. Use Current Claude Account only after checking the intended identity."
+                )
+            }
+            UserDefaults.standard.set(status.identityHash, forKey: Self.claudeAccountIdentityKey)
+            return .ready(
+                InferenceAccountSummary(
+                    accountLabel: status.redactedLabel,
+                    planLabel: Self.claudePlanLabel(status.planType),
+                    modelCount: 1
+                )
+            )
+        } catch ClaudeSubscriptionError.signedOut {
+            return .signedOut
+        } catch {
+            return .unavailable(Self.safeClaudeMessage(for: error))
+        }
+    }
+
+    private func checkedClaudeSubscription() async throws -> ClaudeSubscriptionStatus {
+        let preflightRoot =
+            applicationRoot
+            .appendingPathComponent("ClaudeAuthChecks", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .standardizedFileURL
+        defer {
+            if Self.isStrictlyContained(preflightRoot, inside: applicationRoot) {
+                try? fileManager.removeItem(at: preflightRoot)
+            }
+        }
+
+        let runtime = try ClaudeRuntimeBuilder.prepare(runtimeRoot: preflightRoot)
+        let trust = try ClaudeExecutableTrustSnapshot.capture(runtime.executableURL)
+        let version = try await ClaudeBinaryInspector.inspect(
+            executableURL: runtime.executableURL,
+            environment: runtime.processEnvironment
+        )
+        try ClaudeVersionPolicy.tested.validate(version)
+        try trust.revalidate()
+
+        return try await ClaudeCLIAuthStatusChecker(
+            executableURL: runtime.executableURL,
+            currentDirectoryURL: runtime.workingDirectory,
+            environment: runtime.processEnvironment
+        ).subscriptionStatus()
+    }
+
     private func validatedSubscriptionState(
         account: CodexAccount,
         client: CodexAppServerClient
@@ -912,14 +1228,16 @@ actor PaceNoteRuntime {
         guard account.type == "chatgpt",
             let email = Self.normalizedEmail(account.email)
         else {
-            return .unavailable("PaceNote requires a ChatGPT-authenticated Codex account.")
+            return .unavailable(
+                "\(AppBrand.displayName) requires a ChatGPT-authenticated Codex account."
+            )
         }
         let identityHash = Self.identityHash(email)
         if let expected = UserDefaults.standard.string(forKey: Self.accountIdentityKey),
             expected != identityHash
         {
             return .authenticationExpired(
-                "A different ChatGPT account is signed in. Forget the PaceNote profile before switching accounts."
+                "A different ChatGPT account is signed in. Forget the \(AppBrand.displayName) profile before switching accounts."
             )
         }
         UserDefaults.standard.set(identityHash, forKey: Self.accountIdentityKey)
@@ -1089,7 +1407,9 @@ actor PaceNoteRuntime {
             isDirectory: true
         )
         guard Self.isStrictlyContained(root, inside: meetingsRoot) else {
-            throw PaceNoteActionError.safeMessage("PaceNote rejected an unsafe meeting data path.")
+            throw PaceNoteActionError.safeMessage(
+                "\(AppBrand.displayName) rejected an unsafe meeting data path."
+            )
         }
         try Self.createPrivateDirectory(root, fileManager: fileManager)
         return root
@@ -1141,7 +1461,9 @@ actor PaceNoteRuntime {
             guard isDirectory.boolValue,
                 url.resolvingSymlinksInPath().standardizedFileURL == url.standardizedFileURL
             else {
-                throw PaceNoteActionError.safeMessage("PaceNote rejected an unsafe private data directory.")
+                throw PaceNoteActionError.safeMessage(
+                    "\(AppBrand.displayName) rejected an unsafe private data directory."
+                )
             }
         } else {
             try fileManager.createDirectory(
@@ -1263,6 +1585,28 @@ actor PaceNoteRuntime {
         return "ChatGPT \(plan.prefix(1).uppercased())\(plan.dropFirst())"
     }
 
+    private static func claudePlanLabel(_ plan: String) -> String {
+        guard !plan.isEmpty else { return "Claude subscription" }
+        return "Claude \(plan.prefix(1).uppercased())\(plan.dropFirst())"
+    }
+
+    private static func safeClaudeMessage(for error: any Error) -> String {
+        if let error = error as? ClaudeSubscriptionError, let message = error.errorDescription {
+            return message
+        }
+        if let error = error as? ClaudeBinaryCompatibilityError,
+            let message = error.errorDescription
+        {
+            return message
+        }
+        if let error = error as? ClaudeIsolatedRuntimeError,
+            let message = error.errorDescription
+        {
+            return message
+        }
+        return "The local Claude subscription check could not complete safely."
+    }
+
     fileprivate static func safeMessage(for error: any Error) -> String {
         if let error = error as? CodexClientError, let message = error.errorDescription {
             return message
@@ -1273,7 +1617,7 @@ actor PaceNoteRuntime {
         if let error = error as? GroundingError, let message = error.errorDescription {
             return message
         }
-        return "The local PaceNote service could not complete this operation."
+        return "The local \(AppBrand.displayName) service could not complete this operation."
     }
 
     private static func isStrictlyContained(_ child: URL, inside root: URL) -> Bool {
@@ -1295,6 +1639,7 @@ actor PaceNoteRuntime {
     }
 
     private static let accountIdentityKey = "paceNote.codexAccountIdentityHash"
+    private static let claudeAccountIdentityKey = "paceNote.claudeAccountIdentityHash"
 }
 
 private struct SnapshotOnlyJanitorClient: ThreadCleanupClient {
@@ -1335,7 +1680,18 @@ extension MeetingActions {
                     throw error
                 } catch {
                     throw PaceNoteActionError.safeMessage(
-                        "PaceNote could not forget the isolated Codex profile."
+                        "\(AppBrand.displayName) could not forget the isolated Codex profile."
+                    )
+                }
+            },
+            confirmClaudeAccountChange: {
+                do {
+                    return try await runtime.confirmClaudeAccountChange()
+                } catch let error as PaceNoteActionError {
+                    throw error
+                } catch {
+                    throw PaceNoteActionError.safeMessage(
+                        "\(AppBrand.displayName) could not confirm the current Claude account."
                     )
                 }
             },
