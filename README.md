@@ -51,4 +51,4 @@ Use **Pause** to stop capture temporarily. Use **Stop** when the meeting ends so
 
 Read [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and the [production-readiness ledger](PRODUCTION_READINESS.md) before real use. The architecture and product contract are in [CODEX_MEETING_COPILOT_SPEC.md](CODEX_MEETING_COPILOT_SPEC.md).
 
-The automated test and packaging paths exist, but live Deep subscription generation, signed-app audio capture, visual accessibility review, real-meeting latency, and Developer ID/notarization gates are not yet complete. Treat this as a personal release candidate, not a production-verified build, and do not use it for confidential or policy-restricted meetings.
+Automated tests, packaging, and packaged native-accessibility review are complete. Live target-account Deep generation, packaged meeting audio and transcription, real-meeting latency dogfood, and Developer ID/notarization for distribution are not yet complete. Treat this as a personal release candidate, not a production-verified build, and do not use it for confidential or policy-restricted meetings.

@@ -83,8 +83,8 @@ This is the completion contract for the personal production build. A checked ite
 ## Distribution and ownership
 
 - [x] Private GitHub repository exists at `mo-sharif/PaceNote`.
-- [ ] Current source, tests, documentation, and CI are committed and pushed to `main`.
-- [ ] Private-repository CI passes from a clean checkout.
-- [ ] The local ad hoc build opens on the target Mac and its expected Gatekeeper behavior is documented.
+- [x] Current source, tests, documentation, and CI are committed and pushed to `main`.
+- [x] Private-repository CI passes from a clean checkout.
+- [x] The local ad hoc build opens on the target Mac and its expected Gatekeeper behavior is documented.
 - [ ] Developer ID and notarization credentials are configured if distribution beyond this Mac is desired.
 - [ ] A Developer ID signed, notarized, stapled release and checksum are attached to a private GitHub release if distribution beyond this Mac is desired.
