@@ -8,8 +8,8 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Automated non-live Swift tests pass locally after the final release-hardening changes; opt-in subscription generation remains excluded.
 - [x] Debug and release builds complete after the final release-hardening changes with the Xcode 26 toolchain.
 - [x] Deterministic `.app` assembly, plist validation, ad hoc hardened-runtime signing, and code-signature verification pass after the final release-hardening changes.
-- [ ] A clean-checkout test, lint, release build, package, and verification sequence passes at the final committed revision.
-- [ ] Debug and release builds are confirmed warning-free from a clean checkout at the final committed revision.
+- [x] A clean-checkout test, lint, release build, package, and verification sequence passes at the final committed revision.
+- [x] Debug and release builds are confirmed warning-free from a clean checkout at the final committed revision.
 
 ## Codex subscription path
 
@@ -89,8 +89,8 @@ This is the completion contract for the personal production build. A checked ite
 ## Distribution and ownership
 
 - [x] Private GitHub repository exists at `mo-sharif/PaceNote`.
-- [ ] Current source, tests, and documentation are committed and pushed to `main`.
-- [ ] Private-repository CI passes for the final pushed revision from a clean checkout.
+- [x] Current source, tests, and documentation are committed and pushed to `main`.
+- [x] Private-repository CI passes for the final pushed revision from a clean checkout.
 - [x] The local ad hoc build opens on the target Mac and its expected Gatekeeper behavior is documented.
 - [ ] Developer ID and notarization credentials are configured if distribution beyond this Mac is desired.
 - [ ] A Developer ID signed, notarized, stapled release and checksum are attached to a private GitHub release if distribution beyond this Mac is desired.
