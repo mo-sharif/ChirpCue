@@ -8,8 +8,8 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Automated non-live Swift tests pass locally; opt-in subscription generation remains excluded.
 - [x] Debug and release builds complete with the Xcode 26 toolchain.
 - [x] Deterministic `.app` assembly, plist validation, ad hoc hardened-runtime signing, and code-signature verification run locally.
-- [ ] The final clean-checkout test, lint, release build, package, and verification sequence passes after all release edits.
-- [ ] Debug and release builds are confirmed warning-free from a clean checkout.
+- [x] A clean-checkout test, lint, release build, package, and verification sequence passes.
+- [x] Debug and release builds are confirmed warning-free from a clean checkout.
 
 ## Codex subscription path
 

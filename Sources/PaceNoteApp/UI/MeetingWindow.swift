@@ -469,7 +469,7 @@ private struct SuggestionsPane: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Checking deeper context when this question needs it…")
+                        Text("Checking deeper context automatically…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
