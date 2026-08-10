@@ -99,6 +99,7 @@ public enum BrownoutReason: String, Codable, CaseIterable, Sendable {
     case microphoneDisabled = "MIC_DISABLED"
     case outputDisabled = "OUTPUT_DISABLED"
     case transcriptUncertain = "TRANSCRIPT_UNCERTAIN"
+    case transcriptionUnavailable = "TRANSCRIPTION_UNAVAILABLE"
     case transcriberAssetMissing = "TRANSCRIBER_ASSET_MISSING"
     case codexOffline = "CODEX_OFFLINE"
     case authenticationExpired = "AUTH_EXPIRED"
@@ -107,10 +108,23 @@ public enum BrownoutReason: String, Codable, CaseIterable, Sendable {
     case appServerCrashed = "APP_SERVER_CRASHED"
     case quickLimited = "QUICK_LIMITED"
     case deepLimited = "DEEP_LIMITED"
+    case deepBusy = "DEEP_BUSY"
+    case deepTimedOut = "DEEP_TIMED_OUT"
+    case deepUnavailable = "DEEP_UNAVAILABLE"
+    case deepRejected = "DEEP_REJECTED"
     case repositoryChanged = "REPO_CHANGED"
     case snapshotBlocked = "SNAPSHOT_BLOCKED"
     case snapshotBusy = "SNAPSHOT_BUSY"
     case permissionProfileMismatch = "PERMISSION_PROFILE_MISMATCH"
     case skillPolicyMismatch = "SKILL_POLICY_MISMATCH"
     case speakerUncertain = "SPEAKER_UNCERTAIN"
+
+    public var isDeepResponseFailure: Bool {
+        switch self {
+        case .deepLimited, .deepBusy, .deepTimedOut, .deepUnavailable, .deepRejected:
+            true
+        default:
+            false
+        }
+    }
 }

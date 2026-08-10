@@ -47,6 +47,7 @@ public protocol CodexMeetingClient: Sendable {
         model: String?,
         onCreated: @Sendable (String) async throws -> Void
     ) async throws -> CodexEphemeralThread
+    func listThreadIDs(cwd: String) async throws -> [String]
     func deleteThread(id: String) async throws
     func startQuick(
         threadID: String,
@@ -70,6 +71,10 @@ public protocol CodexMeetingClient: Sendable {
 }
 
 public extension CodexMeetingClient {
+    func listThreadIDs(cwd: String) async throws -> [String] {
+        throw CodexClientError.missingCapability("thread/list")
+    }
+
     func createPersistentBase(
         cwd: String,
         runtimeWorkspaceRoots: [String],

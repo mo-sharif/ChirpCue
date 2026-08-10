@@ -1010,7 +1010,7 @@ private final class DeepBenchmarkFixture: @unchecked Sendable {
             expectedSayNext = draft.candidateSayNext
         case .generalAnswer:
             expectedRelationship = .continueAnswer
-            expectedTransition = "Broadly speaking,"
+            expectedTransition = ""
             expectedSayNext = draft.candidateSayNext
         case .clarification:
             expectedRelationship = .clarify

@@ -55,6 +55,33 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(Set(allDeleted), Set(["base-1", "base-2", "fork-1", "fork-2"]))
     }
 
+    func testGroundedCandidateMismatchFallsBackToOneVerifiedBasisClaim() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.turn(generation: 1)
+        let draft = fixture.deepDraft(for: turn)
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            turnOutputs: [try Self.json(draft)]
+        )
+        let verifier = FakeMeetingEvidenceVerifier(candidateMismatchOnFirstCall: true)
+        let generator = fixture.generator(client: client, verifier: verifier)
+
+        _ = try await generator.prepare()
+        let generated = try await generator.generateDeep(for: turn)
+
+        XCTAssertEqual(generated.candidateSayNext, draft.basis[0].claim)
+        XCTAssertEqual(generated.basis, [draft.basis[0]])
+        let verifiedCandidates = await verifier.verifiedCandidates()
+        XCTAssertEqual(
+            verifiedCandidates,
+            [draft.candidateSayNext, draft.basis[0].claim, draft.basis[0].claim]
+        )
+        let interrupted = await client.interruptedThreadIDs()
+        XCTAssertTrue(interrupted.isEmpty)
+        _ = await generator.shutdown()
+    }
+
     func testRealtimeQuickUsesStrictJSONAndNeverStartsOrdinaryQuickTurn() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
@@ -112,6 +139,36 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(deletedThreadIDs, ["base-1"])
         XCTAssertEqual(entriesAfterShutdown.first?.threadIDs, [])
         XCTAssertTrue(report.failures.contains(.deleteThread))
+    }
+
+    func testEphemeralDeleteFailureIsReconciledOnlyAfterExactCwdAbsence() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.turn(generation: 4)
+        let output = QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            sayNow: "I can give the shape now, then verify the implementation.",
+            needsDeep: true,
+            confidence: 0.61,
+            reason: "needs repository evidence"
+        )
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            quickOutputs: [try Self.json(output)],
+            deletionFailuresRemaining: 1,
+            confirmsAbsentAfterDeleteFailure: true
+        )
+        let generator = fixture.generator(client: client)
+
+        _ = try await generator.prepare()
+        let generated = try await generator.generateQuick(for: turn)
+        let deleteAttempts = await client.deleteAttemptCount()
+        XCTAssertEqual(generated, output)
+        XCTAssertEqual(deleteAttempts, 1)
+
+        let report = await generator.shutdown()
+        XCTAssertFalse(report.failures.contains(.deleteThread))
     }
 
     func testShutdownWaitsForLateBaseThenJournalsAndDeletesIt() async throws {
@@ -1085,11 +1142,13 @@ private actor CodexConfigurationRecorder {
 
 private actor FakeMeetingEvidenceVerifier: MeetingEvidenceVerifying {
     private let reject: Bool
+    private let candidateMismatchOnFirstCall: Bool
     private var count = 0
     private var candidates: [String] = []
 
-    init(reject: Bool = false) {
+    init(reject: Bool = false, candidateMismatchOnFirstCall: Bool = false) {
         self.reject = reject
+        self.candidateMismatchOnFirstCall = candidateMismatchOnFirstCall
     }
 
     func isFresh(_ snapshot: GroundingSnapshot) async -> Bool { true }
@@ -1102,6 +1161,9 @@ private actor FakeMeetingEvidenceVerifier: MeetingEvidenceVerifying {
     ) async throws {
         count += 1
         candidates.append(candidateSayNext)
+        if candidateMismatchOnFirstCall, count == 1 {
+            throw EvidenceVerificationError.candidateNotSupported
+        }
         if reject {
             throw EvidenceVerificationError.claimNotSupported(
                 references.first?.relativePath ?? "evidence"
@@ -1178,6 +1240,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     private let forkCreationGate: SuspendedCallGate?
     private let startQuickGate: SuspendedCallGate?
     private let startTurnGate: SuspendedCallGate?
+    private let confirmsAbsentAfterDeleteFailure: Bool
     private var deletionFailuresRemaining: Int
     private var nextBase = 1
     private var nextFork = 1
@@ -1204,7 +1267,8 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         forkCreationGate: SuspendedCallGate? = nil,
         startQuickGate: SuspendedCallGate? = nil,
         startTurnGate: SuspendedCallGate? = nil,
-        deletionFailuresRemaining: Int = 0
+        deletionFailuresRemaining: Int = 0,
+        confirmsAbsentAfterDeleteFailure: Bool = false
     ) {
         runtimeCapabilities = .init(realtimeTextV3: realtime)
         self.quickOutputs = quickOutputs
@@ -1218,6 +1282,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         self.startQuickGate = startQuickGate
         self.startTurnGate = startTurnGate
         self.deletionFailuresRemaining = deletionFailuresRemaining
+        self.confirmsAbsentAfterDeleteFailure = confirmsAbsentAfterDeleteFailure
     }
 
     func account(refreshToken: Bool) async throws -> CodexAccountReadResult {
@@ -1356,6 +1421,13 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         }
         deleted.append(id)
         hangingContinuations.removeValue(forKey: id)?.finish(throwing: CancellationError())
+    }
+
+    func listThreadIDs(cwd: String) async throws -> [String] {
+        guard confirmsAbsentAfterDeleteFailure else {
+            throw CodexClientError.transportUnavailable
+        }
+        return []
     }
 
     func startQuick(

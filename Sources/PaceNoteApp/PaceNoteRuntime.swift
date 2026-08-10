@@ -134,7 +134,8 @@ actor PaceNoteRuntime {
         }
         self.journal = try CleanupJournalStore(
             journalURL: stateRoot.appendingPathComponent("cleanup-journal.json"),
-            allowedRoot: applicationRoot
+            allowedRoot: meetingsRoot,
+            requireDirectMeetingRoot: true
         )
         self.codexExecutableURL = Self.locateCodexExecutable(fileManager: fileManager)
     }
@@ -1422,6 +1423,30 @@ actor PaceNoteRuntime {
                 }
             }
         }
+        if report.failures.isEmpty {
+            do {
+                guard try await journal.entries().isEmpty else {
+                    throw CleanupJournalError.meetingConflict
+                }
+                let remainingMeetingRoots = try fileManager.contentsOfDirectory(
+                    at: meetingsRoot,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: []
+                )
+                guard remainingMeetingRoots.isEmpty else {
+                    throw CleanupJournalError.pathOutsidePrivateRoot
+                }
+                _ = try CodexStableProfileSanitizer(fileManager: fileManager)
+                    .cleanTransientState(profileRoot: codexProfileRoot)
+            } catch {
+                report.failures.append(
+                    CleanupFailure(
+                        resource: "structural-audit",
+                        reason: "Recovered meeting state was not proven absent."
+                    )
+                )
+            }
+        }
         startupCleanupHealthy = report.failures.isEmpty
         return startupCleanupHealthy
     }
@@ -1685,9 +1710,9 @@ actor PaceNoteRuntime {
 
     private static var speakingStyle: String {
         switch UserDefaults.standard.string(forKey: "paceNote.speakingStyle") {
-        case "Calm": "calm, reassuring, and conversational"
-        case "Technical": "precise, technical, and conversational"
-        default: "direct, concise, and conversational"
+        case "Calm": "calm, reassuring, and conversational, like a pragmatic staff engineer"
+        case "Technical": "precise, technical, and conversational, like a pragmatic staff engineer"
+        default: "direct, concise, and conversational, like a pragmatic staff engineer"
         }
     }
 

@@ -114,6 +114,10 @@ public actor MeetingSessionController {
             needles.removeAll(keepingCapacity: false)
             overflowed = false
         }
+
+        mutating func markOverflowed() {
+            overflowed = true
+        }
     }
 
     private enum Lifecycle: Equatable {
@@ -135,6 +139,7 @@ public actor MeetingSessionController {
     private let microphonePermission: any MicrophonePermissionProviding
     private let responseGenerator: any MeetingResponseGenerating
     private let responseCoordinator: ResponseCoordinator
+    private let sensitiveOutputBuffer: ResponseSensitiveOutputBuffer
     private let resourceCleaner: any MeetingSessionResourceCleaning
     private let time: any MeetingTimeProviding
     private let attributionResolver: TranscriptAttributionResolver
@@ -151,6 +156,7 @@ public actor MeetingSessionController {
     private var timingLedger = TimingLedger()
     private var cleanupNeedleLedger: CleanupNeedleLedger
     private var currentIdentity: TurnIdentity?
+    private var currentQuestion: String?
     private var microphonePartialID: UUID?
     private var outputPartialID: UUID?
     private var microphoneEventTask: Task<Void, Never>?
@@ -192,9 +198,14 @@ public actor MeetingSessionController {
         self.speechAssets = speechAssets
         self.microphonePermission = microphonePermission
         self.responseGenerator = responseGenerator
+        let sensitiveOutputBuffer = ResponseSensitiveOutputBuffer(
+            capacity: cleanupNeedleCapacity
+        )
+        self.sensitiveOutputBuffer = sensitiveOutputBuffer
         self.responseCoordinator = ResponseCoordinator(
             generator: responseGenerator,
-            configuration: responseCoordinatorConfiguration
+            configuration: responseCoordinatorConfiguration,
+            sensitiveOutputBuffer: sensitiveOutputBuffer
         )
         self.resourceCleaner = resourceCleaner
         self.time = time
@@ -584,6 +595,10 @@ public actor MeetingSessionController {
         guard lifecycle == .running else {
             throw MeetingSessionFailure.invalidLifecycle
         }
+        if let currentQuestion, currentIdentity != nil {
+            await beginTurn(question: currentQuestion, stableAt: time.now())
+            return
+        }
         guard let candidate = turnDetector.candidate(at: time.now(), force: true) else {
             throw MeetingSessionFailure.noCandidateQuestion
         }
@@ -615,6 +630,7 @@ public actor MeetingSessionController {
             dismissedGenerationTask?.cancel()
             generationTask = nil
             currentIdentity = nil
+            currentQuestion = nil
         }
         if bridgeSpeechHold?.identity == expectedIdentity {
             bridgeSpeechHold = nil
@@ -675,17 +691,25 @@ public actor MeetingSessionController {
             invalidation: .sessionStopped
         )
         registerRetainedCleanupContent()
+        let responseReport = await responseGenerator.shutdown()
+        let providerOutputSnapshot = await sensitiveOutputBuffer.takeSnapshotAndClear()
+        for value in providerOutputSnapshot.values {
+            cleanupNeedleLedger.register(value)
+        }
+        if providerOutputSnapshot.overflowed {
+            cleanupNeedleLedger.markOverflowed()
+        }
         var cleanupNeedleSnapshot = cleanupNeedleLedger.takeSnapshotAndClear()
         defer { cleanupNeedleSnapshot.clear() }
         let timingSnapshot = timingLedger.snapshot()
         timingLedger.clear()
 
-        let responseReport = await responseGenerator.shutdown()
         let resourceReport = await resourceCleaner.deleteResources(
             preserveCodexRecoveryState: !responseReport.failures.isEmpty
         )
 
         currentIdentity = nil
+        currentQuestion = nil
         runtime = nil
 
         var failures = resourceReport.failures
@@ -1028,6 +1052,7 @@ public actor MeetingSessionController {
         switch event {
         case .started(let lane, _):
             deactivateBrownout(reason: Self.lostReason(for: lane), lane: lane)
+            deactivateBrownout(reason: .transcriptionUnavailable, lane: lane)
             updateOperationalPhase()
             emitState()
 
@@ -1073,8 +1098,7 @@ public actor MeetingSessionController {
             if reason == .assetUnavailable {
                 activateBrownout(.init(reason: .transcriberAssetMissing, lane: lane))
             } else {
-                activateBrownout(.init(reason: Self.lostReason(for: lane), lane: lane))
-                activateBrownout(.init(reason: .transcriptUncertain, lane: lane))
+                activateBrownout(.init(reason: .transcriptionUnavailable, lane: lane))
             }
             phase = .brownout
             emitState()
@@ -1301,6 +1325,8 @@ public actor MeetingSessionController {
 
     private func beginTurn(question: String, stableAt: TimeInterval) async {
         guard lifecycle == .running else { return }
+        clearTransientResponseBrownouts()
+        currentQuestion = question
         generation &+= 1
         let identity = TurnIdentity(
             meetingID: configuration.meetingID,
@@ -1415,6 +1441,7 @@ public actor MeetingSessionController {
                 )
                 return
             }
+            clearTransientResponseBrownouts()
             if bridgeSpeechHold?.identity == identity {
                 queuedDeepResponse = QueuedDeepResponse(identity: identity, response: deep)
             } else {
@@ -1426,12 +1453,20 @@ public actor MeetingSessionController {
             updateOperationalPhase()
             emitState()
 
-        case .deepUnavailable:
+        case .deepUnavailable(let failure):
             timingLedger.recordDeepUnavailable(
                 generation: identity.generation,
                 at: time.now()
             )
-            activateBrownout(.init(reason: .deepLimited))
+            let reason: BrownoutReason =
+                switch failure {
+                case .rateLimited: .deepLimited
+                case .busy: .deepBusy
+                case .timedOut: .deepTimedOut
+                case .providerUnavailable: .deepUnavailable
+                case .responseRejected, .groundingUnavailable: .deepRejected
+                }
+            activateBrownout(.init(reason: reason))
             updateOperationalPhase()
             emitState()
 
@@ -1561,6 +1596,7 @@ public actor MeetingSessionController {
             )
         }
         currentIdentity = nil
+        currentQuestion = nil
         await cancelResponseWork(joining: cancelledGenerationTask)
         if clearSuggestions {
             suggestions.removeAll(keepingCapacity: false)
@@ -1693,6 +1729,19 @@ public actor MeetingSessionController {
         }
     }
 
+    private func clearTransientResponseBrownouts() {
+        for reason in [
+            BrownoutReason.quickLimited,
+            .deepLimited,
+            .deepBusy,
+            .deepTimedOut,
+            .deepUnavailable,
+            .deepRejected,
+        ] {
+            deactivateBrownout(reason: reason)
+        }
+    }
+
     private func updateOperationalPhase() {
         switch lifecycle {
         case .idle:
@@ -1722,7 +1771,7 @@ public actor MeetingSessionController {
         brownouts.contains { brownout in
             switch brownout.reason {
             case .microphoneDisabled, .outputDisabled, .quickLimited, .deepLimited,
-                .speakerUncertain:
+                .deepBusy, .deepTimedOut, .deepUnavailable, .deepRejected, .speakerUncertain:
                 false
             default:
                 true

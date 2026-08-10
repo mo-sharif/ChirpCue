@@ -51,6 +51,12 @@ public actor CleanupJanitor {
 
         for entry in entries {
             let failuresBeforeEntry = report.failures.count
+            do {
+                try await journal.validateForCleanup(entry)
+            } catch {
+                report.failures.append(.init(resource: "cleanup-journal", reason: Self.safe(error)))
+                continue
+            }
             var threadIDs = Set(entry.threadIDs)
             for cwd in entry.expectedThreadCwds {
                 do {
@@ -102,6 +108,7 @@ public actor CleanupJanitor {
 
             for snapshot in entry.snapshotRoots {
                 do {
+                    try await journal.validateForCleanup(entry)
                     guard Self.isContained(snapshot, inside: entry.privateRoot) else {
                         throw CleanupJournalError.pathOutsidePrivateRoot
                     }

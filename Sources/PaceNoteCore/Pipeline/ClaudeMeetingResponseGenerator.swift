@@ -103,6 +103,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
     private var lifecycle: Lifecycle = .open
     private var isolatedRuntime: ClaudeIsolatedRuntime?
     private var responseRuntime: MeetingResponseRuntime?
+    private var preparedSubscription: ClaudeSubscriptionStatus?
     private var activePreparation: ActivePreparation?
     private var preparationCleanupInProgress = false
     private var activeDeep: ActiveDeep?
@@ -178,6 +179,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
                 preparationCleanupInProgress = true
                 isolatedRuntime = nil
                 responseRuntime = nil
+                preparedSubscription = nil
                 try? Self.removeRuntimeRoot(
                     configuration.runtimeRoot,
                     meetingPrivateRoot: configuration.meetingPrivateRoot
@@ -244,7 +246,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
         case .answer:
             Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
         case .generalAnswer:
-            Reconciliation(relationship: .continueAnswer, transition: "Broadly speaking,")
+            Reconciliation(relationship: .continueAnswer, transition: "")
         case .clarification:
             Reconciliation(relationship: .clarify, transition: "The detail I need is:")
         case .abstention:
@@ -318,6 +320,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
             deepRoute: CodexModelRoute(model: "sonnet", effort: "high"),
             usesRealtimeQuick: false
         )
+        preparedSubscription = account
         responseRuntime = prepared
         lastCleanupReport = nil
         return prepared
@@ -359,6 +362,13 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
             }
             try Task.checkCancellation()
 
+            let currentSubscription = try await makeSubscriptionChecker(
+                runtime: runtime
+            ).subscriptionStatus()
+            guard currentSubscription == preparedSubscription else {
+                throw MeetingResponseError.accountMismatch
+            }
+            try Task.checkCancellation()
             try managedPolicyValidator()
             try executableRevalidator(runtime)
             let result = try await runner.run(
@@ -374,7 +384,13 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
                         maximumStandardOutputBytes: 256 * 1_024,
                         maximumStandardErrorBytes: 32 * 1_024,
                         terminationGracePeriod: .milliseconds(500)
-                    )
+                    ),
+                    postLaunchValidator: { processID, executableURL in
+                        try SpawnedProcessAttestation.validateClaude(
+                            processID: processID,
+                            executableURL: executableURL
+                        )
+                    }
                 )
             )
             try Task.checkCancellation()
@@ -436,6 +452,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
 
         isolatedRuntime = nil
         responseRuntime = nil
+        preparedSubscription = nil
         var failures: [MeetingResponseCleanupFailure] = []
         do {
             try Self.removeRuntimeRoot(
@@ -456,6 +473,18 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
     private func finishDeep(id: UUID) {
         guard activeDeep?.id == id else { return }
         activeDeep = nil
+    }
+
+    private func makeSubscriptionChecker(
+        runtime: ClaudeIsolatedRuntime
+    ) -> any ClaudeSubscriptionChecking {
+        if let subscriptionChecker { return subscriptionChecker }
+        return ClaudeCLIAuthStatusChecker(
+            executableURL: runtime.executableURL,
+            currentDirectoryURL: runtime.workingDirectory,
+            environment: runtime.processEnvironment,
+            runner: runner
+        )
     }
 
     private func requireOpen() throws {

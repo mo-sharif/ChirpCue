@@ -64,6 +64,41 @@ final class ClaudeProcessRunnerTests: XCTestCase {
         }
     }
 
+    func testPostLaunchAttestationRejectsBeforeWritingSensitiveInput() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pacenote-claude-attestation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("stdin-received")
+        let probe = ClaudeProcessIDProbe()
+        let runner = ClaudeProcessRunner()
+
+        do {
+            _ = try await runner.run(
+                ClaudeCommandRequest(
+                    executableURL: URL(fileURLWithPath: "/bin/sh"),
+                    currentDirectoryURL: root,
+                    arguments: ["-c", "read value; printf received > \"$MARKER\""],
+                    environment: ["MARKER": marker.path, "PATH": "/usr/bin:/bin"],
+                    standardInput: Data("sensitive meeting prompt".utf8),
+                    postLaunchValidator: { processID, _ in
+                        probe.record(processID)
+                        throw SpawnedProcessAttestationError.untrustedProcess
+                    }
+                )
+            )
+            XCTFail("Expected post-launch attestation rejection.")
+        } catch let error as ClaudeCommandError {
+            XCTAssertEqual(error, .launchFailed)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        let processID = try XCTUnwrap(probe.value)
+        errno = 0
+        XCTAssertEqual(Darwin.kill(processID, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+    }
+
     func testTerminatesOnOutputLimit() async throws {
         let runner = ClaudeProcessRunner()
         do {
@@ -212,6 +247,19 @@ final class ClaudeProcessRunnerTests: XCTestCase {
             descendantWasTerminated,
             "A descendant retaining stdout or stderr must not outlive a completed request."
         )
+    }
+}
+
+private final class ClaudeProcessIDProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processID: pid_t?
+
+    func record(_ processID: pid_t) {
+        lock.withLock { self.processID = processID }
+    }
+
+    var value: pid_t? {
+        lock.withLock { processID }
     }
 }
 

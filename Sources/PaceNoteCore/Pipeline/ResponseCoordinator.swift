@@ -6,12 +6,54 @@ public protocol ResponseGenerating: Sendable {
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation
 }
 
+public enum ResponseCoordinatorFailure: String, Equatable, Sendable {
+    case rateLimited
+    case busy
+    case timedOut
+    case providerUnavailable
+    case responseRejected
+    case groundingUnavailable
+}
+
 public enum ResponseCoordinatorEvent: Equatable, Sendable {
     case cue(CueEnvelope)
     case deep(BoundDeep)
     case quickUnavailable(String)
-    case deepUnavailable(String)
+    case deepUnavailable(ResponseCoordinatorFailure)
     case discardedStale(TurnIdentity)
+}
+
+public struct ResponseSensitiveOutputSnapshot: Sendable {
+    public let values: [String]
+    public let overflowed: Bool
+}
+
+public actor ResponseSensitiveOutputBuffer {
+    private let capacity: Int
+    private var values: [String] = []
+    private var overflowed = false
+
+    public init(capacity: Int = 2_048) {
+        self.capacity = min(max(1, capacity), 4_096)
+    }
+
+    public func register(_ value: String) {
+        guard !overflowed else { return }
+        let bounded = String(decoding: value.utf8.prefix(320), as: UTF8.self)
+        guard !bounded.isEmpty, !values.contains(bounded) else { return }
+        guard values.count < capacity else {
+            overflowed = true
+            return
+        }
+        values.append(bounded)
+    }
+
+    public func takeSnapshotAndClear() -> ResponseSensitiveOutputSnapshot {
+        let snapshot = ResponseSensitiveOutputSnapshot(values: values, overflowed: overflowed)
+        values.removeAll(keepingCapacity: false)
+        overflowed = false
+        return snapshot
+    }
 }
 
 public struct ResponseCoordinatorConfiguration: Sendable {
@@ -33,15 +75,18 @@ public struct ResponseCoordinatorConfiguration: Sendable {
 public actor ResponseCoordinator {
     private let generator: any ResponseGenerating
     private let configuration: ResponseCoordinatorConfiguration
+    private let sensitiveOutputBuffer: ResponseSensitiveOutputBuffer?
     private var activeIdentity: TurnIdentity?
     private var activeTask: Task<Void, Never>?
 
     public init(
         generator: any ResponseGenerating,
-        configuration: ResponseCoordinatorConfiguration = .init()
+        configuration: ResponseCoordinatorConfiguration = .init(),
+        sensitiveOutputBuffer: ResponseSensitiveOutputBuffer? = nil
     ) {
         self.generator = generator
         self.configuration = configuration
+        self.sensitiveOutputBuffer = sensitiveOutputBuffer
     }
 
     deinit {
@@ -79,9 +124,14 @@ public actor ResponseCoordinator {
         let startedAt = clock.now
         let resultDeadline = startedAt.advanced(by: configuration.resultTTL)
         let generator = generator
-        let deepOperation = Self.startOperation(deadline: resultDeadline) {
-            try await generator.generateDeep(for: turn)
-        }
+        let sensitiveOutputBuffer = sensitiveOutputBuffer
+        let deepOperation = Self.startOperation(
+            deadline: resultDeadline,
+            onValue: { draft in
+                await sensitiveOutputBuffer?.register(draft.candidateSayNext)
+            },
+            operation: { try await generator.generateDeep(for: turn) }
+        )
 
         defer {
             deepOperation.task.cancel()
@@ -107,20 +157,20 @@ public actor ResponseCoordinator {
         }
 
         switch deepResult {
-        case .failure(let error):
-            continuation.yield(.deepUnavailable(error))
+        case .failure(let failure):
+            continuation.yield(.deepUnavailable(failure))
         case .timedOut:
             deepOperation.task.cancel()
-            continuation.yield(.discardedStale(turn.identity))
+            continuation.yield(.deepUnavailable(.timedOut))
         case .cancelled:
-            continuation.yield(.deepUnavailable("Cancelled"))
+            continuation.yield(.deepUnavailable(.providerUnavailable))
         case .success(let draft):
             guard clock.now <= resultDeadline else {
                 continuation.yield(.discardedStale(turn.identity))
                 return
             }
             guard Self.valid(draft, for: turn) else {
-                continuation.yield(.deepUnavailable("Deep returned an invalid or mismatched envelope."))
+                continuation.yield(.deepUnavailable(.responseRejected))
                 return
             }
 
@@ -158,12 +208,12 @@ public actor ResponseCoordinator {
                     basis: draft.basis
                 )
                 guard Self.wordCount(bound.composedText) <= 40 else {
-                    continuation.yield(.deepUnavailable("Bound Deep exceeded the speakable word limit."))
+                    continuation.yield(.deepUnavailable(.responseRejected))
                     return
                 }
                 continuation.yield(.deep(bound))
             } catch {
-                continuation.yield(.deepUnavailable(Self.safeError(error)))
+                continuation.yield(.deepUnavailable(Self.classify(error)))
             }
         }
     }
@@ -203,7 +253,7 @@ public actor ResponseCoordinator {
             case .answer:
                 return Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
             case .generalAnswer:
-                return Reconciliation(relationship: .continueAnswer, transition: "Broadly speaking,")
+                return Reconciliation(relationship: .continueAnswer, transition: "")
             case .clarification:
                 return Reconciliation(relationship: .clarify, transition: "The detail I need is:")
             case .abstention:
@@ -225,13 +275,13 @@ public actor ResponseCoordinator {
         switch await outcome(from: operation.gate, deadline: deadline) {
         case .success(let reconciliation):
             return reconciliation
-        case .failure(let error):
-            continuation.yield(.deepUnavailable(error))
+        case .failure(let failure):
+            continuation.yield(.deepUnavailable(failure))
         case .timedOut:
-            continuation.yield(.discardedStale(identity))
+            continuation.yield(.deepUnavailable(.timedOut))
         case .cancelled:
             if !Task.isCancelled {
-                continuation.yield(.deepUnavailable("Cancelled"))
+                continuation.yield(.deepUnavailable(.providerUnavailable))
             }
         }
         return nil
@@ -239,12 +289,14 @@ public actor ResponseCoordinator {
 
     private nonisolated static func startOperation<Value: Sendable>(
         deadline: ContinuousClock.Instant,
+        onValue: @escaping @Sendable (Value) async -> Void = { _ in },
         operation: @escaping @Sendable () async throws -> Value
     ) -> PendingOperation<Value> {
         let gate = DeadlineGate<Value>()
         let task = Task {
             do {
                 let value = try await operation()
+                await onValue(value)
                 guard ContinuousClock().now <= deadline else {
                     await gate.resolve(.timedOut)
                     return
@@ -257,7 +309,7 @@ public actor ResponseCoordinator {
                     await gate.resolve(.timedOut)
                     return
                 }
-                await gate.resolve(.failure(safeError(error)))
+                await gate.resolve(.failure(classify(error)))
             }
         }
         return PendingOperation(gate: gate, task: task)
@@ -327,15 +379,29 @@ public actor ResponseCoordinator {
         text.split(whereSeparator: { $0.isWhitespace }).count
     }
 
-    private static func safeError(_ error: any Error) -> String {
-        if error is CancellationError { return "Cancelled" }
-        return String(describing: error).prefix(160).description
+    private static func classify(_ error: any Error) -> ResponseCoordinatorFailure {
+        guard let responseError = error as? MeetingResponseError else {
+            return .providerUnavailable
+        }
+        switch responseError {
+        case .quickRateLimited, .deepRateLimited:
+            return .rateLimited
+        case .deepAlreadyActive:
+            return .busy
+        case .invalidOutput:
+            return .responseRejected
+        case .groundingUnavailable, .groundingMismatch, .skillPolicyMismatch:
+            return .groundingUnavailable
+        case .signInRequired, .credentialStoreUnavailable, .accountMismatch,
+            .protocolUnsupported, .runtimeUnavailable, .notPrepared, .cleanupFailed:
+            return .providerUnavailable
+        }
     }
 }
 
 private enum DeadlineOutcome<Value: Sendable>: Sendable {
     case success(Value)
-    case failure(String)
+    case failure(ResponseCoordinatorFailure)
     case timedOut
     case cancelled
 }

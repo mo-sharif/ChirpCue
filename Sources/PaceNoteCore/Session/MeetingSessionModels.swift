@@ -137,6 +137,8 @@ public struct MeetingBrownout: Identifiable, Equatable, Sendable {
             "Meeting audio capture is off. Use typed Coach for questions."
         case .transcriptUncertain:
             "The local transcript may be incomplete."
+        case .transcriptionUnavailable:
+            "On-device transcription stopped while audio capture remained active."
         case .transcriberAssetMissing:
             "The local transcription language is not ready."
         case .codexOffline:
@@ -153,6 +155,14 @@ public struct MeetingBrownout: Identifiable, Equatable, Sendable {
             "The quick response path is temporarily limited."
         case .deepLimited:
             "The grounded response path is temporarily limited."
+        case .deepBusy:
+            "Another deeper response is still finishing."
+        case .deepTimedOut:
+            "The deeper response did not finish before its deadline."
+        case .deepUnavailable:
+            "The deeper response provider is unavailable."
+        case .deepRejected:
+            "The deeper response did not pass local validation."
         case .repositoryChanged:
             "The approved repository changed after its snapshot was sealed."
         case .snapshotBlocked:

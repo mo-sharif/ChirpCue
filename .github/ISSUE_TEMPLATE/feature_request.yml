@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose a consent-first improvement that stays inside ChirpCue's product boundaries.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What should become easier or safer?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Product boundaries
+      options:
+        - label: The proposal does not add covert capture, automatic speaking, automatic sending, meeting joining, or assessment evasion.
+          required: true
+        - label: The proposal does not add API-key, Console, gateway, or cloud-provider billing.
+          required: true
+        - label: Any repository access remains read-only and limited to a sealed snapshot.
+          required: true

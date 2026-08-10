@@ -363,7 +363,7 @@ Local speech initially freezes the visible cue instead of cancelling Deep becaus
 
 ### 7.5 Eligibility and usage governor
 
-Automatic coaching requires a likely meeting-output question or a user-triggered Coach Current Turn, stable enough source attribution, and available Codex capacity. A typed question can start coaching when output capture is unavailable. Repository-specific Deep additionally requires a selected, successfully sealed repository; otherwise PaceNote uses the clearly labeled general mode. The personal defaults allow one active Deep turn and at most two Deep starts per minute. These limits must be tuned from measured plan usage. The local bridge consumes no subscription capacity.
+Automatic coaching requires a likely meeting-output question or a user-triggered Coach Current Turn, stable enough source attribution, and available Codex capacity. A typed question can start coaching when output capture is unavailable. Repository-specific Deep additionally requires a selected, successfully sealed repository; otherwise PaceNote uses the clearly labeled general mode. The personal defaults allow one active Deep turn, at most six Codex Deep starts per minute, and at most two Claude Deep starts per minute. A local-limit message must identify ChirpCue as the source instead of implying that the provider subscription is exhausted. These limits must be tuned from measured plan usage. The local bridge consumes no subscription capacity.
 
 `account/rateLimits/updated` can lower the local budget immediately; recovery is visible and never assumed on a timer alone.
 

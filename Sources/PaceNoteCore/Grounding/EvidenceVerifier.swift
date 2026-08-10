@@ -231,6 +231,94 @@ public actor EvidenceVerifier {
         return verified
     }
 
+    /// Converts a model-supplied citation into one exact, locally re-read source line. The model's
+    /// claim text is ignored; only its bounded path, hash, and line range are used as a locator.
+    public func verifiedExtractiveFallback(
+        references: [EvidenceReference],
+        groundingFingerprint: String,
+        against snapshot: GroundingSnapshot,
+        maximumWords: Int
+    ) throws -> EvidenceReference? {
+        guard references.count <= 6, (1...33).contains(maximumWords) else { return nil }
+
+        for reference in references {
+            do {
+                try fileSecurity.validate(relativePath: reference.relativePath)
+            } catch {
+                throw EvidenceVerificationError.invalidPath(reference.relativePath)
+            }
+            guard let manifestEntry = snapshot.manifest[reference.relativePath] else {
+                throw EvidenceVerificationError.pathNotIncluded(reference.relativePath)
+            }
+            guard reference.fileHash == manifestEntry.sha256 else {
+                throw EvidenceVerificationError.referenceHashMismatch(reference.relativePath)
+            }
+            guard reference.startLine >= 1,
+                reference.endLine >= reference.startLine,
+                reference.endLine - reference.startLine < 8
+            else {
+                throw EvidenceVerificationError.invalidLineRange(reference.relativePath)
+            }
+
+            let budget = GroundingResourceBudget(limits: limits)
+            let bytes: GroundingFileSecurity.SecureBytes
+            do {
+                bytes = try fileSecurity.secureRead(
+                    root: snapshot.snapshotRoot,
+                    relativePath: reference.relativePath,
+                    maximumByteCount: limits.maximumFileBytes,
+                    budget: budget
+                )
+            } catch {
+                throw EvidenceVerificationError.snapshotChanged
+            }
+            guard bytes.hash == reference.fileHash else {
+                throw EvidenceVerificationError.snapshotChanged
+            }
+
+            for lineNumber in reference.startLine...reference.endLine {
+                let line = try extractLines(
+                    from: bytes.data,
+                    startLine: lineNumber,
+                    endLine: lineNumber,
+                    relativePath: reference.relativePath
+                )
+                for claim in exactSourceClaims(from: line) {
+                    guard claim.split(whereSeparator: { $0.isWhitespace }).count <= maximumWords,
+                        informativeTerms(in: claim).count >= 2
+                    else {
+                        continue
+                    }
+                    let corrected = EvidenceReference(
+                        repoAlias: snapshot.repoAlias,
+                        relativePath: reference.relativePath,
+                        startLine: lineNumber,
+                        endLine: lineNumber,
+                        fileHash: reference.fileHash,
+                        claim: claim
+                    )
+                    do {
+                        _ = try verifyAnswer(
+                            candidateSayNext: claim,
+                            references: [corrected],
+                            groundingFingerprint: groundingFingerprint,
+                            against: snapshot
+                        )
+                        return corrected
+                    } catch let error as EvidenceVerificationError {
+                        switch error {
+                        case .claimNotSupported, .candidateNotSupported:
+                            continue
+                        default:
+                            throw error
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
     public func isFresh(_ snapshot: GroundingSnapshot) -> Bool {
         let budget = GroundingResourceBudget(limits: limits)
         do {
@@ -376,6 +464,27 @@ public actor EvidenceVerifier {
             break
         }
         return candidates
+    }
+
+    private func exactSourceClaims(from line: String) -> [String] {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var claims: [String] = []
+        for prefix in ["///", "//", "/*", "*", "#", "-"] {
+            let decoratedPrefix = prefix + " "
+            guard trimmed.hasPrefix(decoratedPrefix) else { continue }
+            var undecorated = String(trimmed.dropFirst(decoratedPrefix.count))
+                .trimmingCharacters(in: .whitespaces)
+            if prefix == "/*", undecorated.hasSuffix("*/") {
+                undecorated = String(undecorated.dropLast(2))
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            if !undecorated.isEmpty { claims.append(undecorated) }
+            break
+        }
+        claims.append(trimmed)
+        var seen: Set<String> = []
+        return claims.filter { seen.insert($0).inserted }
     }
 
     private func canonicalTerm(_ term: String) -> String {

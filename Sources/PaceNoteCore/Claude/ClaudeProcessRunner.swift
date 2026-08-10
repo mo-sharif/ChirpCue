@@ -30,6 +30,7 @@ public struct ClaudeCommandRequest: Sendable {
     public let environment: [String: String]
     public let standardInput: Data
     public let limits: ClaudeCommandLimits
+    public let postLaunchValidator: @Sendable (pid_t, URL) throws -> Void
 
     public init(
         executableURL: URL,
@@ -37,7 +38,8 @@ public struct ClaudeCommandRequest: Sendable {
         arguments: [String],
         environment: [String: String],
         standardInput: Data = Data(),
-        limits: ClaudeCommandLimits = .init()
+        limits: ClaudeCommandLimits = .init(),
+        postLaunchValidator: @escaping @Sendable (pid_t, URL) throws -> Void = { _, _ in }
     ) {
         self.executableURL = executableURL.standardizedFileURL
         self.currentDirectoryURL = currentDirectoryURL.standardizedFileURL
@@ -45,6 +47,7 @@ public struct ClaudeCommandRequest: Sendable {
         self.environment = environment
         self.standardInput = standardInput
         self.limits = limits
+        self.postLaunchValidator = postLaunchValidator
     }
 }
 
@@ -187,6 +190,22 @@ private final class ClaudeProcessController: @unchecked Sendable {
         }
         if cancellationWasRequested {
             Self.signalProcessGroup(processID, signal: SIGTERM)
+        }
+
+        do {
+            try request.postLaunchValidator(processID, request.executableURL)
+        } catch {
+            var waitStatus: Int32 = 0
+            _ = Self.terminateProcessGroupAndReapLeader(
+                processID: processID,
+                processGroupID: processID,
+                didReapLeader: false,
+                waitStatus: &waitStatus,
+                gracePeriod: request.limits.terminationGracePeriod,
+                clock: ContinuousClock()
+            )
+            Self.closeAll(input: input, output: output, errors: errors)
+            throw ClaudeCommandError.launchFailed
         }
 
         try? input.fileHandleForReading.close()

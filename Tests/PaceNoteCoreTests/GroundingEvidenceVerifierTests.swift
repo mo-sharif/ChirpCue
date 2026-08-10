@@ -314,6 +314,73 @@ final class GroundingEvidenceVerifierTests: XCTestCase {
         XCTAssertEqual(verified.map(\.reference), [reference])
     }
 
+    func testExtractiveFallbackIgnoresParaphraseAndReReadsExactCitedLine() async throws {
+        let context = try await EvidenceFixture.make()
+        addTeardownBlock { try context.remove() }
+        let reference = try context.reference(
+            path: "Sources/Worker.swift",
+            startLine: 3,
+            endLine: 3,
+            claim: "The worker adds the incoming task to its queue."
+        )
+        let verifier = EvidenceVerifier()
+
+        let fallback = try await verifier.verifiedExtractiveFallback(
+            references: [reference],
+            groundingFingerprint: context.snapshot.groundingFingerprint,
+            against: context.snapshot,
+            maximumWords: 33
+        )
+
+        let exact = try XCTUnwrap(fallback)
+        XCTAssertEqual(exact.startLine, 3)
+        XCTAssertEqual(exact.endLine, 3)
+        XCTAssertEqual(exact.claim, "queue.append(job)")
+        _ = try await verifier.verifyAnswer(
+            candidateSayNext: exact.claim,
+            references: [exact],
+            groundingFingerprint: context.snapshot.groundingFingerprint,
+            against: context.snapshot
+        )
+    }
+
+    func testExtractiveFallbackNormalizesUntrustedRepositoryAlias() async throws {
+        let context = try await EvidenceFixture.make()
+        addTeardownBlock { try context.remove() }
+        let reference = try context.reference(
+            path: "Sources/Worker.swift",
+            startLine: 3,
+            endLine: 3,
+            claim: "The worker adds the incoming task to its queue."
+        )
+        let wrongAlias = EvidenceReference(
+            repoAlias: "invented-by-model",
+            relativePath: reference.relativePath,
+            startLine: reference.startLine,
+            endLine: reference.endLine,
+            fileHash: reference.fileHash,
+            claim: reference.claim
+        )
+        let verifier = EvidenceVerifier()
+
+        let fallback = try await verifier.verifiedExtractiveFallback(
+            references: [wrongAlias],
+            groundingFingerprint: context.snapshot.groundingFingerprint,
+            against: context.snapshot,
+            maximumWords: 33
+        )
+
+        let exact = try XCTUnwrap(fallback)
+        XCTAssertEqual(exact.repoAlias, context.snapshot.repoAlias)
+        XCTAssertEqual(exact.claim, "queue.append(job)")
+        _ = try await verifier.verifyAnswer(
+            candidateSayNext: exact.claim,
+            references: [exact],
+            groundingFingerprint: context.snapshot.groundingFingerprint,
+            against: context.snapshot
+        )
+    }
+
     func testBasisClaimCannotAppendUnsupportedClause() async throws {
         let context = try await EvidenceFixture.make()
         addTeardownBlock { try context.remove() }

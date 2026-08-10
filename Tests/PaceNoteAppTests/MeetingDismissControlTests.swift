@@ -33,6 +33,18 @@ final class MeetingDismissControlTests: XCTestCase {
         XCTAssertTrue(appCommands.contains(".disabled(!model.canStop)"))
     }
 
+    func testTerminalDeepFailureReplacesSpinnerWithRetryControl() throws {
+        let meetingWindow = try source("Sources/PaceNoteApp/UI/MeetingWindow.swift")
+
+        XCTAssertTrue(meetingWindow.contains("meeting.retry-deep"))
+        XCTAssertTrue(meetingWindow.contains("Retry Deep Answer"))
+        XCTAssertTrue(
+            meetingWindow.contains(
+                "The temporary bridge is complete; no deeper answer arrived."
+            )
+        )
+    }
+
     private func source(_ relativePath: String) throws -> String {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

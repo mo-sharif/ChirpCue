@@ -165,7 +165,11 @@ public actor GroundingManager {
         let candidate = try fileSecurity.canonicalRepositoryRoot(selectedRoot)
         let repositoryRoot = try git.repositoryRoot(startingAt: candidate, budget: budget)
         try budget.checkDeadline()
-        return try fileSecurity.canonicalRepositoryRoot(repositoryRoot)
+        let canonicalGitRoot = try fileSecurity.canonicalRepositoryRoot(repositoryRoot)
+        guard canonicalGitRoot == candidate else {
+            throw GroundingError.invalidRepositoryRoot
+        }
+        return canonicalGitRoot
     }
 
     private func removeAttemptSnapshot(_ root: URL?) throws {

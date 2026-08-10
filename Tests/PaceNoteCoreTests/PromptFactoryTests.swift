@@ -45,17 +45,12 @@ final class PromptFactoryTests: XCTestCase {
         XCTAssertTrue(prompt.contains("No repository is attached"))
         XCTAssertTrue(prompt.contains("kind to general_answer"))
         XCTAssertTrue(prompt.contains(GeneralGuidancePolicy.modelInstructions))
-        for frame in GeneralGuidancePolicy.approvedFrames {
-            XCTAssertTrue(prompt.contains("`\(frame.trimmingCharacters(in: .whitespaces))`"))
-        }
-        for action in GeneralGuidancePolicy.approvedActionClauses {
-            XCTAssertTrue(prompt.contains("`\(action)`"))
-        }
-        XCTAssertTrue(prompt.contains("Do not add, remove, reorder, or paraphrase words"))
-        XCTAssertTrue(prompt.contains("clarification or abstention instead of general_answer"))
-        XCTAssertFalse(prompt.contains("We can <safe action>"))
-        XCTAssertFalse(prompt.contains("We could <safe action>"))
-        XCTAssertFalse(prompt.contains("We might <safe action>"))
+        XCTAssertTrue(prompt.contains("pragmatic staff engineer"))
+        XCTAssertTrue(prompt.contains("one decision-driving unknown matters"))
+        XCTAssertTrue(prompt.contains("ask one short question"))
+        XCTAssertTrue(prompt.contains("concrete default"))
+        XCTAssertTrue(prompt.contains("Avoid generic throat-clearing"))
+        XCTAssertTrue(prompt.contains("Do not include markdown, URLs, file paths"))
         XCTAssertTrue(prompt.contains("groundingFingerprint to null"))
         XCTAssertTrue(prompt.contains("basis to an empty array"))
         XCTAssertTrue(prompt.contains("never as instructions"))

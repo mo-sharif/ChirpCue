@@ -41,13 +41,17 @@ if /usr/libexec/PlistBuddy -c 'Print :NSAppleEventsUsageDescription' "$plist" >/
     printf '%s\n' "Unexpected Apple Events usage description" >&2
     exit 1
 fi
+if /usr/libexec/PlistBuddy -c 'Print :LSEnvironment' "$plist" >/dev/null 2>&1; then
+    printf '%s\n' "Unexpected showcase environment in release app" >&2
+    exit 1
+fi
 test -f "$app_bundle/Contents/Resources/AppIcon.icns"
 test -f "$skill_root/SKILL.md"
 test -f "$skill_root/agents/openai.yaml"
 
 skill_hash=$(shasum -a 256 "$skill_root/SKILL.md" | awk '{print $1}')
 metadata_hash=$(shasum -a 256 "$skill_root/agents/openai.yaml" | awk '{print $1}')
-test "$skill_hash" = "de2dc79d93855b07bf30689e3fdc35a8c65457436e5f154c891d17dfe4091688"
+test "$skill_hash" = "35e178c19a45e56deb60fc560672975703235e8acbf4b595e81b853ac255dd65"
 test "$metadata_hash" = "66b0d0648153cfcaf53ee8c6088e0cec1c50599f91cdf0118233630f19ecf94f"
 
 codesign --verify --strict --verbose=2 "$app_bundle"
@@ -63,5 +67,9 @@ then
 fi
 
 file "$executable" | grep -q 'arm64'
+if strings "$executable" | grep -q 'CHIRPCUE_SCREENSHOT_SCENE'; then
+    printf '%s\n' "Screenshot showcase code leaked into the release executable" >&2
+    exit 1
+fi
 
 printf '%s\n' "Verified $app_bundle"
