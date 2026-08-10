@@ -1332,12 +1332,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     private static func requireRemoteCapacity(_ result: CodexRateLimitsResult) throws {
-        let limits = result.rateLimits
-        guard limits.spendControlReached != true,
-            limits.rateLimitReachedType == nil,
-            (limits.primary?.usedPercent ?? 0) < 100,
-            (limits.secondary?.usedPercent ?? 0) < 100
-        else {
+        guard result.hasAvailableCapacity else {
             throw MeetingResponseError.quickRateLimited
         }
     }

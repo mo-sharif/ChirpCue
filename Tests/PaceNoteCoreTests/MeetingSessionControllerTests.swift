@@ -268,6 +268,28 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testProviderRateLimitIsPreservedForRecoveryUI() async throws {
+        let response = FakeMeetingResponseGenerator(prepareFailure: .quickRateLimited)
+        let harness = makeHarness(mode: .manualOnly, response: response)
+
+        do {
+            _ = try await harness.controller.preflight(
+                consent: MeetingConsent(participantDisclosureConfirmed: true)
+            )
+            XCTFail("Expected provider rate limit")
+        } catch let failure as MeetingSessionFailure {
+            XCTAssertEqual(failure, .responseRateLimited)
+            XCTAssertEqual(
+                failure.errorDescription,
+                "The selected provider is temporarily rate limited. Wait for its allowance to reset, then choose Recheck and start again."
+            )
+        }
+
+        let state = await harness.controller.state()
+        XCTAssertTrue(state.brownouts.contains { $0.reason == .quickLimited })
+        _ = await harness.controller.stop()
+    }
+
     func testStopInvalidatesAndAwaitsSuspendedPreflight() async throws {
         let preparationBarrier = AudioOperationBarrier()
         let response = FakeMeetingResponseGenerator(prepareBarrier: preparationBarrier)
@@ -1885,6 +1907,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     let prepareBarrier: AudioOperationBarrier?
     let deepBarrier: AudioOperationBarrier?
     let cancelBarrier: AudioOperationBarrier?
+    let prepareFailure: MeetingResponseError?
     private var deepFailuresRemaining: Int
     private let deepFailure: MeetingResponseError
     private(set) var prepareCount = 0
@@ -1900,6 +1923,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         prepareBarrier: AudioOperationBarrier? = nil,
         deepBarrier: AudioOperationBarrier? = nil,
         cancelBarrier: AudioOperationBarrier? = nil,
+        prepareFailure: MeetingResponseError? = nil,
         deepFailuresRemaining: Int = 0,
         deepFailure: MeetingResponseError = .runtimeUnavailable
     ) {
@@ -1909,13 +1933,15 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         self.prepareBarrier = prepareBarrier
         self.deepBarrier = deepBarrier
         self.cancelBarrier = cancelBarrier
+        self.prepareFailure = prepareFailure
         self.deepFailuresRemaining = max(0, deepFailuresRemaining)
         self.deepFailure = deepFailure
     }
 
-    func prepare() async -> MeetingResponseRuntime {
+    func prepare() async throws -> MeetingResponseRuntime {
         prepareCount += 1
         if let prepareBarrier { await prepareBarrier.suspendIfArmed() }
+        if let prepareFailure { throw prepareFailure }
         return runtime
     }
 

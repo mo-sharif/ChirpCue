@@ -1297,7 +1297,14 @@ actor PaceNoteRuntime {
         UserDefaults.standard.set(identityHash, forKey: Self.accountIdentityKey)
 
         do {
-            let models = try await client.listModels(includeHidden: false)
+            async let modelsRequest = client.listModels(includeHidden: false)
+            async let rateLimitsRequest = client.rateLimits()
+            let (models, rateLimits) = try await (modelsRequest, rateLimitsRequest)
+            guard rateLimits.hasAvailableCapacity else {
+                return .limited(
+                    "The ChatGPT account is connected, but its Codex allowance is temporarily exhausted. Wait for it to reset, then choose Recheck."
+                )
+            }
             return .ready(
                 CodexAccountSummary(
                     accountLabel: Self.redactedEmail(email),
