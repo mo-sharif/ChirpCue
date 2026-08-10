@@ -65,6 +65,7 @@ public enum HardExclusionReason: String, Codable, Sendable {
     case repositoryMetadata
     case dependencyCache
     case buildOutput
+    case oversizedFile
     case environmentFile
     case privateKey
     case credentialStore
@@ -233,7 +234,7 @@ public struct GroundingResourceLimits: Equatable, Sendable {
     public let maximumGroundingDuration: TimeInterval
 
     public init(
-        maximumFileBytes: UInt64 = 2 * 1_024 * 1_024,
+        maximumFileBytes: UInt64 = 8 * 1_024 * 1_024,
         maximumFileCount: Int = 5_000,
         maximumAcceptedBytes: UInt64 = 32 * 1_024 * 1_024,
         maximumScannedBytes: UInt64 = 192 * 1_024 * 1_024,

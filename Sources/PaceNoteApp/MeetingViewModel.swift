@@ -221,6 +221,7 @@ struct GroundingReviewSummary: Equatable, Sendable {
     let hardExclusions: [GroundingReviewFinding]
     let softFindings: [GroundingReviewFinding]
     let instructionFiles: [String]
+    let resourceLimits: GroundingResourceLimits
 
     init(
         repositoryAlias: String,
@@ -229,7 +230,8 @@ struct GroundingReviewSummary: Equatable, Sendable {
         includedFileCount: Int,
         hardExclusions: [GroundingReviewFinding],
         softFindings: [GroundingReviewFinding],
-        instructionFiles: [String]
+        instructionFiles: [String],
+        resourceLimits: GroundingResourceLimits = .init()
     ) {
         self.repositoryAlias = repositoryAlias
         self.branch = branch
@@ -238,6 +240,7 @@ struct GroundingReviewSummary: Equatable, Sendable {
         self.hardExclusions = hardExclusions
         self.softFindings = softFindings
         self.instructionFiles = instructionFiles
+        self.resourceLimits = resourceLimits
     }
 }
 
@@ -1605,7 +1608,13 @@ final class MeetingViewModel {
                             id: "hard-env",
                             relativePath: ".env.local",
                             detail: "Environment files are always excluded."
-                        )
+                        ),
+                        GroundingReviewFinding(
+                            id: "hard-oversized",
+                            relativePath: "Fixtures/generated-catalog.json",
+                            detail:
+                                "Excluded because it exceeds the 8 MiB per-file grounding limit."
+                        ),
                     ],
                     softFindings: [
                         GroundingReviewFinding(

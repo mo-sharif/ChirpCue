@@ -79,7 +79,7 @@ This is the completion contract for the personal production build. A checked ite
 
 - [x] Sealed snapshot tests cover tracked, dirty, allowed-untracked, rename, delete, symlink, hard-link, special-file, sensitive-path, and concurrent-mutation behavior.
 - [x] The model reads a sealed snapshot rather than the live working tree; hard-denied secrets cannot be approved and soft approvals are path-and-hash bound.
-- [x] Grounding enforces 2 MiB per file, 5,000 accepted files, 32 MiB accepted content, 192 MiB scanned content, 50,000 traversed entries, 8 MiB Git output, 10 seconds per Git command, and 30 seconds per top-level operation. Snapshot creation shares one budget across build, copy, rebuild, and retries; freshness and evidence verification are separate bounded operations.
+- [x] Grounding accepts up to 8 MiB per file and visibly excludes larger candidates from both providers without blocking the repository. It still enforces 5,000 reviewed files, 32 MiB accepted content, 192 MiB scanned content, 50,000 traversed entries, 8 MiB Git output, 10 seconds per Git command, and 30 seconds per top-level operation. Snapshot creation shares one budget across build, copy, rebuild, and retries; freshness and evidence verification are separate bounded operations.
 - [x] Automated fixtures cover hard exclusion of private keys, major provider tokens, bearer tokens, JWTs, and Slack or Discord webhooks; only ambiguous credential assignments can enter exact-hash soft approval.
 - [x] Nested `AGENTS.md` scope selection, packaged meeting-coach skill integrity, and at-most-one selected domain skill have automated checks.
 - [x] Displayed evidence is gated on repository alias, relative path, line range, file hash, claim, grounding fingerprint, and live-source freshness.

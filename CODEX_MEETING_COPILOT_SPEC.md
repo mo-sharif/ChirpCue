@@ -530,7 +530,7 @@ Before the meeting, GroundingManager creates a deterministic manifest for each s
 - filename, symbol, and glossary index;
 - selected skill names, paths, and content hashes.
 
-The model never reads the live working tree. Grounding defaults to 2 MiB per regular file, 5,000 accepted files, 32 MiB of accepted content, 192 MiB of scanned content, 50,000 traversed entries, 8 MiB of Git output, 10 seconds per Git command, and 30 seconds per top-level grounding operation. Snapshot creation shares one budget across building, copying, rebuilding, and retries. Freshness checks and evidence verification are separate bounded operations with fresh budgets. GroundingManager:
+The model never reads the live working tree. Grounding defaults to 8 MiB per regular file, 5,000 reviewed files, 32 MiB of accepted content, 192 MiB of scanned content, 50,000 traversed entries, 8 MiB of Git output, 10 seconds per Git command, and 30 seconds per top-level grounding operation. A regular candidate above the per-file ceiling is visibly hard-excluded from both providers instead of blocking the repository; the remaining aggregate and traversal ceilings still fail closed. Snapshot creation shares one budget across building, copying, rebuilding, and retries. Freshness checks and evidence verification are separate bounded operations with fresh budgets. GroundingManager:
 
 1. enumerates tracked files plus non-ignored untracked entries and rejects sockets, devices, symlinks, hard links, and non-regular files;
 2. removes .git, dependency caches, build outputs, ignored files, and hard-denied sensitive classes such as .env variants, private keys, credential stores, token files, and dumps; hard-denied paths cannot be overridden;

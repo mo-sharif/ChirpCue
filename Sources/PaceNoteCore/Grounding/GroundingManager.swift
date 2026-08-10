@@ -348,7 +348,10 @@ struct GroundingSourceBuilder: Sendable {
             } catch GroundingFileSecurity.ReadError.unsafe(let kind) {
                 throw GroundingError.unsafeFile(relativePath: relativePath, kind: kind)
             } catch GroundingFileSecurity.ReadError.exceedsByteLimit {
-                throw GroundingError.resourceLimitExceeded(.fileBytes)
+                hardExclusions.append(
+                    HardExcludedPath(relativePath: relativePath, reason: .oversizedFile)
+                )
+                continue
             } catch let error as GroundingError {
                 throw error
             } catch {

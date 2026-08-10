@@ -5,6 +5,14 @@ import XCTest
 @testable import PaceNoteCore
 
 final class GroundingSnapshotTests: XCTestCase {
+    func testProductionGroundingLimitsSupportLargeRepositoriesWithoutRemovingBounds() {
+        let limits = GroundingResourceLimits()
+        XCTAssertEqual(limits.maximumFileBytes, 8 * 1_024 * 1_024)
+        XCTAssertEqual(limits.maximumFileCount, 5_000)
+        XCTAssertEqual(limits.maximumAcceptedBytes, 32 * 1_024 * 1_024)
+        XCTAssertEqual(limits.maximumScannedBytes, 192 * 1_024 * 1_024)
+    }
+
     func testSnapshotIncludesTrackedAndNonignoredUntrackedFilesOnly() async throws {
         let fixture = try GitFixture()
         addTeardownBlock { try fixture.remove() }
@@ -217,7 +225,7 @@ final class GroundingSnapshotTests: XCTestCase {
         XCTAssertTrue(paths.allSatisfy { inspection.manifest[$0] == nil })
     }
 
-    func testPerFileCountAndAggregateResourceLimitsFailClosed() async throws {
+    func testOversizedFilesAreVisiblyExcludedWhileCountAndAggregateLimitsFailClosed() async throws {
         let perFileFixture = try GitFixture()
         addTeardownBlock { try perFileFixture.remove() }
         try perFileFixture.write("large.txt", String(repeating: "x", count: 33))
@@ -226,9 +234,14 @@ final class GroundingSnapshotTests: XCTestCase {
                 snapshotParentDirectory: perFileFixture.snapshots,
                 resourceLimits: .init(maximumFileBytes: 32)
             ))
-        await XCTAssertThrowsGroundingLimit(.fileBytes) {
-            try await perFileManager.inspectRepository(at: perFileFixture.root)
-        }
+        let perFileInspection = try await perFileManager.inspectRepository(
+            at: perFileFixture.root
+        )
+        XCTAssertTrue(perFileInspection.manifest.entries.isEmpty)
+        XCTAssertEqual(
+            perFileInspection.hardExclusions,
+            [HardExcludedPath(relativePath: "large.txt", reason: .oversizedFile)]
+        )
 
         let countFixture = try GitFixture()
         addTeardownBlock { try countFixture.remove() }
