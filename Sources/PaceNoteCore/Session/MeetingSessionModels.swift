@@ -243,6 +243,7 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
     case responseSignInRequired
     case responseAccountMismatch
     case responseProtocolUnsupported
+    case responseRateLimited
     case responseUnavailable
     case captureUnavailable(AudioLane)
     case captureTeardownFailed(AudioLane)
@@ -272,6 +273,8 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
             "The selected provider account does not match the confirmed ChirpCue profile."
         case .responseProtocolUnsupported:
             "The installed provider version is not compatible with ChirpCue."
+        case .responseRateLimited:
+            "The selected provider is temporarily rate limited. Wait for its allowance to reset, then choose Recheck and start again."
         case .responseUnavailable:
             "The selected provider response runtime could not be prepared."
         case .captureUnavailable(let lane):

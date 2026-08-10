@@ -297,6 +297,17 @@ final class CodexAppServerClientTests: XCTestCase {
         XCTAssertEqual(account.account?.planType, "pro")
         XCTAssertEqual(models.map(\.id), ["quick-model"])
         XCTAssertEqual(limits.rateLimits.limitId, "codex")
+        XCTAssertTrue(limits.hasAvailableCapacity)
+        let exhaustedLimits = try JSONDecoder().decode(
+            CodexRateLimitsResult.self,
+            from: Data(
+                CodexFixtures.rateLimitsResult.replacingOccurrences(
+                    of: "\"usedPercent\":12",
+                    with: "\"usedPercent\":100"
+                ).utf8
+            )
+        )
+        XCTAssertFalse(exhaustedLimits.hasAvailableCapacity)
         XCTAssertEqual(profiles.map(\.id), [":read-only"])
         XCTAssertEqual(skills.data.first?.skills.first?.name, "repo-answer")
         let sentNotifications = await transport.sentNotifications()

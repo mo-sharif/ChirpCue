@@ -1946,6 +1946,8 @@ public actor MeetingSessionController {
             .responseAccountMismatch
         case .protocolUnsupported:
             .responseProtocolUnsupported
+        case .quickRateLimited, .deepRateLimited:
+            .responseRateLimited
         default:
             .responseUnavailable
         }
@@ -1959,6 +1961,10 @@ public actor MeetingSessionController {
             .init(reason: .accountMismatch)
         case .protocolUnsupported:
             .init(reason: .protocolUnsupported)
+        case .quickRateLimited:
+            .init(reason: .quickLimited)
+        case .deepRateLimited:
+            .init(reason: .deepLimited)
         case .skillPolicyMismatch:
             .init(reason: .skillPolicyMismatch)
         case .groundingUnavailable, .groundingMismatch:

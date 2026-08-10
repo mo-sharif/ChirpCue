@@ -336,6 +336,14 @@ public struct CodexRateLimitsResult: Codable, Equatable, Sendable {
     public let rateLimits: CodexRateLimitSnapshot
     public let rateLimitsByLimitId: [String: CodexRateLimitSnapshot]?
     public let rateLimitResetCredits: JSONValue?
+
+    public var hasAvailableCapacity: Bool {
+        let limits = rateLimits
+        return limits.spendControlReached != true
+            && limits.rateLimitReachedType == nil
+            && (limits.primary?.usedPercent ?? 0) < 100
+            && (limits.secondary?.usedPercent ?? 0) < 100
+    }
 }
 
 public struct CodexPermissionProfile: Codable, Equatable, Sendable {
