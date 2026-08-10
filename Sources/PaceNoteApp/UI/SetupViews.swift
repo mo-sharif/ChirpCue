@@ -823,6 +823,29 @@ private struct RepositoryReviewContent: View {
                             .padding(5)
                     }
 
+                    GroupBox("Grounding limits") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(
+                                "\(Self.mebibytes(review.resourceLimits.maximumFileBytes)) MiB per file",
+                                systemImage: "doc"
+                            )
+                            Label(
+                                "\(review.resourceLimits.maximumFileCount.formatted()) reviewed files",
+                                systemImage: "number"
+                            )
+                            Label(
+                                "\(Self.mebibytes(review.resourceLimits.maximumAcceptedBytes)) MiB included content",
+                                systemImage: "externaldrive"
+                            )
+                            Text(
+                                "Files above the per-file limit are listed below and excluded from both providers instead of blocking the repository."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(5)
+                    }
+
                     GroupBox("Hard exclusions") {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("These paths are always excluded and cannot be approved.")
@@ -960,6 +983,10 @@ private struct RepositoryReviewContent: View {
     private var isReviewState: Bool {
         if case .review = model.repositoryState { return true }
         return false
+    }
+
+    private static func mebibytes(_ bytes: UInt64) -> UInt64 {
+        bytes / (1_024 * 1_024)
     }
 }
 

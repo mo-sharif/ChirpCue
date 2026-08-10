@@ -485,7 +485,10 @@ actor PaceNoteRuntime {
         guard activeMeeting == nil else {
             throw PaceNoteActionError.safeMessage("Stop the current meeting before changing repository access.")
         }
-        let manager = GroundingManager()
+        let resourceLimits = GroundingResourceLimits()
+        let manager = GroundingManager(
+            configuration: GroundingConfiguration(resourceLimits: resourceLimits)
+        )
         let inspection = try await manager.inspectRepository(at: selectedURL)
         let softByID = Dictionary(
             uniqueKeysWithValues: inspection.softFindings.map {
@@ -506,7 +509,10 @@ actor PaceNoteRuntime {
                 GroundingReviewFinding(
                     id: Self.hardFindingID($0),
                     relativePath: $0.relativePath,
-                    detail: "Always excluded: \($0.reason.rawValue)."
+                    detail: Self.hardExclusionDetail(
+                        $0,
+                        resourceLimits: resourceLimits
+                    )
                 )
             },
             softFindings: inspection.softFindings.map {
@@ -516,7 +522,8 @@ actor PaceNoteRuntime {
                     detail: "Requires explicit approval: \($0.ruleIDs.joined(separator: ", "))."
                 )
             },
-            instructionFiles: inspection.instructionSources.map(\.relativePath)
+            instructionFiles: inspection.instructionSources.map(\.relativePath),
+            resourceLimits: resourceLimits
         )
     }
 
@@ -1581,6 +1588,17 @@ actor PaceNoteRuntime {
 
     private static func hardFindingID(_ finding: HardExcludedPath) -> String {
         stableID(prefix: "hard", value: [finding.relativePath, finding.reason.rawValue])
+    }
+
+    private static func hardExclusionDetail(
+        _ finding: HardExcludedPath,
+        resourceLimits: GroundingResourceLimits
+    ) -> String {
+        if finding.reason == .oversizedFile {
+            let maximumMiB = resourceLimits.maximumFileBytes / (1_024 * 1_024)
+            return "Excluded because it exceeds the \(maximumMiB) MiB per-file grounding limit."
+        }
+        return "Always excluded: \(finding.reason.rawValue)."
     }
 
     static func domainSkills(in snapshot: GroundingSnapshot?) throws -> [DomainSkillOption] {

@@ -73,6 +73,7 @@ Claude programmatic use can follow separate Agent SDK allowance and extra-usage 
 2. Grant microphone, system-audio, and on-device speech permissions.
 3. Select the meeting app output, such as Google Chrome for Google Meet.
 4. Optionally inspect and seal one repository. Codex may use one reviewed read-only skill; Claude remains tool-free and receives only bounded host-selected lines.
+   ChirpCue shows the grounding ceilings during review, accepts files up to 8 MiB, and visibly excludes larger files instead of rejecting the whole repository.
 5. Confirm that participants have been informed and that you have permission to process the conversation.
 6. Start the meeting, then speak, edit, dismiss, or ignore every suggestion yourself.
 
