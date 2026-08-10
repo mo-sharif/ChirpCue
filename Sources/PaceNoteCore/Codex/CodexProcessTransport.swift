@@ -59,9 +59,6 @@ public actor CodexProcessTransport: CodexRPCTransporting {
     private var inputPipe: Pipe?
     private var outputPipe: Pipe?
     private var errorPipe: Pipe?
-    private var outputTask: Task<Void, Never>?
-    private var errorTask: Task<Void, Never>?
-    private var reaperTask: Task<Void, Never>?
     private var inputBuffer = Data()
     private var nextRequestID: Int64 = 1
     private var pendingRequests: [CodexRPCID: PendingRequest] = [:]
@@ -117,25 +114,38 @@ public actor CodexProcessTransport: CodexRPCTransporting {
         self.outputPipe = outputPipe
         self.errorPipe = errorPipe
         state = .running
-        reaperTask = Task.detached(priority: .utility) { [weak self] in
+        // waitpid and FileHandle.availableData block. Keep them off Swift's cooperative
+        // executor so a low-core Mac cannot starve the actor that stops the process.
+        Thread.detachNewThread { [weak self] in
             var waitStatus: Int32 = 0
             while Darwin.waitpid(launchedProcessID, &waitStatus, 0) == -1, errno == EINTR {}
-            await self?.processExited(processID: launchedProcessID, status: waitStatus)
+            let completedWaitStatus = waitStatus
+            Task {
+                await self?.processExited(
+                    processID: launchedProcessID,
+                    status: completedWaitStatus
+                )
+            }
         }
 
         let outputHandle = outputPipe.fileHandleForReading
-        outputTask = Task.detached(priority: .userInitiated) { [weak self] in
-            while !Task.isCancelled {
+        Thread.detachNewThread { [weak self] in
+            while true {
                 let data = outputHandle.availableData
                 guard !data.isEmpty else { break }
-                await self?.receive(data)
+                let delivery = DispatchSemaphore(value: 0)
+                Task {
+                    await self?.receive(data)
+                    delivery.signal()
+                }
+                delivery.wait()
             }
-            await self?.streamEnded()
+            Task { await self?.streamEnded() }
         }
 
         let errorHandle = errorPipe.fileHandleForReading
-        errorTask = Task.detached(priority: .utility) {
-            while !Task.isCancelled {
+        Thread.detachNewThread {
+            while true {
                 let data = errorHandle.availableData
                 guard !data.isEmpty else { break }
                 // Drain stderr to prevent subprocess backpressure. Never retain or log it.
@@ -177,8 +187,6 @@ public actor CodexProcessTransport: CodexRPCTransporting {
             )
         }
         _ = exited
-        outputTask?.cancel()
-        errorTask?.cancel()
         finishTransport(error: CodexClientError.transportClosed)
     }
 
@@ -371,9 +379,6 @@ public actor CodexProcessTransport: CodexRPCTransporting {
     private func finishTransport(error: any Error) {
         guard state != .stopped else { return }
         state = .stopped
-        outputTask?.cancel()
-        errorTask?.cancel()
-
         let pending = pendingRequests.values
         pendingRequests.removeAll()
         for request in pending {
