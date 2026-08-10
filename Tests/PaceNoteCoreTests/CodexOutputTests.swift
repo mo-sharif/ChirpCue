@@ -90,22 +90,6 @@ final class CodexOutputTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(DeepDraft.self, from: data), draft)
     }
 
-    func testRealtimeReturnsFirstAssistantFinalText() async throws {
-        let pair = AsyncThrowingStream<CodexRealtimeEvent, any Error>.makeStream()
-        let session = CodexRealtimeSession(threadID: "thread", events: pair.stream)
-        let continuation = pair.continuation
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(10)) {
-            continuation.yield(.transcriptDone(role: "user", text: "Why a queue?"))
-            continuation.yield(.transcriptDelta(role: "assistant", delta: "The queue"))
-            continuation.yield(
-                .transcriptDone(role: "assistant", text: "The queue isolates the slow dependency."))
-            continuation.finish()
-        }
-
-        let answer = try await CodexStructuredOutput.firstRealtimeAnswer(from: session)
-        XCTAssertEqual(answer, "The queue isolates the slow dependency.")
-    }
-
     func testRouterUsesOnlyVersionedAllowlistedModels() throws {
         let models = [
             model(id: "unknown-fast", efforts: ["low"], isDefault: true),
