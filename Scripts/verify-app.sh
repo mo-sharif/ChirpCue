@@ -41,6 +41,10 @@ if /usr/libexec/PlistBuddy -c 'Print :NSAppleEventsUsageDescription' "$plist" >/
     printf '%s\n' "Unexpected Apple Events usage description" >&2
     exit 1
 fi
+if /usr/libexec/PlistBuddy -c 'Print :LSEnvironment' "$plist" >/dev/null 2>&1; then
+    printf '%s\n' "Unexpected showcase environment in release app" >&2
+    exit 1
+fi
 test -f "$app_bundle/Contents/Resources/AppIcon.icns"
 test -f "$skill_root/SKILL.md"
 test -f "$skill_root/agents/openai.yaml"
@@ -63,5 +67,9 @@ then
 fi
 
 file "$executable" | grep -q 'arm64'
+if strings "$executable" | grep -q 'CHIRPCUE_SCREENSHOT_SCENE'; then
+    printf '%s\n' "Screenshot showcase code leaked into the release executable" >&2
+    exit 1
+fi
 
 printf '%s\n' "Verified $app_bundle"

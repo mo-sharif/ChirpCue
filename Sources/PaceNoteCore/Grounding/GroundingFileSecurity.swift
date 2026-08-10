@@ -161,12 +161,46 @@ struct GroundingFileSecurity: Sendable {
 
     func writePrivate(_ data: Data, root: URL, relativePath: String) throws {
         try validate(relativePath: relativePath)
-        let destination = root.appending(path: relativePath, directoryHint: .notDirectory)
-        try createPrivateDirectory(destination.deletingLastPathComponent())
-
-        let descriptor = destination.path.withCString {
-            open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        let components = relativePath.split(separator: "/").map(String.init)
+        guard let filename = components.last else { throw ReadError.io }
+        let rootDescriptor = root.path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         }
+        guard rootDescriptor >= 0 else { throw ReadError.io }
+        defer { close(rootDescriptor) }
+        try validatePrivateDirectoryDescriptor(rootDescriptor)
+
+        var parentDescriptor = rootDescriptor
+        defer {
+            if parentDescriptor != rootDescriptor { close(parentDescriptor) }
+        }
+        for component in components.dropLast() {
+            if mkdirat(parentDescriptor, component, 0o700) != 0, errno != EEXIST {
+                throw ReadError.io
+            }
+            let childDescriptor = openat(
+                parentDescriptor,
+                component,
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+            )
+            guard childDescriptor >= 0 else { throw ReadError.io }
+            do {
+                try validatePrivateDirectoryDescriptor(childDescriptor)
+                guard fchmod(childDescriptor, 0o700) == 0 else { throw ReadError.io }
+            } catch {
+                close(childDescriptor)
+                throw error
+            }
+            if parentDescriptor != rootDescriptor { close(parentDescriptor) }
+            parentDescriptor = childDescriptor
+        }
+
+        let descriptor = openat(
+            parentDescriptor,
+            filename,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+            0o600
+        )
         guard descriptor >= 0 else { throw ReadError.io }
         defer { close(descriptor) }
 
@@ -186,6 +220,16 @@ struct GroundingFileSecurity: Sendable {
             }
         }
         guard fsync(descriptor) == 0, fchmod(descriptor, 0o600) == 0 else {
+            throw ReadError.io
+        }
+    }
+
+    private func validatePrivateDirectoryDescriptor(_ descriptor: Int32) throws {
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+            fileKind(metadata.st_mode) == .directory,
+            metadata.st_uid == getuid()
+        else {
             throw ReadError.io
         }
     }
@@ -433,11 +477,15 @@ struct GroundingSecretScanner: Sendable {
         ("slack-webhook", #"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]{20,}"#),
         ("discord-webhook", #"https://(?:discord(?:app)?\.com)/api/webhooks/[0-9]{6,}/[A-Za-z0-9._-]{20,}"#),
         ("jwt", #"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"#),
+        (
+            "uri-userinfo-credential",
+            #"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|amqp|amqps|kafka|nats|http|https)://[^\s/:@]+:[^\s/@]+@"#
+        ),
     ]
     private let softPatterns: [(id: String, expression: String)] = [
         (
             "credential-assignment",
-            #"(?i)\b(?:api[_-]?key|client[_-]?secret|password|access[_-]?token|auth[_-]?token)\b\s*[:=]\s*[\"']?[A-Za-z0-9/+_.=-]{8,}"#
+            #"(?i)\b(?:api[_-]?key|client[_-]?secret|password|access[_-]?token|auth[_-]?token|database[_-]?url|redis[_-]?url|broker[_-]?url|dsn|connection[_-]?string)\b\s*[:=]\s*[\"']?[^\s\"']{8,}"#
         )
     ]
 

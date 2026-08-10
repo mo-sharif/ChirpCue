@@ -271,6 +271,27 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertLessThan(result.elapsed, .milliseconds(200))
     }
 
+    func testLateDeepOutputIsAuditedEvenAfterTheVisibleStreamTimesOut() async throws {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let buffer = ResponseSensitiveOutputBuffer(capacity: 4)
+        let coordinator = ResponseCoordinator(
+            generator: CancellationResistantLateGenerator(),
+            configuration: .init(resultTTL: .milliseconds(20)),
+            sensitiveOutputBuffer: buffer
+        )
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+        XCTAssertEqual(events.compactMap(\.deepUnavailable), [.timedOut])
+        try await Task.sleep(for: .milliseconds(40))
+        let snapshot = await buffer.takeSnapshotAndClear()
+
+        XCTAssertEqual(
+            snapshot.values,
+            ["I would keep the late provider output in the cleanup audit."]
+        )
+        XCTAssertFalse(snapshot.overflowed)
+    }
+
     func testProviderCompatibilityFailureIsNotReportedAsRateLimit() async {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
         let coordinator = ResponseCoordinator(
@@ -547,5 +568,28 @@ private struct FailingDeepGenerator: ResponseGenerating {
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
         throw error
+    }
+}
+
+private struct CancellationResistantLateGenerator: ResponseGenerating {
+    func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
+        throw MeetingResponseError.runtimeUnavailable
+    }
+
+    func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
+        try? await Task.sleep(for: .milliseconds(80))
+        return DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext: "I would keep the late provider output in the cleanup audit.",
+            confidence: 0.9,
+            basis: []
+        )
+    }
+
+    func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
+        Reconciliation(relationship: .continueAnswer, transition: "")
     }
 }

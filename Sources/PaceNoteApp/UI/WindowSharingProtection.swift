@@ -30,7 +30,11 @@ struct WindowSharingProtection: NSViewRepresentable {
 enum CoachingWindowBehavior {
     @MainActor
     static func apply(to window: NSWindow) {
-        window.sharingType = .none
+        #if DEBUG
+            window.sharingType = ScreenshotShowcase.current == nil ? .none : .readOnly
+        #else
+            window.sharingType = .none
+        #endif
         window.hidesOnDeactivate = false
         window.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
     }

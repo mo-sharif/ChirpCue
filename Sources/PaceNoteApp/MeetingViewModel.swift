@@ -1513,7 +1513,7 @@ final class MeetingViewModel {
                 TranscriptSegment(
                     id: UUID(uuidString: "22222222-2222-2222-2222-222222222222") ?? UUID(),
                     source: .them,
-                    text: "How does the app prevent the model from reading credentials in the repository?",
+                    text: "What's your plan for keeping our database secure when the MCP needs data access?",
                     startedAt: 1,
                     endedAt: 5,
                     isFinal: true,
@@ -1522,7 +1522,7 @@ final class MeetingViewModel {
                 TranscriptSegment(
                     id: UUID(uuidString: "33333333-3333-3333-3333-333333333333") ?? UUID(),
                     source: .you,
-                    text: "There are two separate safeguards.",
+                    text: "I'd separate access control from what the model is allowed to request.",
                     startedAt: 6,
                     endedAt: 8,
                     isFinal: true,
@@ -1546,7 +1546,7 @@ final class MeetingViewModel {
                 identity: identity,
                 stage: .deep,
                 text:
-                    "First, credential-like paths are excluded locally. Then Codex receives only a sealed read-only copy, never the live repository.",
+                    "Which datasets does the MCP actually need, and is access strictly read-only? My default is a dedicated least-privilege identity, short-lived credentials, query limits, and full audit logs.",
                 confidence: 0.93,
                 evidence: [
                     EvidenceReference(
@@ -1555,7 +1555,7 @@ final class MeetingViewModel {
                         startLine: 35,
                         endLine: 46,
                         fileHash: String(repeating: "a", count: 64),
-                        claim: "The grounding manager creates a private snapshot before repository use."
+                        claim: "The MCP uses a dedicated read-only identity with bounded query access."
                     )
                 ],
                 deepKind: .answer

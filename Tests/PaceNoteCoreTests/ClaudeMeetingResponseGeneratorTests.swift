@@ -128,6 +128,32 @@ final class ClaudeMeetingResponseGeneratorTests: XCTestCase {
         _ = await generator.shutdown()
     }
 
+    func testDeepRechecksClaudeAccountAndRejectsAChangedIdentityBeforeLaunch() async throws {
+        let fixture = try ClaudeGeneratorFixture()
+        defer { fixture.cleanup() }
+        let prepared = ClaudeSubscriptionStatus(
+            planType: "max",
+            redactedLabel: "p…@example.invalid",
+            identityHash: String(repeating: "a", count: 64)
+        )
+        let changed = ClaudeSubscriptionStatus(
+            planType: "max",
+            redactedLabel: "c…@example.invalid",
+            identityHash: String(repeating: "b", count: 64)
+        )
+        let checker = SequencedClaudeSubscriptionChecker(statuses: [prepared, changed])
+        let runner = CapturingClaudeRunner(results: [])
+        let generator = fixture.generator(runner: runner, subscriptionChecker: checker)
+        _ = try await generator.prepare()
+
+        await XCTAssertThrowsClaudeMeetingError(.accountMismatch) {
+            _ = try await generator.generateDeep(for: fixture.generalTurn())
+        }
+        let requests = await runner.requests()
+        XCTAssertTrue(requests.isEmpty)
+        _ = await generator.shutdown()
+    }
+
     func testConcurrentSecondDeepIsRejectedWhileFirstRunnerIsSuspended() async throws {
         let fixture = try ClaudeGeneratorFixture()
         defer { fixture.cleanup() }
@@ -531,6 +557,19 @@ private struct FixedClaudeSubscriptionChecker: ClaudeSubscriptionChecking {
     let status: ClaudeSubscriptionStatus
 
     func subscriptionStatus() async throws -> ClaudeSubscriptionStatus { status }
+}
+
+private actor SequencedClaudeSubscriptionChecker: ClaudeSubscriptionChecking {
+    private var statuses: [ClaudeSubscriptionStatus]
+
+    init(statuses: [ClaudeSubscriptionStatus]) {
+        self.statuses = statuses
+    }
+
+    func subscriptionStatus() async throws -> ClaudeSubscriptionStatus {
+        guard !statuses.isEmpty else { throw ClaudeSubscriptionError.invalidStatus }
+        return statuses.removeFirst()
+    }
 }
 
 private struct FixedClaudeGroundingPackBuilder: ClaudeGroundingPackBuilding {

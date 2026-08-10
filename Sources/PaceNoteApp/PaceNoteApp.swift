@@ -12,6 +12,22 @@ struct PaceNoteApp: App {
     private let runtime: PaceNoteRuntime?
 
     init() {
+        #if DEBUG
+            if let showcase = ScreenshotShowcase.current {
+                runtime = nil
+                let showcaseModel: MeetingViewModel
+                switch showcase {
+                case .meeting:
+                    showcaseModel = .previewListening
+                case .setup:
+                    showcaseModel = .previewSetup
+                case .privacy:
+                    showcaseModel = .previewSetup
+                }
+                _model = State(initialValue: showcaseModel)
+                return
+            }
+        #endif
         let defaults = UserDefaults.standard
         let microphoneEnabled = defaults.object(forKey: "paceNote.defaultMicrophoneEnabled") as? Bool ?? true
         let outputEnabled = defaults.object(forKey: "paceNote.defaultOutputEnabled") as? Bool ?? true
@@ -54,15 +70,21 @@ struct PaceNoteApp: App {
 
     var body: some Scene {
         WindowGroup(AppBrand.displayName, id: "meeting") {
-            MeetingWindow(model: model)
-                .frame(minWidth: 820, minHeight: 600)
-                .tint(AppBrand.cyan)
-                .task {
-                    appDelegate.runtime = runtime
-                }
-                .onChange(of: model.hasCompletedFirstRun) { _, completed in
-                    didCompleteFirstRun = completed
-                }
+            Group {
+                #if DEBUG
+                    ScreenshotShowcaseRoot(model: model, showcase: ScreenshotShowcase.current)
+                #else
+                    MeetingWindow(model: model)
+                #endif
+            }
+            .frame(minWidth: 820, minHeight: 600)
+            .tint(AppBrand.cyan)
+            .task {
+                appDelegate.runtime = runtime
+            }
+            .onChange(of: model.hasCompletedFirstRun) { _, completed in
+                didCompleteFirstRun = completed
+            }
         }
         .defaultSize(width: 980, height: 720)
         .defaultPosition(.center)
@@ -86,6 +108,37 @@ struct PaceNoteApp: App {
         }
     }
 }
+
+#if DEBUG
+    private struct ScreenshotShowcaseRoot: View {
+        let model: MeetingViewModel
+        let showcase: ScreenshotShowcase?
+
+        @ViewBuilder
+        var body: some View {
+            switch showcase {
+            case .setup:
+                MeetingSetupView(model: model)
+            case .privacy:
+                PrivacyDetailsView(model: model)
+            case .meeting, nil:
+                MeetingWindow(model: model)
+            }
+        }
+    }
+
+    enum ScreenshotShowcase: String {
+        case meeting
+        case setup
+        case privacy
+
+        static var current: ScreenshotShowcase? {
+            guard let value = ProcessInfo.processInfo.environment["CHIRPCUE_SCREENSHOT_SCENE"]
+            else { return nil }
+            return ScreenshotShowcase(rawValue: value)
+        }
+    }
+#endif
 
 @MainActor
 final class PaceNoteApplicationDelegate: NSObject, NSApplicationDelegate {

@@ -7,35 +7,51 @@ on:
         description: Existing release tag matching VERSION, for example v0.1.0
         required: true
         type: string
-  push:
-    tags:
-      - 'v*'
+      approved_sha:
+        description: Exact reviewed origin/main commit for this release
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: macos-26
     environment: production
     timeout-minutes: 40
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
       - name: Validate release tag and version
         env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          APPROVED_SHA: ${{ inputs.approved_sha }}
         run: |
+          test "${#APPROVED_SHA}" -eq 40
+          git fetch --no-tags origin main
           version=$(tr -d '[:space:]' < VERSION)
           test -n "$version"
           test "$RELEASE_TAG" = "v$version"
           git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
-          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
+          tag_sha=$(git rev-list -n 1 "$RELEASE_TAG")
+          main_sha=$(git rev-parse origin/main)
+          test "$tag_sha" = "$APPROVED_SHA"
+          test "$tag_sha" = "$main_sha"
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
       - name: Select Xcode
         run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      - name: Test approved source before loading credentials
+        run: |
+          ./Scripts/lint.sh
+          ./Scripts/test.sh
       - name: Import Developer ID certificate
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.CERTIFICATE_P12_BASE64 }}
@@ -58,18 +74,20 @@ jobs:
         run: |
           umask 077
           printf '%s' "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary-key.p8"
-      - name: Test and notarize
+      - name: Build, sign, and notarize
         env:
           PACE_NOTE_SIGN_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
           PACE_NOTE_NOTARY_KEY_PATH: ${{ runner.temp }}/notary-key.p8
           PACE_NOTE_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           PACE_NOTE_NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
-          ./Scripts/lint.sh
-          ./Scripts/test.sh
           ./Scripts/notarize-app.sh
-      - name: Create private GitHub release
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/ChirpCue-arm64.zip
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: gh release create "$RELEASE_TAG" dist/ChirpCue-arm64.zip dist/SHA256SUMS --verify-tag --generate-notes

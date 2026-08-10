@@ -5,8 +5,6 @@ import XCTest
 final class GeneralGuidancePolicyTests: XCTestCase {
     func testAcceptsUsefulBoundedGeneralAnswers() {
         let accepted = [
-            "A mutex permits one owner at a time, while a semaphore tracks a configurable number of permits for coordinating access.",
-            "Mix flour, water, yeast, and salt; knead until elastic, let the dough rise, shape it, then bake until browned.",
             "I would compare the latency, failure isolation, and operational cost of both approaches before choosing.",
             "Could you clarify whether you care more about throughput or response time?",
             "I’d first clarify which data the MCP needs and whether access is strictly read-only; my default is a dedicated least-privilege identity with short-lived credentials and full audit logging.",
@@ -24,6 +22,9 @@ final class GeneralGuidancePolicyTests: XCTestCase {
             "Our deployment retries every request three times.",
             "The current codebase stores credentials in plaintext.",
             "In your production, the queue has exactly four workers.",
+            "The application stores credentials in plaintext.",
+            "The service stores credentials in plaintext.",
+            "Production is already protected by network controls.",
         ]
 
         for candidate in rejected {

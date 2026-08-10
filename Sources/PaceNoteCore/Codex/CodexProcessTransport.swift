@@ -10,6 +10,7 @@ public struct CodexProcessTransportConfiguration: Sendable {
     public let terminationTimeout: Duration
     public let forceKillTimeout: Duration
     public let exitPollInterval: Duration
+    public let postLaunchValidator: @Sendable (pid_t, URL) throws -> Void
 
     public init(
         executableURL: URL,
@@ -19,7 +20,8 @@ public struct CodexProcessTransportConfiguration: Sendable {
         environment: [String: String]? = nil,
         terminationTimeout: Duration = .seconds(1),
         forceKillTimeout: Duration = .seconds(1),
-        exitPollInterval: Duration = .milliseconds(10)
+        exitPollInterval: Duration = .milliseconds(10),
+        postLaunchValidator: @escaping @Sendable (pid_t, URL) throws -> Void = { _, _ in }
     ) {
         precondition(terminationTimeout > .zero)
         precondition(forceKillTimeout > .zero)
@@ -32,6 +34,7 @@ public struct CodexProcessTransportConfiguration: Sendable {
         self.terminationTimeout = terminationTimeout
         self.forceKillTimeout = forceKillTimeout
         self.exitPollInterval = exitPollInterval
+        self.postLaunchValidator = postLaunchValidator
     }
 }
 
@@ -51,12 +54,14 @@ public actor CodexProcessTransport: CodexRPCTransporting {
 
     private let configuration: CodexProcessTransportConfiguration
     private var state = State.idle
-    private var process: Process?
+    private var processID: pid_t?
+    private var processGroupID: pid_t?
     private var inputPipe: Pipe?
     private var outputPipe: Pipe?
     private var errorPipe: Pipe?
     private var outputTask: Task<Void, Never>?
     private var errorTask: Task<Void, Never>?
+    private var reaperTask: Task<Void, Never>?
     private var inputBuffer = Data()
     private var nextRequestID: Int64 = 1
     private var pendingRequests: [CodexRPCID: PendingRequest] = [:]
@@ -72,37 +77,51 @@ public actor CodexProcessTransport: CodexRPCTransporting {
             throw CodexClientError.transportUnavailable
         }
 
-        let process = Process()
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
-        process.executableURL = configuration.executableURL
-        process.arguments = configuration.arguments
-        process.environment = configuration.environment
-        process.standardInput = inputPipe
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        process.terminationHandler = { [weak self] terminatedProcess in
-            let status = terminatedProcess.terminationStatus
-            Task {
-                await self?.processExited(
-                    terminatedProcess: terminatedProcess,
-                    status: status
-                )
-            }
-        }
-
+        var launchedProcessID: pid_t?
         do {
-            try process.run()
+            let processID = try Self.spawn(
+                configuration: configuration,
+                standardInput: inputPipe.fileHandleForReading.fileDescriptor,
+                standardOutput: outputPipe.fileHandleForWriting.fileDescriptor,
+                standardError: errorPipe.fileHandleForWriting.fileDescriptor,
+                descriptorsToClose: [
+                    inputPipe.fileHandleForWriting.fileDescriptor,
+                    outputPipe.fileHandleForReading.fileDescriptor,
+                    errorPipe.fileHandleForReading.fileDescriptor,
+                ]
+            )
+            launchedProcessID = processID
+            try configuration.postLaunchValidator(
+                processID,
+                configuration.executableURL
+            )
         } catch {
+            Self.terminateProcessGroupAndReap(launchedProcessID: launchedProcessID)
+            Self.closeAll(inputPipe, outputPipe, errorPipe)
+            throw CodexClientError.transportUnavailable
+        }
+        guard let launchedProcessID else {
+            Self.closeAll(inputPipe, outputPipe, errorPipe)
             throw CodexClientError.transportUnavailable
         }
 
-        self.process = process
+        try? inputPipe.fileHandleForReading.close()
+        try? outputPipe.fileHandleForWriting.close()
+        try? errorPipe.fileHandleForWriting.close()
+        self.processID = launchedProcessID
+        self.processGroupID = launchedProcessID
         self.inputPipe = inputPipe
         self.outputPipe = outputPipe
         self.errorPipe = errorPipe
         state = .running
+        reaperTask = Task.detached(priority: .utility) { [weak self] in
+            var waitStatus: Int32 = 0
+            while Darwin.waitpid(launchedProcessID, &waitStatus, 0) == -1, errno == EINTR {}
+            await self?.processExited(processID: launchedProcessID, status: waitStatus)
+        }
 
         let outputHandle = outputPipe.fileHandleForReading
         outputTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -136,22 +155,24 @@ public actor CodexProcessTransport: CodexRPCTransporting {
 
         state = .stopping
         try? inputPipe?.fileHandleForWriting.close()
-        guard let stoppingProcess = process else {
+        guard let stoppingProcessID = processID,
+            let stoppingProcessGroupID = processGroupID
+        else {
             finishTransport(error: CodexClientError.transportClosed)
             return
         }
 
-        if stoppingProcess.isRunning {
-            stoppingProcess.terminate()
-        }
+        Self.signalProcessGroup(stoppingProcessGroupID, signal: SIGTERM)
         var exited = await waitForExit(
-            of: stoppingProcess,
+            of: stoppingProcessID,
+            processGroupID: stoppingProcessGroupID,
             timeout: configuration.terminationTimeout
         )
         if !exited {
-            forceKill(stoppingProcess)
+            Self.signalProcessGroup(stoppingProcessGroupID, signal: SIGKILL)
             exited = await waitForExit(
-                of: stoppingProcess,
+                of: stoppingProcessID,
+                processGroupID: stoppingProcessGroupID,
                 timeout: configuration.forceKillTimeout
             )
         }
@@ -312,29 +333,38 @@ public actor CodexProcessTransport: CodexRPCTransporting {
 
     private func streamEnded() {
         guard state == .running else { return }
+        if let processGroupID {
+            Self.signalProcessGroup(processGroupID, signal: SIGKILL)
+        }
         finishTransport(error: CodexClientError.transportClosed)
     }
 
     func activeProcessIdentifier() -> Int32? {
-        guard let process, process.isRunning else { return nil }
-        return process.processIdentifier
+        processID
     }
 
-    private func processExited(terminatedProcess: Process, status: Int32) {
+    private func processExited(processID terminatedProcessID: pid_t, status: Int32) {
         _ = status
-        guard process === terminatedProcess else { return }
+        guard processID == terminatedProcessID else { return }
+        if let processGroupID {
+            Self.signalProcessGroup(processGroupID, signal: SIGKILL)
+        }
+        processID = nil
+        processGroupID = nil
         switch state {
         case .running:
             finishTransport(error: CodexClientError.transportClosed)
         case .stopped:
-            process = nil
+            break
         case .idle, .stopping:
             break
         }
     }
 
     private func failProtocol() {
-        if process?.isRunning == true { process?.terminate() }
+        if let processGroupID {
+            Self.signalProcessGroup(processGroupID, signal: SIGKILL)
+        }
         finishTransport(error: CodexClientError.malformedMessage)
     }
 
@@ -355,33 +385,29 @@ public actor CodexProcessTransport: CodexRPCTransporting {
         for continuation in eventContinuations.values { continuation.finish() }
         eventContinuations.removeAll()
 
-        if process?.isRunning != true {
-            process = nil
-        }
         inputPipe = nil
         outputPipe = nil
         errorPipe = nil
         inputBuffer.removeAll(keepingCapacity: false)
     }
 
-    private func waitForExit(of process: Process, timeout: Duration) async -> Bool {
+    private func waitForExit(
+        of targetProcessID: pid_t,
+        processGroupID targetProcessGroupID: pid_t,
+        timeout: Duration
+    ) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
-        while process.isRunning, clock.now < deadline {
+        while (processID == targetProcessID || Self.processGroupExists(targetProcessGroupID)),
+            clock.now < deadline
+        {
             if Task.isCancelled {
                 await Task.yield()
             } else {
                 try? await Task.sleep(for: configuration.exitPollInterval)
             }
         }
-        return !process.isRunning
-    }
-
-    private func forceKill(_ target: Process) {
-        guard process === target, target.isRunning else { return }
-        let pid = target.processIdentifier
-        guard pid > 1, target.isRunning else { return }
-        _ = Darwin.kill(pid, SIGKILL)
+        return processID != targetProcessID && !Self.processGroupExists(targetProcessGroupID)
     }
 
     private func waitForConcurrentStop() async {
@@ -397,6 +423,111 @@ public actor CodexProcessTransport: CodexRPCTransporting {
             } else {
                 try? await Task.sleep(for: configuration.exitPollInterval)
             }
+        }
+    }
+
+    private static func spawn(
+        configuration: CodexProcessTransportConfiguration,
+        standardInput: Int32,
+        standardOutput: Int32,
+        standardError: Int32,
+        descriptorsToClose: [Int32]
+    ) throws -> pid_t {
+        var fileActions: posix_spawn_file_actions_t?
+        guard posix_spawn_file_actions_init(&fileActions) == 0 else {
+            throw CodexClientError.transportUnavailable
+        }
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
+
+        let duplicates = [
+            (standardInput, STDIN_FILENO),
+            (standardOutput, STDOUT_FILENO),
+            (standardError, STDERR_FILENO),
+        ]
+        for (source, destination) in duplicates {
+            guard posix_spawn_file_actions_adddup2(&fileActions, source, destination) == 0 else {
+                throw CodexClientError.transportUnavailable
+            }
+        }
+        let inherited = Set(duplicates.map(\.0) + descriptorsToClose)
+            .filter { ![STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO].contains($0) }
+        for descriptor in inherited {
+            guard posix_spawn_file_actions_addclose(&fileActions, descriptor) == 0 else {
+                throw CodexClientError.transportUnavailable
+            }
+        }
+
+        var attributes: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            throw CodexClientError.transportUnavailable
+        }
+        defer { posix_spawnattr_destroy(&attributes) }
+        let flags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
+        guard posix_spawnattr_setflags(&attributes, flags) == 0,
+            posix_spawnattr_setpgroup(&attributes, 0) == 0
+        else {
+            throw CodexClientError.transportUnavailable
+        }
+
+        let arguments = [configuration.executableURL.path] + configuration.arguments
+        let environment = (configuration.environment ?? ProcessInfo.processInfo.environment)
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+        var processID: pid_t = 0
+        let result = withMutableCStringArray(arguments) { argumentVector in
+            withMutableCStringArray(environment) { environmentVector in
+                configuration.executableURL.path.withCString { executablePath in
+                    posix_spawn(
+                        &processID,
+                        executablePath,
+                        &fileActions,
+                        &attributes,
+                        argumentVector,
+                        environmentVector
+                    )
+                }
+            }
+        }
+        guard result == 0, processID > 1 else {
+            throw CodexClientError.transportUnavailable
+        }
+        return processID
+    }
+
+    private static func withMutableCStringArray<Result>(
+        _ strings: [String],
+        body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) throws -> Result
+    ) rethrows -> Result {
+        var pointers = strings.map { strdup($0) }
+        pointers.append(nil)
+        defer { for pointer in pointers where pointer != nil { free(pointer) } }
+        return try pointers.withUnsafeMutableBufferPointer { buffer in
+            try body(buffer.baseAddress!)
+        }
+    }
+
+    private static func terminateProcessGroupAndReap(launchedProcessID: pid_t?) {
+        guard let launchedProcessID, launchedProcessID > 1 else { return }
+        signalProcessGroup(launchedProcessID, signal: SIGKILL)
+        var status: Int32 = 0
+        while Darwin.waitpid(launchedProcessID, &status, 0) == -1, errno == EINTR {}
+    }
+
+    private static func signalProcessGroup(_ processGroupID: pid_t, signal: Int32) {
+        guard processGroupID > 1 else { return }
+        _ = Darwin.killpg(processGroupID, signal)
+    }
+
+    private static func processGroupExists(_ processGroupID: pid_t) -> Bool {
+        guard processGroupID > 1 else { return false }
+        if Darwin.killpg(processGroupID, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    private static func closeAll(_ pipes: Pipe...) {
+        for pipe in pipes {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
         }
     }
 }

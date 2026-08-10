@@ -542,6 +542,97 @@ final class CleanupJournalTests: XCTestCase {
             )
         )
     }
+
+    func testDecodedJournalEntriesAreRevalidatedBeforeCleanup() async throws {
+        let fixture = try Fixture()
+        let meetingID = UUID()
+        let journal = try CleanupJournalStore(
+            journalURL: fixture.journalURL,
+            allowedRoot: fixture.root
+        )
+        let tampered = CleanupJournalEntry(
+            meetingID: meetingID,
+            profileID: "personal",
+            privateRoot: URL(fileURLWithPath: "/tmp", isDirectory: true),
+            snapshotRoots: [URL(fileURLWithPath: "/tmp/chirpcue-outside")]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([tampered]).write(to: fixture.journalURL)
+
+        do {
+            _ = try await journal.entries()
+            XCTFail("Expected tampered journal rejection.")
+        } catch let error as CleanupJournalError {
+            XCTAssertEqual(error, .pathOutsidePrivateRoot)
+        }
+    }
+
+    func testProductionJournalRequiresExactMeetingIDRoot() async throws {
+        let fixture = try Fixture()
+        let meetingID = UUID()
+        let journal = try CleanupJournalStore(
+            journalURL: fixture.journalURL,
+            allowedRoot: fixture.root,
+            requireDirectMeetingRoot: true
+        )
+
+        do {
+            try await journal.begin(
+                CleanupJournalEntry(
+                    meetingID: meetingID,
+                    profileID: "personal",
+                    privateRoot: fixture.meetingRoot
+                )
+            )
+            XCTFail("Expected exact meeting-root rejection.")
+        } catch let error as CleanupJournalError {
+            XCTAssertEqual(error, .pathOutsidePrivateRoot)
+        }
+
+        let exactRoot = fixture.root.appendingPathComponent(
+            meetingID.uuidString.lowercased(),
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: exactRoot, withIntermediateDirectories: false)
+        try await journal.begin(
+            CleanupJournalEntry(
+                meetingID: meetingID,
+                profileID: "personal",
+                privateRoot: exactRoot
+            )
+        )
+        let persistedMeetingIDs = try await journal.entries().map(\.meetingID)
+        XCTAssertEqual(persistedMeetingIDs, [meetingID])
+    }
+
+    func testPrivacyAuditFailsClosedOnEntryAndByteBudgets() throws {
+        let fixture = try Fixture()
+        try Data("12345678".utf8).write(to: fixture.root.appendingPathComponent("one.txt"))
+        try Data("abcdefgh".utf8).write(to: fixture.root.appendingPathComponent("two.txt"))
+
+        XCTAssertThrowsError(
+            try PrivacyAuditor(
+                limits: .init(maximumEntryCount: 1)
+            ).scan(root: fixture.root, sensitiveNeedles: [])
+        ) { error in
+            XCTAssertEqual(
+                error as? PrivacyAuditError,
+                .resourceLimitExceeded(.entryCount)
+            )
+        }
+
+        XCTAssertThrowsError(
+            try PrivacyAuditor(
+                limits: .init(maximumFileBytes: 4)
+            ).scan(root: fixture.root, sensitiveNeedles: [])
+        ) { error in
+            XCTAssertEqual(
+                error as? PrivacyAuditError,
+                .resourceLimitExceeded(.fileBytes)
+            )
+        }
+    }
 }
 
 private actor CleanupClient: ThreadCleanupClient {

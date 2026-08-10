@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct CleanupJournalEntry: Codable, Equatable, Sendable {
@@ -33,15 +34,25 @@ public struct CleanupJournalEntry: Codable, Equatable, Sendable {
 }
 
 public actor CleanupJournalStore {
+    private static let maximumJournalBytes = 1_048_576
+    private static let maximumEntries = 128
+    private static let maximumValuesPerEntry = 256
+
     private let journalURL: URL
     private let allowedRoot: URL
+    private let requireDirectMeetingRoot: Bool
     private let fileManager: FileManager
 
-    public init(journalURL: URL, allowedRoot: URL, fileManager: FileManager = .default) throws {
+    public init(
+        journalURL: URL,
+        allowedRoot: URL,
+        requireDirectMeetingRoot: Bool = false,
+        fileManager: FileManager = .default
+    ) throws {
         self.journalURL = journalURL.standardizedFileURL
         self.allowedRoot = allowedRoot.standardizedFileURL
+        self.requireDirectMeetingRoot = requireDirectMeetingRoot
         self.fileManager = fileManager
-        try Self.requireContained(self.journalURL, inside: self.allowedRoot)
         try fileManager.createDirectory(
             at: self.journalURL.deletingLastPathComponent(),
             withIntermediateDirectories: true,
@@ -51,10 +62,22 @@ public actor CleanupJournalStore {
 
     public func entries() throws -> [CleanupJournalEntry] {
         guard fileManager.fileExists(atPath: journalURL.path) else { return [] }
-        let data = try Data(contentsOf: journalURL, options: [.mappedIfSafe])
+        let data = try Self.readValidatedJournal(at: journalURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode([CleanupJournalEntry].self, from: data)
+        let decoded = try decoder.decode([CleanupJournalEntry].self, from: data)
+        guard decoded.count <= Self.maximumEntries else {
+            throw CleanupJournalError.resourceLimitExceeded
+        }
+        guard Set(decoded.map(\.meetingID)).count == decoded.count else {
+            throw CleanupJournalError.duplicateMeeting
+        }
+        for entry in decoded { try validate(entry) }
+        return decoded
+    }
+
+    public func validateForCleanup(_ entry: CleanupJournalEntry) throws {
+        try validate(entry)
     }
 
     public func begin(_ entry: CleanupJournalEntry) throws {
@@ -143,6 +166,21 @@ public actor CleanupJournalStore {
 
     private func validate(_ entry: CleanupJournalEntry) throws {
         try Self.requireContained(entry.privateRoot, inside: allowedRoot)
+        if requireDirectMeetingRoot {
+            let expected = allowedRoot.appendingPathComponent(
+                entry.meetingID.uuidString.lowercased(),
+                isDirectory: true
+            ).standardizedFileURL
+            guard entry.privateRoot.standardizedFileURL == expected else {
+                throw CleanupJournalError.pathOutsidePrivateRoot
+            }
+        }
+        guard entry.snapshotRoots.count <= Self.maximumValuesPerEntry,
+            entry.expectedThreadCwds.count <= Self.maximumValuesPerEntry,
+            entry.threadIDs.count <= Self.maximumValuesPerEntry
+        else {
+            throw CleanupJournalError.resourceLimitExceeded
+        }
         for url in entry.snapshotRoots + entry.expectedThreadCwds {
             try Self.requireContained(url, inside: entry.privateRoot)
         }
@@ -155,12 +193,53 @@ public actor CleanupJournalStore {
     }
 
     private func write(_ entries: [CleanupJournalEntry]) throws {
+        guard entries.count <= Self.maximumEntries else {
+            throw CleanupJournalError.resourceLimitExceeded
+        }
+        for entry in entries { try validate(entry) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(entries)
+        guard data.count <= Self.maximumJournalBytes else {
+            throw CleanupJournalError.resourceLimitExceeded
+        }
         try data.write(to: journalURL, options: [.atomic])
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalURL.path)
+    }
+
+    private static func readValidatedJournal(at url: URL) throws -> Data {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw CleanupJournalError.invalidJournalFile }
+        defer { Darwin.close(descriptor) }
+
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0,
+            (status.st_mode & S_IFMT) == S_IFREG,
+            status.st_nlink == 1,
+            status.st_uid == getuid(),
+            status.st_size >= 0,
+            status.st_size <= maximumJournalBytes
+        else {
+            throw CleanupJournalError.invalidJournalFile
+        }
+
+        var data = Data()
+        data.reserveCapacity(Int(status.st_size))
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw CleanupJournalError.invalidJournalFile
+            }
+            guard data.count + count <= maximumJournalBytes else {
+                throw CleanupJournalError.resourceLimitExceeded
+            }
+            data.append(buffer, count: count)
+        }
+        return data
     }
 
     private static func requireContained(_ child: URL, inside root: URL) throws {
@@ -182,4 +261,7 @@ public enum CleanupJournalError: Error, Equatable, Sendable {
     case pathOutsidePrivateRoot
     case invalidThreadIdentifier
     case invalidProfileIdentifier
+    case invalidJournalFile
+    case duplicateMeeting
+    case resourceLimitExceeded
 }

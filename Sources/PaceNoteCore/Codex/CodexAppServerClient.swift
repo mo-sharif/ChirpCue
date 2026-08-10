@@ -101,7 +101,13 @@ public actor CodexAppServerClient {
                 executableURL: configuration.executableURL,
                 requestTimeout: configuration.requestTimeout,
                 arguments: configuration.processArguments,
-                environment: configuration.processEnvironment
+                environment: configuration.processEnvironment,
+                postLaunchValidator: { processID, executableURL in
+                    try SpawnedProcessAttestation.validateCodex(
+                        processID: processID,
+                        executableURL: executableURL
+                    )
+                }
             )
         )
         let client = CodexAppServerClient(

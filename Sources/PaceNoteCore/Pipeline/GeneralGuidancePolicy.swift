@@ -57,6 +57,30 @@ public enum GeneralGuidancePolicy {
         "our-system-",
     ]
 
+    private static let qualifiedOpenings = [
+        "i would ",
+        "i'd ",
+        "i’d ",
+        "my default would be ",
+        "my default is ",
+        "i'd start ",
+        "i’d start ",
+        "before we ",
+        "if ",
+        "could you ",
+        "can you ",
+        "which ",
+        "what ",
+        "how ",
+        "do we ",
+        "are we ",
+        "is this ",
+        "the question i'd ",
+        "the question i’d ",
+        "let's ",
+        "let’s ",
+    ]
+
     public static func accepts(_ candidate: String) -> Bool {
         let statement = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !statement.isEmpty,
@@ -76,7 +100,8 @@ public enum GeneralGuidancePolicy {
         guard !lower.contains("http://"), !lower.contains("https://"),
             !cannedOpenings.contains(where: lower.hasPrefix),
             !privateContextClaims.contains(where: lower.contains),
-            !unsafeClaims.contains(where: lower.contains)
+            !unsafeClaims.contains(where: lower.contains),
+            qualifiedOpenings.contains(where: lower.hasPrefix)
         else {
             return false
         }

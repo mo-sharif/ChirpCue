@@ -134,7 +134,8 @@ actor PaceNoteRuntime {
         }
         self.journal = try CleanupJournalStore(
             journalURL: stateRoot.appendingPathComponent("cleanup-journal.json"),
-            allowedRoot: applicationRoot
+            allowedRoot: meetingsRoot,
+            requireDirectMeetingRoot: true
         )
         self.codexExecutableURL = Self.locateCodexExecutable(fileManager: fileManager)
     }
@@ -1420,6 +1421,30 @@ actor PaceNoteRuntime {
                         )
                     )
                 }
+            }
+        }
+        if report.failures.isEmpty {
+            do {
+                guard try await journal.entries().isEmpty else {
+                    throw CleanupJournalError.meetingConflict
+                }
+                let remainingMeetingRoots = try fileManager.contentsOfDirectory(
+                    at: meetingsRoot,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: []
+                )
+                guard remainingMeetingRoots.isEmpty else {
+                    throw CleanupJournalError.pathOutsidePrivateRoot
+                }
+                _ = try CodexStableProfileSanitizer(fileManager: fileManager)
+                    .cleanTransientState(profileRoot: codexProfileRoot)
+            } catch {
+                report.failures.append(
+                    CleanupFailure(
+                        resource: "structural-audit",
+                        reason: "Recovered meeting state was not proven absent."
+                    )
+                )
             }
         }
         startupCleanupHealthy = report.failures.isEmpty

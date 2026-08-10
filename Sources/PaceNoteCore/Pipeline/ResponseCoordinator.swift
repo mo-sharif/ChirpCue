@@ -23,6 +23,39 @@ public enum ResponseCoordinatorEvent: Equatable, Sendable {
     case discardedStale(TurnIdentity)
 }
 
+public struct ResponseSensitiveOutputSnapshot: Sendable {
+    public let values: [String]
+    public let overflowed: Bool
+}
+
+public actor ResponseSensitiveOutputBuffer {
+    private let capacity: Int
+    private var values: [String] = []
+    private var overflowed = false
+
+    public init(capacity: Int = 2_048) {
+        self.capacity = min(max(1, capacity), 4_096)
+    }
+
+    public func register(_ value: String) {
+        guard !overflowed else { return }
+        let bounded = String(decoding: value.utf8.prefix(320), as: UTF8.self)
+        guard !bounded.isEmpty, !values.contains(bounded) else { return }
+        guard values.count < capacity else {
+            overflowed = true
+            return
+        }
+        values.append(bounded)
+    }
+
+    public func takeSnapshotAndClear() -> ResponseSensitiveOutputSnapshot {
+        let snapshot = ResponseSensitiveOutputSnapshot(values: values, overflowed: overflowed)
+        values.removeAll(keepingCapacity: false)
+        overflowed = false
+        return snapshot
+    }
+}
+
 public struct ResponseCoordinatorConfiguration: Sendable {
     public let quickDeadline: Duration
     public let resultTTL: Duration
@@ -42,15 +75,18 @@ public struct ResponseCoordinatorConfiguration: Sendable {
 public actor ResponseCoordinator {
     private let generator: any ResponseGenerating
     private let configuration: ResponseCoordinatorConfiguration
+    private let sensitiveOutputBuffer: ResponseSensitiveOutputBuffer?
     private var activeIdentity: TurnIdentity?
     private var activeTask: Task<Void, Never>?
 
     public init(
         generator: any ResponseGenerating,
-        configuration: ResponseCoordinatorConfiguration = .init()
+        configuration: ResponseCoordinatorConfiguration = .init(),
+        sensitiveOutputBuffer: ResponseSensitiveOutputBuffer? = nil
     ) {
         self.generator = generator
         self.configuration = configuration
+        self.sensitiveOutputBuffer = sensitiveOutputBuffer
     }
 
     deinit {
@@ -88,9 +124,14 @@ public actor ResponseCoordinator {
         let startedAt = clock.now
         let resultDeadline = startedAt.advanced(by: configuration.resultTTL)
         let generator = generator
-        let deepOperation = Self.startOperation(deadline: resultDeadline) {
-            try await generator.generateDeep(for: turn)
-        }
+        let sensitiveOutputBuffer = sensitiveOutputBuffer
+        let deepOperation = Self.startOperation(
+            deadline: resultDeadline,
+            onValue: { draft in
+                await sensitiveOutputBuffer?.register(draft.candidateSayNext)
+            },
+            operation: { try await generator.generateDeep(for: turn) }
+        )
 
         defer {
             deepOperation.task.cancel()
@@ -248,12 +289,14 @@ public actor ResponseCoordinator {
 
     private nonisolated static func startOperation<Value: Sendable>(
         deadline: ContinuousClock.Instant,
+        onValue: @escaping @Sendable (Value) async -> Void = { _ in },
         operation: @escaping @Sendable () async throws -> Value
     ) -> PendingOperation<Value> {
         let gate = DeadlineGate<Value>()
         let task = Task {
             do {
                 let value = try await operation()
+                await onValue(value)
                 guard ContinuousClock().now <= deadline else {
                     await gate.resolve(.timedOut)
                     return

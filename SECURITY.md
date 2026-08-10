@@ -1,6 +1,6 @@
 # ChirpCue security policy
 
-ChirpCue is a private personal project. Report a suspected vulnerability through a private GitHub issue or GitHub security advisory in `mo-sharif/ChirpCue`. Do not include meeting transcripts, credentials, repository excerpts, auth links, or other sensitive material in a report.
+Report suspected vulnerabilities through a [private GitHub security advisory](https://github.com/mo-sharif/ChirpCue/security/advisories/new). Do not open a public issue and do not include meeting transcripts, credentials, repository excerpts, auth links, email addresses, absolute home paths, or other sensitive material.
 
 ## Security invariants
 
@@ -47,8 +47,10 @@ Microphone and system-output transcript lanes maintain a bounded source-frame-to
 - macOS Keychain, the Codex app-server, and Claude Code own authentication material and refresh behavior for their respective provider paths.
 - The user owns participant disclosure, legal consent, employer approval, and the decision to speak a suggestion.
 
-## Supported distribution
+## Supported versions and distribution
 
-The private GitHub repository limits workflows to selected GitHub-owned Actions and requires full commit-SHA pinning. The personal account tier does not provide private-repository branch rules, so exact-SHA CI verification remains required before treating a pushed revision as the personal release candidate.
+Security fixes are made on `main`. Until the first signed public release, source builds from other branches and forks are unsupported.
 
-The current personal build is locally ad hoc signed and is intended only for the Mac that built it. Distribution beyond that Mac is unsupported until Developer ID signing, Apple notarization, stapling, Gatekeeper verification, a fresh Codex integration review, and the remaining production-readiness gates all pass.
+The current source-build path creates a locally ad hoc signed app intended only for the Mac that built it. A cross-Mac binary must not be published until Developer ID signing, Apple notarization, stapling, Gatekeeper verification, provenance attestation, and the remaining production-readiness gates pass. Never work around Gatekeeper with quarantine removal or disabled security settings.
+
+The release workflow is manual, accepts only a tag whose peeled commit exactly equals the explicitly approved current `origin/main` SHA, runs tests before loading credentials, uses a protected `production` environment, and attests the release archive before publication.

@@ -115,9 +115,13 @@ This is the completion contract for the personal production build. A checked ite
 
 ## Distribution and ownership
 
-- [x] Private GitHub repository exists at `mo-sharif/ChirpCue`.
+- [x] GitHub source repository exists at `mo-sharif/ChirpCue`.
+- [x] Apache 2.0 licensing, notice, contribution guide, code of conduct, security reporting, ownership, issue forms, and pull-request guidance are present.
+- [x] The README includes synthetic native screenshots for coaching, meeting setup, and privacy disclosure; release verification rejects the DEBUG-only showcase environment and code.
+- [x] Full-history secret scanning runs locally and in CI with exact suppressions only for two historical synthetic test fixtures.
+- [x] The pre-publication repository security review is complete and its eleven findings have focused remediations and validation coverage.
 - [ ] Current source, tests, and documentation are committed and pushed to `main`.
-- [ ] Private-repository CI passes for the final pushed revision from a clean checkout.
+- [ ] CI passes for the final pushed revision from a clean checkout.
 - [x] Repository Actions are limited to selected GitHub-owned actions and require full commit-SHA pinning; both workflows use the pinned checkout action.
 - [x] The local ad hoc build opens on the target Mac and its expected Gatekeeper behavior is documented.
 - [ ] Developer ID and notarization credentials are configured if distribution beyond this Mac is desired.

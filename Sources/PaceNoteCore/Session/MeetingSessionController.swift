@@ -114,6 +114,10 @@ public actor MeetingSessionController {
             needles.removeAll(keepingCapacity: false)
             overflowed = false
         }
+
+        mutating func markOverflowed() {
+            overflowed = true
+        }
     }
 
     private enum Lifecycle: Equatable {
@@ -135,6 +139,7 @@ public actor MeetingSessionController {
     private let microphonePermission: any MicrophonePermissionProviding
     private let responseGenerator: any MeetingResponseGenerating
     private let responseCoordinator: ResponseCoordinator
+    private let sensitiveOutputBuffer: ResponseSensitiveOutputBuffer
     private let resourceCleaner: any MeetingSessionResourceCleaning
     private let time: any MeetingTimeProviding
     private let attributionResolver: TranscriptAttributionResolver
@@ -193,9 +198,14 @@ public actor MeetingSessionController {
         self.speechAssets = speechAssets
         self.microphonePermission = microphonePermission
         self.responseGenerator = responseGenerator
+        let sensitiveOutputBuffer = ResponseSensitiveOutputBuffer(
+            capacity: cleanupNeedleCapacity
+        )
+        self.sensitiveOutputBuffer = sensitiveOutputBuffer
         self.responseCoordinator = ResponseCoordinator(
             generator: responseGenerator,
-            configuration: responseCoordinatorConfiguration
+            configuration: responseCoordinatorConfiguration,
+            sensitiveOutputBuffer: sensitiveOutputBuffer
         )
         self.resourceCleaner = resourceCleaner
         self.time = time
@@ -681,12 +691,19 @@ public actor MeetingSessionController {
             invalidation: .sessionStopped
         )
         registerRetainedCleanupContent()
+        let responseReport = await responseGenerator.shutdown()
+        let providerOutputSnapshot = await sensitiveOutputBuffer.takeSnapshotAndClear()
+        for value in providerOutputSnapshot.values {
+            cleanupNeedleLedger.register(value)
+        }
+        if providerOutputSnapshot.overflowed {
+            cleanupNeedleLedger.markOverflowed()
+        }
         var cleanupNeedleSnapshot = cleanupNeedleLedger.takeSnapshotAndClear()
         defer { cleanupNeedleSnapshot.clear() }
         let timingSnapshot = timingLedger.snapshot()
         timingLedger.clear()
 
-        let responseReport = await responseGenerator.shutdown()
         let resourceReport = await resourceCleaner.deleteResources(
             preserveCodexRecoveryState: !responseReport.failures.isEmpty
         )

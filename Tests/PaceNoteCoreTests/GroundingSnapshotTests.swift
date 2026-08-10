@@ -88,13 +88,13 @@ final class GroundingSnapshotTests: XCTestCase {
                 "github_pat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
             "Secrets/github-fine-embedded.txt":
                 "token=\"github_pat_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\"\n",
-            "Secrets/slack.txt": "xoxb-111111111111-222222222222-abcdefghijklmnopqrstuvwx\n",
+            "Secrets/slack.txt": "xox" + "b-111111111111-222222222222-abcdefghijklmnopqrstuvwx\n",
             "Secrets/stripe.txt": "sk_test_AAAAAAAAAAAAAAAAAAAAAAAA\n",
             "Secrets/openai.txt": "sk-proj-AAAAAAAAAAAAAAAAAAAAAAAA\n",
             "Secrets/google.txt": "AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
             "Secrets/bearer.txt": "Authorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAA\n",
             "Secrets/slack-webhook.txt":
-                "https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnopqrstuvwx\n",
+                "https://hooks.slack.com/" + "services/T00000000/B00000000/abcdefghijklmnopqrstuvwx\n",
             "Secrets/discord-webhook.txt":
                 "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwx\n",
         ]
@@ -122,6 +122,75 @@ final class GroundingSnapshotTests: XCTestCase {
         )
         XCTAssertTrue(payloads.keys.allSatisfy { inspection.manifest[$0] == nil })
         XCTAssertTrue(inspection.acceptedApprovals.isEmpty)
+    }
+
+    func testConnectionURIUserinfoIsHardDeniedAndAssignmentsAreFlagged() {
+        let scanner = GroundingSecretScanner()
+        let schemes = [
+            "postgresql", "mysql", "mariadb", "mongodb+srv", "redis", "rediss",
+            "amqp", "amqps", "kafka", "nats", "https",
+        ]
+        for scheme in schemes {
+            let value = scheme + "://fixture-user:" + "SyntheticPassword123@db.invalid/data"
+            XCTAssertEqual(
+                scanner.findings(in: Data(value.utf8)).hardRuleIDs,
+                ["uri-userinfo-credential"],
+                scheme
+            )
+        }
+
+        for name in ["DATABASE_URL", "REDIS_URL", "BROKER_URL", "DSN", "CONNECTION_STRING"] {
+            let value = name + "=fixture_connection_value_12345"
+            XCTAssertEqual(
+                scanner.findings(in: Data(value.utf8)).softRuleIDs,
+                ["credential-assignment"],
+                name
+            )
+        }
+    }
+
+    func testSelectedSubdirectoryCannotRedirectGroundingToGitTopLevel() async throws {
+        let fixture = try GitFixture()
+        addTeardownBlock { try fixture.remove() }
+        try fixture.write("Sources/App.swift", "struct App {}\n")
+        let selectedSubdirectory = fixture.root.appendingPathComponent(
+            "Sources",
+            isDirectory: true
+        )
+
+        do {
+            _ = try await GroundingManager(configuration: fixture.configuration)
+                .inspectRepository(at: selectedSubdirectory)
+            XCTFail("Expected exact selected-root binding.")
+        } catch let error as GroundingError {
+            XCTAssertEqual(error, .invalidRepositoryRoot)
+        }
+    }
+
+    func testSnapshotWriterRejectsIntermediateDestinationSymlink() throws {
+        let fixture = try GitFixture()
+        addTeardownBlock { try fixture.remove() }
+        let snapshotRoot = fixture.parent.appendingPathComponent("owned-snapshot", isDirectory: true)
+        let externalRoot = fixture.parent.appendingPathComponent("external", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshotRoot, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: externalRoot, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(
+            at: snapshotRoot.appendingPathComponent("Nested"),
+            withDestinationURL: externalRoot
+        )
+
+        XCTAssertThrowsError(
+            try GroundingFileSecurity().writePrivate(
+                Data("sealed source".utf8),
+                root: snapshotRoot,
+                relativePath: "Nested/Source.swift"
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: externalRoot.appendingPathComponent("Source.swift").path
+            )
+        )
     }
 
     func testCommonAuthAndOAuthCredentialStorePathsAreHardExcluded() async throws {
