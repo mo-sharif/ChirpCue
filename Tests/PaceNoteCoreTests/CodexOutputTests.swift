@@ -93,17 +93,16 @@ final class CodexOutputTests: XCTestCase {
     func testRealtimeReturnsFirstAssistantFinalText() async throws {
         let pair = AsyncThrowingStream<CodexRealtimeEvent, any Error>.makeStream()
         let session = CodexRealtimeSession(threadID: "thread", events: pair.stream)
-        let producerTask = Task {
-            try await Task.sleep(for: .milliseconds(10))
-            pair.continuation.yield(.transcriptDone(role: "user", text: "Why a queue?"))
-            pair.continuation.yield(.transcriptDelta(role: "assistant", delta: "The queue"))
-            pair.continuation.yield(
+        let continuation = pair.continuation
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(10)) {
+            continuation.yield(.transcriptDone(role: "user", text: "Why a queue?"))
+            continuation.yield(.transcriptDelta(role: "assistant", delta: "The queue"))
+            continuation.yield(
                 .transcriptDone(role: "assistant", text: "The queue isolates the slow dependency."))
-            pair.continuation.finish()
+            continuation.finish()
         }
 
         let answer = try await CodexStructuredOutput.firstRealtimeAnswer(from: session)
-        try await producerTask.value
         XCTAssertEqual(answer, "The queue isolates the slow dependency.")
     }
 
