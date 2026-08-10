@@ -5,20 +5,24 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 # XCTest on the macOS 26 hosted runner can stall at class boundaries around the
-# subprocess-heavy Codex client and generator suites. Keep full coverage, but
-# isolate those suites and the adjacent output-schema suite in fresh processes.
+# Codex suites. Keep full coverage, but run every Codex class in a fresh process.
 "$project_root/Scripts/toolchain.sh" swift test \
     --package-path "$project_root" \
-    --skip 'CodexAppServerClientTests|CodexMeetingResponseGeneratorTests|CodexOutputTests'
+    --skip 'Codex.*Tests'
 
-"$project_root/Scripts/toolchain.sh" swift test \
-    --package-path "$project_root" \
-    --filter CodexAppServerClientTests
+codex_test_suites=$(
+    "$project_root/Scripts/toolchain.sh" swift test list --package-path "$project_root" |
+        sed -n 's#^\([^/]*\.Codex[^/]*Tests\)/.*#\1#p' |
+        LC_ALL=C sort -u
+)
 
-"$project_root/Scripts/toolchain.sh" swift test \
-    --package-path "$project_root" \
-    --filter CodexMeetingResponseGeneratorTests
+if [ -z "$codex_test_suites" ]; then
+    echo "No Codex test suites were discovered" >&2
+    exit 1
+fi
 
-exec "$project_root/Scripts/toolchain.sh" swift test \
-    --package-path "$project_root" \
-    --filter CodexOutputTests
+for test_suite in $codex_test_suites; do
+    "$project_root/Scripts/toolchain.sh" swift test \
+        --package-path "$project_root" \
+        --filter "$test_suite"
+done
