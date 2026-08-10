@@ -16,7 +16,34 @@ permissions:
   contents: read
 
 jobs:
+  hosted-process-tests:
+    runs-on: macos-26
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - PaceNoteCoreTests.CodexAppServerClientTests
+          - PaceNoteCoreTests.CodexProcessTransportTests
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+      - name: Validate reviewed source
+        env:
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+        run: |
+          test "${#APPROVED_SHA}" -eq 40
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      - name: Run isolated process suite
+        run: ./Scripts/test-hosted-process-suite.sh '${{ matrix.suite }}'
+
   release:
+    needs: hosted-process-tests
     runs-on: macos-26
     environment: production
     timeout-minutes: 40
@@ -51,7 +78,7 @@ jobs:
       - name: Test approved source before loading credentials
         run: |
           ./Scripts/lint.sh
-          ./Scripts/test.sh
+          ./Scripts/test-hosted.sh
       - name: Import Developer ID certificate
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.CERTIFICATE_P12_BASE64 }}
