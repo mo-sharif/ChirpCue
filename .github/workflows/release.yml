@@ -17,14 +17,25 @@ permissions:
 
 jobs:
   hosted-process-tests:
+    name: hosted-process-tests (${{ matrix.name }})
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        suite:
-          - PaceNoteCoreTests.CodexAppServerClientTests
-          - PaceNoteCoreTests.CodexProcessTransportTests
+        include:
+          - name: Codex app server
+            filter: PaceNoteCoreTests.CodexAppServerClientTests
+          - name: malformed protocol cleanup
+            filter: PaceNoteCoreTests.CodexProcessTransportTests/testMalformedProtocolOutputTerminatesTheEntireProcessGroup
+          - name: post-launch attestation
+            filter: PaceNoteCoreTests.CodexProcessTransportTests/testPostLaunchAttestationFailsBeforeAnyProtocolInput
+          - name: forced process termination
+            filter: PaceNoteCoreTests.CodexProcessTransportTests/testStopEscalatesAfterTermIgnoringProcessAndReapsPID
+          - name: descendant cleanup
+            filter: PaceNoteCoreTests.CodexProcessTransportTests/testStopTerminatesDescendantsHoldingInheritedPipes
+          - name: graceful process termination
+            filter: PaceNoteCoreTests.CodexProcessTransportTests/testStopWaitsForGracefulProcessExitAndIsIdempotent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,10 +51,21 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
       - name: Run isolated process suite
-        run: ./Scripts/test-hosted-process-suite.sh '${{ matrix.suite }}'
+        run: ./Scripts/test-hosted-process-suite.sh '${{ matrix.filter }}'
+
+  hosted-process-tests-complete:
+    name: hosted-process-tests-complete
+    if: always()
+    needs: hosted-process-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every hosted process test
+        env:
+          MATRIX_RESULT: ${{ needs.hosted-process-tests.result }}
+        run: test "$MATRIX_RESULT" = success
 
   release:
-    needs: hosted-process-tests
+    needs: hosted-process-tests-complete
     runs-on: macos-26
     environment: production
     timeout-minutes: 40
