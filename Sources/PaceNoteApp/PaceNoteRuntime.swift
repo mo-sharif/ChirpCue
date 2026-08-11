@@ -48,13 +48,14 @@ actor PaceNoteRuntime {
 
     private struct VerifiedMeetingSubscription: Sendable {
         let planType: String?
-        let identityHash: String
+        let identityHash: String?
     }
 
     private let fileManager: FileManager
     private let applicationRoot: URL
     private let meetingsRoot: URL
     private let codexProfileRoot: URL
+    private let geminiProfileRoot: URL
     private let codexProfileLease: CodexProfileLease
     private let journal: CleanupJournalStore
     private let codexExecutableURL: URL
@@ -113,15 +114,20 @@ actor PaceNoteRuntime {
         let meetingsRoot = applicationRoot.appendingPathComponent("Meetings", isDirectory: true)
         let profilesRoot = applicationRoot.appendingPathComponent("Profiles", isDirectory: true)
         let codexProfileRoot = profilesRoot.appendingPathComponent("personal", isDirectory: true)
+        let geminiProfileRoot = profilesRoot.appendingPathComponent("gemini-personal", isDirectory: true)
         let stateRoot = applicationRoot.appendingPathComponent("State", isDirectory: true)
 
-        for directory in [applicationRoot, meetingsRoot, profilesRoot, codexProfileRoot, stateRoot] {
+        for directory in [
+            applicationRoot, meetingsRoot, profilesRoot, codexProfileRoot, geminiProfileRoot,
+            stateRoot,
+        ] {
             try Self.createPrivateDirectory(directory, fileManager: fileManager)
         }
 
         self.applicationRoot = applicationRoot
         self.meetingsRoot = meetingsRoot
         self.codexProfileRoot = codexProfileRoot
+        self.geminiProfileRoot = geminiProfileRoot
         do {
             self.codexProfileLease = try CodexProfileLease.acquire(
                 profileRoot: codexProfileRoot
@@ -193,21 +199,25 @@ actor PaceNoteRuntime {
         let sources = await reloadOutputSources()
         let codex: CodexConnectionState
         let claude: InferenceConnectionState
+        let gemini: InferenceConnectionState
         if cleanupIsHealthy {
             codex = await subscriptionState()
             claude = await claudeSubscriptionState()
+            gemini = await geminiSubscriptionState()
         } else {
             let reason =
                 "\(AppBrand.displayName) could not finish cleanup from an earlier session. Capture remains blocked."
             codex = .limited(reason)
             claude = .limited(reason)
+            gemini = .limited(reason)
         }
         return PaceNoteEnvironmentSnapshot(
             microphonePermission: Self.capturePermissionState(microphone),
             systemAudioPermission: Self.capturePermissionState(systemAudio),
             codex: codex,
             outputSources: sources,
-            claude: claude
+            claude: claude,
+            gemini: gemini
         )
     }
 
@@ -304,6 +314,93 @@ actor PaceNoteRuntime {
         } catch {
             await client.shutdown()
             return .unavailable(Self.safeMessage(for: error))
+        }
+    }
+
+    func beginGeminiSignIn() async -> InferenceConnectionState {
+        if let reason = providerOperationBlockReason(action: "changing the Google account") {
+            return .unavailable(reason)
+        }
+        let operationID = UUID()
+        let task = Task { [self] in
+            if let providerOperationSuspensionBarrier {
+                await providerOperationSuspensionBarrier()
+                guard !Task.isCancelled else { return InferenceConnectionState.signedOut }
+            }
+            return await performGeminiSignIn()
+        }
+        providerOperation = ProviderOperation(
+            id: operationID,
+            cancel: { task.cancel() },
+            waitForCompletion: { _ = await task.result }
+        )
+        let state = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        finishProviderOperation(operationID)
+        return state
+    }
+
+    private func performGeminiSignIn() async -> InferenceConnectionState {
+        guard await ensureStartupCleanup() else {
+            return .limited(
+                "\(AppBrand.displayName) must finish cleanup from an earlier session before signing in."
+            )
+        }
+        do {
+            try resetGeminiSignInProfile()
+            let signInRoot = applicationRoot.appendingPathComponent(
+                "GoogleSignIn",
+                isDirectory: true
+            )
+            try Self.createPrivateDirectory(signInRoot, fileManager: fileManager)
+            let preparationRoot = signInRoot.appendingPathComponent(
+                UUID().uuidString,
+                isDirectory: true
+            )
+            defer {
+                if Self.isStrictlyContained(preparationRoot, inside: signInRoot) {
+                    try? fileManager.removeItem(at: preparationRoot)
+                }
+            }
+            let runtime = try GeminiRuntimeBuilder.prepare(
+                runtimeRoot: preparationRoot,
+                profileRoot: geminiProfileRoot
+            )
+            let version = try await GeminiBinaryInspector.inspect(
+                executableURL: runtime.executableURL,
+                currentDirectoryURL: runtime.workingDirectory,
+                environment: runtime.processEnvironment
+            )
+            try GeminiVersionPolicy.tested.validate(version)
+            try runtime.revalidateExecutable()
+            let scriptURL = signInRoot.appendingPathComponent(
+                "chirpcue-google-sign-in.command",
+                isDirectory: false
+            )
+            let quotedExecutable = Self.shellSingleQuote(runtime.executableURL.path)
+            let quotedHome = Self.shellSingleQuote(geminiProfileRoot.path)
+            let quotedTemporary = Self.shellSingleQuote(signInRoot.path)
+            let quotedUser = Self.shellSingleQuote(NSUserName())
+            let script = """
+                #!/bin/sh
+                cd \(quotedTemporary) || exit 1
+                exec /usr/bin/env -i HOME=\(quotedHome) USER=\(quotedUser) LOGNAME=\(quotedUser) TMPDIR=\(quotedTemporary) PATH='/usr/bin:/bin:/usr/sbin:/sbin' AGY_CLI_DISABLE_AUTO_UPDATE=true \(quotedExecutable)
+                """
+            try Data(script.utf8).write(to: scriptURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+            guard await MainActor.run(body: { NSWorkspace.shared.open(scriptURL) }) else {
+                return .unavailable(
+                    "\(AppBrand.displayName) could not open the Google sign-in terminal."
+                )
+            }
+            return .limited(
+                "Complete Google sign-in in Terminal, close that session, then choose Recheck Accounts."
+            )
+        } catch {
+            return .unavailable(Self.safeGeminiMessage(for: error))
         }
     }
 
@@ -754,9 +851,9 @@ actor PaceNoteRuntime {
                 )
             }
             let availableDomainSkillNames = Set(try Self.domainSkills(in: context.snapshot).map(\.name))
-            if request.provider == .claude, request.selectedDomainSkillName != nil {
+            if request.provider != .codex, request.selectedDomainSkillName != nil {
                 throw PaceNoteActionError.safeMessage(
-                    "Claude v1 is tool-free and cannot load repository skills. Clear the skill or choose Codex."
+                    "This provider is tool-restricted and cannot load repository skills. Clear the skill or choose Codex."
                 )
             }
             if let selected = request.selectedDomainSkillName,
@@ -807,6 +904,20 @@ actor PaceNoteRuntime {
                 temporaryRoots = [
                     context.privateRoot.appendingPathComponent("Grounding", isDirectory: true),
                     context.privateRoot.appendingPathComponent("claude-runtime", isDirectory: true),
+                ]
+                stableProfileRoot = nil
+            case .gemini:
+                responseGenerator = GeminiMeetingResponseGenerator(
+                    configuration: GeminiMeetingResponseConfiguration(
+                        meetingID: context.meetingID,
+                        meetingPrivateRoot: context.privateRoot,
+                        speakingStyle: Self.speakingStyle,
+                        groundingSnapshot: context.snapshot
+                    )
+                )
+                temporaryRoots = [
+                    context.privateRoot.appendingPathComponent("Grounding", isDirectory: true),
+                    context.privateRoot.appendingPathComponent("gemini-runtime", isDirectory: true),
                 ]
                 stableProfileRoot = nil
             }
@@ -1072,7 +1183,8 @@ actor PaceNoteRuntime {
             systemAudioPermission: .notChecked,
             codex: .limited(reason),
             outputSources: [],
-            claude: .limited(reason)
+            claude: .limited(reason),
+            gemini: .limited(reason)
         )
     }
 
@@ -1160,6 +1272,8 @@ actor PaceNoteRuntime {
             return try await verifiedCodexMeetingSubscription()
         case .claude:
             return try await verifiedClaudeMeetingSubscription()
+        case .gemini:
+            return try await verifiedGeminiMeetingSubscription()
         }
     }
 
@@ -1229,6 +1343,16 @@ actor PaceNoteRuntime {
         )
     }
 
+    private func verifiedGeminiMeetingSubscription() async throws -> VerifiedMeetingSubscription {
+        do {
+            let status = try await checkedGeminiSubscription()
+            try resetGeminiSignInProfile()
+            return VerifiedMeetingSubscription(planType: status.planType, identityHash: nil)
+        } catch {
+            throw PaceNoteActionError.safeMessage(Self.safeGeminiMessage(for: error))
+        }
+    }
+
     private func claudeSubscriptionState() async -> InferenceConnectionState {
         do {
             let status = try await checkedClaudeSubscription()
@@ -1280,6 +1404,66 @@ actor PaceNoteRuntime {
             currentDirectoryURL: runtime.workingDirectory,
             environment: runtime.processEnvironment
         ).subscriptionStatus()
+    }
+
+    private func geminiSubscriptionState() async -> InferenceConnectionState {
+        do {
+            let status = try await checkedGeminiSubscription()
+            try resetGeminiSignInProfile()
+            return .ready(
+                InferenceAccountSummary(
+                    accountLabel: status.redactedLabel,
+                    planLabel: status.planType,
+                    modelCount: status.modelIDs.count
+                )
+            )
+        } catch GeminiSubscriptionError.signedOut {
+            return .signedOut
+        } catch {
+            return .unavailable(Self.safeGeminiMessage(for: error))
+        }
+    }
+
+    private func checkedGeminiSubscription() async throws -> GeminiSubscriptionStatus {
+        let preflightRoot =
+            applicationRoot
+            .appendingPathComponent("GeminiAuthChecks", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .standardizedFileURL
+        defer {
+            if Self.isStrictlyContained(preflightRoot, inside: applicationRoot) {
+                try? fileManager.removeItem(at: preflightRoot)
+            }
+        }
+        let runtime = try GeminiRuntimeBuilder.prepare(
+            runtimeRoot: preflightRoot
+        )
+        let version = try await GeminiBinaryInspector.inspect(
+            executableURL: runtime.executableURL,
+            currentDirectoryURL: runtime.workingDirectory,
+            environment: runtime.processEnvironment
+        )
+        try GeminiVersionPolicy.tested.validate(version)
+        try runtime.revalidateExecutable()
+        return try await GeminiCLIAuthStatusChecker(
+            executableURL: runtime.executableURL,
+            currentDirectoryURL: runtime.workingDirectory,
+            environment: runtime.processEnvironment
+        ).subscriptionStatus()
+    }
+
+    private func resetGeminiSignInProfile() throws {
+        let root = geminiProfileRoot.standardizedFileURL
+        guard root.lastPathComponent == "gemini-personal",
+            root.deletingLastPathComponent().lastPathComponent == "Profiles",
+            Self.isStrictlyContained(root, inside: applicationRoot)
+        else {
+            throw GeminiIsolatedRuntimeError.invalidRuntimeRoot
+        }
+        if fileManager.fileExists(atPath: root.path) {
+            try fileManager.removeItem(at: root)
+        }
+        try Self.createPrivateDirectory(root, fileManager: fileManager)
     }
 
     private func validatedSubscriptionState(
@@ -1710,6 +1894,27 @@ actor PaceNoteRuntime {
         return "The local Claude subscription check could not complete safely."
     }
 
+    private static func safeGeminiMessage(for error: any Error) -> String {
+        if let error = error as? GeminiSubscriptionError, let message = error.errorDescription {
+            return message
+        }
+        if let error = error as? GeminiBinaryCompatibilityError,
+            let message = error.errorDescription
+        {
+            return message
+        }
+        if let error = error as? GeminiIsolatedRuntimeError,
+            let message = error.errorDescription
+        {
+            return message
+        }
+        return "The local Google AI subscription check could not complete safely."
+    }
+
+    private static func shellSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     fileprivate static func safeMessage(for error: any Error) -> String {
         if let error = error as? CodexClientError, let message = error.errorDescription {
             return message
@@ -1776,6 +1981,7 @@ extension MeetingActions {
             checkEnvironment: { await runtime.checkEnvironment() },
             requestCapturePermission: { await runtime.requestCapturePermission($0) },
             beginCodexSignIn: { await runtime.beginCodexSignIn() },
+            beginGeminiSignIn: { await runtime.beginGeminiSignIn() },
             forgetCodexProfile: {
                 do {
                     try await runtime.forgetCodexProfile()

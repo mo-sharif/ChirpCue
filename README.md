@@ -40,7 +40,7 @@ You always speak for yourself. ChirpCue never speaks, pastes, sends, clicks, joi
 - **Two-stage help:** an immediate local bridge, followed automatically by a deeper response.
 - **Natural speaking prompts:** short first-person recommendations and clarifying questions instead of generic AI checklists.
 - **Optional codebase grounding:** one exact read-only sealed snapshot, with local evidence verification before a repository claim is shown.
-- **Subscription sign-in:** ChatGPT-authenticated Codex or a first-party personal Claude.ai Pro/Max login. No API keys.
+- **Subscription sign-in:** ChatGPT-authenticated Codex, a first-party personal Claude.ai Pro/Max login, or Gemini through Google sign-in in the official Antigravity CLI. No API keys.
 - **Ephemeral by default:** bounded in-memory audio and transcript state, verified teardown, deletion, and residual auditing.
 
 ## Install on your Mac
@@ -60,10 +60,11 @@ There is not yet a downloadable cross-Mac `.app`. Apple requires Developer ID si
 
 ## Provider setup
 
-Choose either provider in ChirpCue Settings:
+Choose a provider in ChirpCue Settings:
 
 - **Codex via ChatGPT:** ChirpCue opens a one-time sign-in for its dedicated local Codex profile. It accepts only the OpenAI-signed Codex executable bundled with ChatGPT or Codex.
 - **Claude via Claude.ai:** install the official Claude Code launcher and run `claude auth login --claudeai`, then choose **Recheck**. ChirpCue accepts only first-party personal Pro or Max authentication. Console, API key, cloud, gateway, Team, Enterprise, and managed-policy paths fail closed.
+- **Gemini via Google AI:** install the [official Antigravity CLI](https://antigravity.google/docs/cli/install), choose **Sign in with Google** in ChirpCue, complete the official terminal/browser flow, then choose **Recheck Accounts**. ChirpCue uses a scrubbed sign-in helper plus a fresh disposable inference home and never asks for a Gemini API key or Google Cloud credentials.
 
 Claude programmatic use can follow separate Agent SDK allowance and extra-usage terms. ChirpCue does not promise that it uses the same allowance as interactive Claude Code.
 
@@ -72,7 +73,7 @@ Claude programmatic use can follow separate Agent SDK allowance and extra-usage 
 1. Read the in-app privacy disclosure.
 2. Grant microphone, system-audio, and on-device speech permissions.
 3. Select the meeting app output, such as Google Chrome for Google Meet.
-4. Optionally inspect and seal one repository. Codex may use one reviewed read-only skill; Claude remains tool-free and receives only bounded host-selected lines.
+4. Optionally inspect and seal one repository. Codex may use one reviewed read-only skill; Claude and Gemini remain tool-restricted and receive only bounded host-selected lines.
    ChirpCue shows the grounding ceilings during review, accepts files up to 8 MiB, and visibly excludes larger files instead of rejecting the whole repository.
 5. Confirm that participants have been informed and that you have permission to process the conversation.
 6. Start the meeting, then speak, edit, dismiss, or ignore every suggestion yourself.
@@ -102,6 +103,6 @@ ChirpCue is licensed under the [Apache License 2.0](LICENSE). Community particip
 
 ## Current status
 
-This is an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
+This is an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
 
 ChirpCue is an independent open-source project and is not affiliated with or endorsed by Apple, Anthropic, Google, Microsoft, OpenAI, or Zoom.

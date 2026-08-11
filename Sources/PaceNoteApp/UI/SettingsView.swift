@@ -172,6 +172,38 @@ struct SettingsView: View {
                         .disabled(!model.canManageProviderAccounts)
                     }
                 }
+                Section("Gemini via Google AI") {
+                    LabeledContent("Status", value: model.geminiState.shortLabel)
+                    Text(model.geminiState.detail(for: .gemini))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(
+                        "\(AppBrand.displayName) uses Google sign-in through the official Antigravity CLI. It does not use a Gemini API key or Google Cloud billing."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    HStack {
+                        if !model.geminiState.isReady {
+                            Button("Sign in with Google") {
+                                Task { await model.signInToGemini() }
+                            }
+                            .accessibilityLabel("Sign in to Gemini with Google")
+                            .accessibilityIdentifier("settings.gemini-sign-in")
+                            .paceNoteAssistiveControl(
+                                label: "Sign in to Gemini with Google",
+                                identifier: "settings.gemini-sign-in",
+                                isEnabled: model.canManageProviderAccounts
+                            ) {
+                                Task { await model.signInToGemini() }
+                            }
+                            .disabled(!model.canManageProviderAccounts)
+                        }
+                        Link(
+                            "Install Antigravity CLI",
+                            destination: URL(string: "https://antigravity.google/docs/cli/install")!
+                        )
+                    }
+                }
                 Section("Capture permissions") {
                     LabeledContent("Microphone", value: model.microphonePermission.shortLabel)
                     LabeledContent("System audio", value: model.systemAudioPermission.shortLabel)

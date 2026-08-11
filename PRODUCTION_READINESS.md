@@ -44,6 +44,17 @@ This is the completion contract for the personal production build. A checked ite
   Run this only with other Claude Code sessions closed: `PACENOTE_RUN_PAID_CLAUDE_PRODUCTION_SMOKE=RUN_EXACTLY_TWO_PAID_CLAUDE_TURNS ./Scripts/toolchain.sh swift test --filter ClaudePaidProductionSmokeTests/testExactlyTwoPaidClaudeTurnsThenDeleteEveryOwnedRuntime`. A successful run spends exactly two Claude subscription or Agent SDK turns. Do not retry automatically; inspect the generic failure and cleanup state first.
 - [x] Newer and unknown Claude Code builds fail closed. Any future version-range expansion requires the compatibility, safe-mode, auth, structured-output, process, and adversarial-isolation suites to pass before the policy changes.
 
+## Gemini subscription path
+
+- [x] Gemini uses Google sign-in through the official Antigravity CLI at `~/.local/bin/agy`; API keys, Google Cloud credentials, inherited proxy settings, and alternate executable paths are excluded.
+- [x] The executable must be owned by the current user, not group/world writable, signed by Google Team ID `EQHXZ8M8AV` with identifier `cli`, and inside the tested `1.1.12..<1.2.0` range. It is revalidated before every inference launch.
+- [x] The interactive sign-in helper uses a scrubbed app-owned profile only to complete Google OAuth. Preflight and every meeting use fresh disposable homes and accept only the resulting Keychain session; file-token fallback and accumulated CLI customization state are therefore never reused for inference. The custom agent has only `view_file`, subagents are disabled, and commands, URLs, writes, MCP, plugins, skills, ambient repository access, and live-working-tree access are denied.
+- [x] Meeting and evidence data is written only to one bounded private `input.json`; arguments and environment values remain transcript-free. The input and per-meeting runtime are cleared on completion and Stop.
+- [x] Gemini grounding reuses the deterministic host-side bounded sealed-snapshot pack and the local freshness, path, hash, fingerprint, and exact-answer verifier. Gemini cannot invoke repository skills.
+- [x] Automated tests cover model-access parsing, environment scrubbing, version policy, static arguments, structured output, file-only input, response validation, and runtime deletion.
+- [x] An opt-in authentication-only smoke is available without issuing a model request: `PACENOTE_RUN_GEMINI_AUTH_SMOKE=1 ./Scripts/toolchain.sh swift test --filter GeminiSubscriptionAuthSmokeTests`.
+- [ ] Complete one real app-owned Google sign-in and one synthetic general-plus-grounded Gemini production smoke on the tested signed CLI. Confirm Keychain persistence, no ambient customization, no retained conversation state, and exact output-envelope behavior before calling Gemini production-ready.
+
 ## Audio and transcription
 
 - [x] Core Audio process taps, AVAudioEngine, SpeechAnalyzer, and SpeechTranscriber compile against the target SDK.

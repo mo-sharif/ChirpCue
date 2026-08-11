@@ -25,6 +25,15 @@ public enum SpawnedProcessAttestation {
         )
     }
 
+    public static func validateGemini(processID: pid_t, executableURL: URL) throws {
+        try validate(
+            processID: processID,
+            executableURL: executableURL,
+            teamIdentifier: GeminiBinaryAuthenticityValidator.googleTeamIdentifier,
+            signingIdentifier: GeminiBinaryAuthenticityValidator.signingIdentifier
+        )
+    }
+
     private static func validate(
         processID: pid_t,
         executableURL: URL,

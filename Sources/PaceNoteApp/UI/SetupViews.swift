@@ -36,7 +36,7 @@ struct FirstRunConsentView: View {
                             systemImage: "key.slash",
                             title: "Subscription access, no API key",
                             detail:
-                                "Choose Codex through an app-owned ChatGPT profile or Claude through your signed-in Claude subscription. \(AppBrand.displayName) never asks for an OpenAI or Anthropic API key."
+                                "Choose Codex through an app-owned ChatGPT profile, Claude through your signed-in Claude subscription, or Gemini through Google sign-in. \(AppBrand.displayName) never asks for a provider API key."
                         )
                         FirstRunPrinciple(
                             systemImage: "lock.shield",
@@ -554,6 +554,21 @@ private struct ProviderSetupSection: View {
                             }
                         }
                     }
+                    if model.selectedProvider == .gemini && !model.geminiState.isReady {
+                        Button("Sign in with Google") {
+                            Task { await model.signInToGemini() }
+                        }
+                        .disabled(!model.canManageProviderAccounts)
+                        .accessibilityLabel("Sign in to Gemini with Google")
+                        .accessibilityIdentifier("meeting-setup.gemini-sign-in")
+                        .paceNoteAssistiveControl(
+                            label: "Sign in to Gemini with Google",
+                            identifier: "meeting-setup.gemini-sign-in",
+                            isEnabled: model.canManageProviderAccounts
+                        ) {
+                            Task { await model.signInToGemini() }
+                        }
+                    }
                 }
                 if model.selectedProvider == .codex {
                     Text(
@@ -562,7 +577,7 @@ private struct ProviderSetupSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                } else {
+                } else if model.selectedProvider == .claude {
                     Text(
                         "\(AppBrand.displayName) uses your signed-in Claude subscription through the local Claude CLI. No Anthropic API key or separate API billing is used."
                     )
@@ -574,6 +589,18 @@ private struct ProviderSetupSection: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(.orange)
                             .textSelection(.enabled)
+                    }
+                } else {
+                    Text(
+                        "\(AppBrand.displayName) uses Google sign-in through the official Antigravity CLI. No Gemini API key or Google Cloud billing is used. Gemini receives only transcript slices and bounded host-selected lines from the sealed snapshot."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    if model.geminiState.isSignedOut {
+                        Text("Choose Sign in with Google, finish in Terminal, then Recheck.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
                 }
             }
@@ -1118,8 +1145,7 @@ private extension InferenceConnectionState {
         switch self {
         case .ready: "\(provider.shortTitle) subscription preflight passed"
         case .authenticationExpired:
-            provider == .claude
-                ? "Claude account needs confirmation" : "Codex sign-in expired"
+            "\(provider.shortTitle) account needs attention"
         case .signedOut: "Sign in to \(provider.shortTitle)"
         case .checking: "Checking \(provider.shortTitle) subscription"
         case .limited: "\(provider.shortTitle) preflight is limited"
