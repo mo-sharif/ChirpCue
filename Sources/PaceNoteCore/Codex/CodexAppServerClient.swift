@@ -18,7 +18,7 @@ public struct CodexAppServerConfiguration: Sendable {
             fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"
         ),
         expectedCodexHome: URL,
-        versionPolicy: CodexVersionPolicy = .tested,
+        versionPolicy: CodexVersionPolicy = .supported,
         requestTimeout: Duration = .seconds(15),
         clientName: String = "pacenote",
         clientTitle: String = "ChirpCue",

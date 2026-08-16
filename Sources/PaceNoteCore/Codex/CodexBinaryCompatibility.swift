@@ -381,12 +381,12 @@ public struct CodexBinaryVersion: Equatable, Comparable, Sendable {
 
 public struct CodexVersionPolicy: Equatable, Sendable {
     public let minimumCore: CodexBinaryVersion
-    public let maximumCoreExclusive: CodexBinaryVersion
+    public let maximumCoreExclusive: CodexBinaryVersion?
     public let permitsPrerelease: Bool
 
     public init(
         minimumCore: CodexBinaryVersion,
-        maximumCoreExclusive: CodexBinaryVersion,
+        maximumCoreExclusive: CodexBinaryVersion? = nil,
         permitsPrerelease: Bool
     ) {
         self.minimumCore = minimumCore
@@ -394,11 +394,15 @@ public struct CodexVersionPolicy: Equatable, Sendable {
         self.permitsPrerelease = permitsPrerelease
     }
 
-    public static let tested = CodexVersionPolicy(
+    /// Accepts newer official Codex builds while retaining the minimum protocol floor.
+    /// Runtime capability, permission-profile, and wire-contract checks remain fail closed.
+    public static let supported = CodexVersionPolicy(
         minimumCore: .init(major: 0, minor: 147, patch: 0),
-        maximumCoreExclusive: .init(major: 0, minor: 148, patch: 0),
         permitsPrerelease: true
     )
+
+    /// Source-compatible alias for callers built against the former bounded policy.
+    public static let tested = supported
 
     public func validate(_ version: CodexBinaryVersion) throws {
         let core = CodexBinaryVersion(
@@ -406,8 +410,9 @@ public struct CodexVersionPolicy: Equatable, Sendable {
             minor: version.minor,
             patch: version.patch
         )
+        let isBelowMaximum = maximumCoreExclusive.map { core < $0 } ?? true
         guard core >= minimumCore,
-            core < maximumCoreExclusive,
+            isBelowMaximum,
             permitsPrerelease || version.prerelease == nil
         else {
             throw CodexClientError.incompatibleBinaryVersion
