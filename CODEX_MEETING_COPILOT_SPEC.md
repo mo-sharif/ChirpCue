@@ -202,7 +202,7 @@ flowchart LR
 | TranscriptActor | Runs independent local transcribers and emits partial, stable, and gap events. |
 | TurnDetector | Identifies likely meeting-output questions and direct requests without a model call. |
 | TurnCoordinator | Owns immutable turn IDs, deadlines, generation counters, cancellation, and UI state. |
-| CodexAppServerClient | Speaks bounded JSONL over stdio to a tested, OpenAI-signed Codex app-server process. |
+| CodexAppServerClient | Speaks bounded JSONL over stdio to a supported, OpenAI-signed Codex app-server process. |
 | GroundingManager | Builds repo manifests, validates AGENTS instructions, selects skills, and invalidates stale context. |
 | EvidenceVerifier | Checks every cited path, line range, fingerprint, and claim boundary. |
 | ResponseBinder | Seals the cue, binds a verified DeepDraft, and adds only the allowed transition. |
@@ -469,7 +469,7 @@ A Codex subscription is not general API credit. PaceNote works without an API ke
 
 ### 9.3 Versioning and executable trust
 
-- Accept only the tested Codex CLI/app-server version range.
+- Accept official signed Codex CLI/app-server builds at or above the minimum protocol version. Do not impose a maximum version; validate required capabilities, permission profiles, and wire contracts at runtime so newer builds remain usable and incompatible surfaces still fail closed.
 - Use only `/Applications/ChatGPT.app/Contents/Resources/codex` or `/Applications/Codex.app/Contents/Resources/codex`. Reject symlinks, `PATH` and Homebrew fallbacks, alternate locations, and executables that fail strict code-signature validation for OpenAI Team ID `2DC432GLL2` and signing identifier `codex`. PaceNote does not redistribute the executable.
 - Bound `codex --version` to 2 seconds and 4 KiB on each output stream. Bound schema generation to 5 seconds and 64 KiB on each output stream; read only the expected no-follow regular schema file, capped at 32 MiB. Timeout and cancellation terminate, then force-kill if needed, and reap the subprocess.
 - Generate JSON schemas with codex app-server generate-json-schema --experimental so named-permission and activePermissionProfile fields are present.

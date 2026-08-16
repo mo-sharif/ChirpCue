@@ -15,7 +15,7 @@ This is the completion contract for the personal production build. A checked ite
 
 ## Codex subscription path
 
-- [x] Codex discovery accepts only the two official ChatGPT/Codex application-bundle paths and validates the OpenAI Team ID, `codex` signing identifier, executable path, symlink status, and tested version range without reading credentials.
+- [x] Codex discovery accepts only the two official ChatGPT/Codex application-bundle paths, validates the OpenAI Team ID, `codex` signing identifier, executable path, symlink status, and minimum protocol version without reading credentials, and accepts newer official builds subject to runtime capability and protocol checks.
 - [x] Version and schema preflight subprocesses have timeout, output-cap, cancellation, force-kill, process-reaping, no-follow regular-file, and schema-size coverage.
 - [x] The JSONL client, strict output decoding, handshake ordering, cancellation, process shutdown, and malformed-output paths have fixture coverage.
 - [x] Required app-server methods, generated schema, and a zero-generation read-only lifecycle have been probed on the development environment.

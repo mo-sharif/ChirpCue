@@ -34,7 +34,7 @@ final class CodexAppServerClientTests: XCTestCase {
         XCTAssertFalse(safeError.localizedDescription.contains("token-secret"))
     }
 
-    func testVersionParserAndTestedRange() throws {
+    func testVersionParserAndForwardCompatiblePolicy() throws {
         let version = try XCTUnwrap(
             CodexBinaryVersion.parse("codex-cli 0.147.0-alpha.1.2\n")
         )
@@ -42,10 +42,20 @@ final class CodexAppServerClientTests: XCTestCase {
         XCTAssertEqual(version.minor, 147)
         XCTAssertEqual(version.patch, 0)
         XCTAssertEqual(version.prerelease, "alpha.1.2")
-        XCTAssertNoThrow(try CodexVersionPolicy.tested.validate(version))
+        XCTAssertNoThrow(try CodexVersionPolicy.supported.validate(version))
+        XCTAssertNoThrow(
+            try CodexVersionPolicy.supported.validate(
+                .init(major: 0, minor: 148, patch: 0, prerelease: "alpha.9")
+            )
+        )
+        XCTAssertNoThrow(
+            try CodexVersionPolicy.supported.validate(
+                .init(major: 1, minor: 12, patch: 3)
+            )
+        )
         XCTAssertThrowsError(
-            try CodexVersionPolicy.tested.validate(
-                .init(major: 0, minor: 148, patch: 0)
+            try CodexVersionPolicy.supported.validate(
+                .init(major: 0, minor: 146, patch: 99)
             )
         )
     }
@@ -213,7 +223,7 @@ final class CodexAppServerClientTests: XCTestCase {
         if FileManager.default.isExecutableFile(atPath: installedCodex.path) {
             XCTAssertNoThrow(try CodexBinaryAuthenticityValidator.validate(installedCodex))
             let version = try await CodexBinaryInspector.inspect(executableURL: installedCodex)
-            XCTAssertNoThrow(try CodexVersionPolicy.tested.validate(version))
+            XCTAssertNoThrow(try CodexVersionPolicy.supported.validate(version))
             let capabilities = await CodexRuntimeCapabilityInspector.probe(
                 executableURL: installedCodex
             )
