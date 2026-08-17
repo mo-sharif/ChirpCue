@@ -81,7 +81,7 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
         case .binaryUnavailable:
             "The compatible Codex binary is unavailable."
         case .incompatibleBinaryVersion:
-            "The installed Codex version is outside the tested compatibility range."
+            "The installed Codex version is too old for ChirpCue. Update ChatGPT and retry."
         case .transportUnavailable:
             "The local Codex transport could not start."
         case .transportClosed:
