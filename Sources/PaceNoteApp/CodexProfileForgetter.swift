@@ -49,6 +49,16 @@ struct CodexProfileForgetter: @unchecked Sendable {
         }
     }
 
+    /// Rebuilds only ChirpCue's isolated on-disk Codex profile. ChatGPT authentication
+    /// remains in the macOS Keychain and is deliberately not logged out.
+    func resetLocalProfileForRecovery() throws {
+        do {
+            try replaceWithEmptyPrivateDirectory()
+        } catch {
+            throw CodexProfileForgetError.profileReplacementFailed
+        }
+    }
+
     private func replaceWithEmptyPrivateDirectory() throws {
         try validateProfileLocation()
         let values = try? profileRoot.resourceValues(forKeys: [.isSymbolicLinkKey])

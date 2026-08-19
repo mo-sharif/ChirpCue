@@ -1358,8 +1358,11 @@ actor PaceNoteRuntime {
         }
         guard !entries.isEmpty else {
             do {
-                _ = try CodexStableProfileSanitizer(fileManager: fileManager)
-                    .cleanTransientState(profileRoot: codexProfileRoot)
+                _ = try Self.recoverIdleCodexProfileForStartup(
+                    applicationRoot: applicationRoot,
+                    profileRoot: codexProfileRoot,
+                    fileManager: fileManager
+                )
                 startupCleanupHealthy = true
                 return true
             } catch {
@@ -1625,6 +1628,31 @@ actor PaceNoteRuntime {
             names.insert(name)
         }
         return names.sorted().map(DomainSkillOption.init(name:))
+    }
+
+    /// A newer official Codex build may add transcript-free cache/state files before
+    /// ChirpCue has learned their names. With no journaled meeting to recover, rebuild
+    /// the entire app-owned profile instead of leaving account sign-in permanently
+    /// blocked. Keychain-backed ChatGPT authentication is outside this directory.
+    @discardableResult
+    static func recoverIdleCodexProfileForStartup(
+        applicationRoot: URL,
+        profileRoot: URL,
+        fileManager: FileManager
+    ) throws -> Bool {
+        let sanitizer = CodexStableProfileSanitizer(fileManager: fileManager)
+        do {
+            _ = try sanitizer.cleanTransientState(profileRoot: profileRoot)
+            return false
+        } catch {
+            try CodexProfileForgetter(
+                applicationRoot: applicationRoot,
+                profileRoot: profileRoot,
+                fileManager: fileManager
+            ).resetLocalProfileForRecovery()
+            _ = try sanitizer.cleanTransientState(profileRoot: profileRoot)
+            return true
+        }
     }
 
     @discardableResult
