@@ -31,6 +31,7 @@ enum CapturePermissionState: Equatable, Sendable {
 enum MeetingInferenceProvider: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
     case codex
     case claude
+    case gemini
 
     var id: String { rawValue }
 
@@ -38,6 +39,7 @@ enum MeetingInferenceProvider: String, Codable, CaseIterable, Hashable, Identifi
         switch self {
         case .codex: "Codex via ChatGPT"
         case .claude: "Claude via Claude subscription"
+        case .gemini: "Gemini via Google AI"
         }
     }
 
@@ -45,6 +47,7 @@ enum MeetingInferenceProvider: String, Codable, CaseIterable, Hashable, Identifi
         switch self {
         case .codex: "Codex"
         case .claude: "Claude"
+        case .gemini: "Gemini"
         }
     }
 
@@ -52,6 +55,7 @@ enum MeetingInferenceProvider: String, Codable, CaseIterable, Hashable, Identifi
         switch self {
         case .codex: "OpenAI"
         case .claude: "Anthropic"
+        case .gemini: "Google"
         }
     }
 }
@@ -106,6 +110,19 @@ private extension MeetingInferenceProvider {
             case .ready:
                 ""
             }
+        case .gemini:
+            switch state {
+            case .signedOut:
+                "Sign in with Google through the official Antigravity CLI, then Recheck."
+            case .checking:
+                "Wait for the Google AI subscription check to finish."
+            case .notChecked:
+                "Recheck Google AI access before starting."
+            case .authenticationExpired, .limited, .unavailable:
+                "Resolve the Google AI status shown above, then Recheck."
+            case .ready:
+                ""
+            }
         }
     }
 }
@@ -142,7 +159,7 @@ enum OutputCaptureScope: String, CaseIterable, Identifiable, Sendable {
 
 enum PaceNoteDisclosureText {
     static let firstRunProviderProcessing =
-        "I understand Codex may send transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output to OpenAI. Claude v1 may send transcript slices and bounded host-selected lines from the reviewed sealed snapshot to Anthropic, but excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. The provider uses my applicable subscription terms. \(AppBrand.displayName) makes no zero-retention claim."
+        "I understand Codex may send transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output to OpenAI. Claude v1 and Gemini may send transcript slices and bounded host-selected lines from the reviewed sealed snapshot to Anthropic or Google. Claude v1 excludes AGENTS.md, CLAUDE.md, provider configuration, skill content, model tools, and tool output; Gemini excludes AGENTS.md, GEMINI.md, provider configuration, skill content, model tools, and tool output. The selected provider uses my applicable subscription terms. \(AppBrand.displayName) makes no zero-retention claim."
     static let meetingParticipantPermission =
         "I have informed all participants about live transcription and AI assistance, and I have permission to capture and process this meeting."
     static let soleNearbySpeaker =
@@ -154,6 +171,8 @@ enum PaceNoteDisclosureText {
             "I understand this meeting's transcript slices, any selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my ChatGPT account. \(AppBrand.displayName) makes no zero-retention claim."
         case .claude:
             "I understand this meeting's transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac and be processed by Anthropic through my Claude subscription. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+        case .gemini:
+            "I understand this meeting's transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac and be processed by Google through my Google AI access. Gemini excludes repository instruction files, skills, model tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
         }
     }
 
@@ -163,6 +182,8 @@ enum PaceNoteDisclosureText {
             "Transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac for processing under the signed-in ChatGPT account's applicable OpenAI terms. \(AppBrand.displayName) makes no zero-retention claim."
         case .claude:
             "Transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac for processing under the signed-in Claude subscription's applicable Anthropic terms. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+        case .gemini:
+            "Transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac for processing under the signed-in Google account's applicable Google AI terms. Gemini excludes repository instruction files, skills, model tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
         }
     }
 }
@@ -184,6 +205,7 @@ struct PaceNoteEnvironmentSnapshot: Equatable, Sendable {
     let systemAudioPermission: CapturePermissionState
     let codex: CodexConnectionState
     let claude: InferenceConnectionState
+    let gemini: InferenceConnectionState
     let outputSources: [OutputSourceOption]
 
     init(
@@ -191,13 +213,15 @@ struct PaceNoteEnvironmentSnapshot: Equatable, Sendable {
         systemAudioPermission: CapturePermissionState,
         codex: CodexConnectionState,
         outputSources: [OutputSourceOption],
-        claude: InferenceConnectionState = .notChecked
+        claude: InferenceConnectionState = .notChecked,
+        gemini: InferenceConnectionState = .notChecked
     ) {
         self.microphonePermission = microphonePermission
         self.systemAudioPermission = systemAudioPermission
         self.codex = codex
         self.outputSources = outputSources
         self.claude = claude
+        self.gemini = gemini
     }
 }
 
@@ -396,6 +420,7 @@ struct MeetingActions: Sendable {
     var checkEnvironment: @Sendable () async -> PaceNoteEnvironmentSnapshot
     var requestCapturePermission: @Sendable (CapturePermissionKind) async -> CapturePermissionState
     var beginCodexSignIn: @Sendable () async -> CodexConnectionState
+    var beginGeminiSignIn: @Sendable () async -> InferenceConnectionState = { .notChecked }
     var forgetCodexProfile: @Sendable () async throws -> Void
     var confirmClaudeAccountChange: @Sendable () async throws -> InferenceConnectionState
     var reloadOutputSources: @Sendable () async -> [OutputSourceOption]
@@ -426,6 +451,7 @@ struct MeetingActions: Sendable {
             },
             requestCapturePermission: { _ in .unavailable(reason) },
             beginCodexSignIn: { .unavailable(reason) },
+            beginGeminiSignIn: { .unavailable(reason) },
             forgetCodexProfile: { throw PaceNoteActionError.safeMessage(reason) },
             confirmClaudeAccountChange: { throw PaceNoteActionError.safeMessage(reason) },
             reloadOutputSources: { [] },
@@ -491,6 +517,7 @@ final class MeetingViewModel {
     private(set) var systemAudioPermission: CapturePermissionState = .notChecked
     private(set) var codexState: CodexConnectionState = .notChecked
     private(set) var claudeState: InferenceConnectionState = .notChecked
+    private(set) var geminiState: InferenceConnectionState = .notChecked
     private(set) var repositoryState: RepositorySetupState = .none
     private(set) var isBootstrapping = false
     private(set) var isPerformingMeetingAction = false
@@ -513,7 +540,7 @@ final class MeetingViewModel {
             guard oldValue != selectedProvider else { return }
             providerDefaults?.set(selectedProvider.rawValue, forKey: Self.inferenceProviderDefaultsKey)
             meetingConsent.openAIProcessingConfirmed = false
-            if selectedProvider == .claude {
+            if selectedProvider != .codex {
                 selectedDomainSkillName = nil
             }
             meetingStartConfigurationDidChange()
@@ -576,6 +603,7 @@ final class MeetingViewModel {
         switch selectedProvider {
         case .codex: codexState
         case .claude: claudeState
+        case .gemini: geminiState
         }
     }
 
@@ -690,6 +718,7 @@ final class MeetingViewModel {
         systemAudioPermission = snapshot.systemAudioPermission
         codexState = snapshot.codex
         claudeState = snapshot.claude
+        geminiState = snapshot.gemini
         outputSources = snapshot.outputSources
         selectFirstOutputSourceIfNeeded()
     }
@@ -765,6 +794,7 @@ final class MeetingViewModel {
         systemAudioPermission = snapshot.systemAudioPermission
         codexState = snapshot.codex
         claudeState = snapshot.claude
+        geminiState = snapshot.gemini
         outputSources = snapshot.outputSources
         selectFirstOutputSourceIfNeeded()
     }
@@ -783,6 +813,25 @@ final class MeetingViewModel {
         actionError = nil
         codexState = .checking
         codexState = await actions.beginCodexSignIn()
+    }
+
+    func signInToGemini() async {
+        guard !isBootstrapping else { return }
+        guard canManageProviderAccounts else {
+            actionError = "Stop the current meeting before changing the Google account."
+            return
+        }
+        isBootstrapping = true
+        defer {
+            isBootstrapping = false
+            refreshReadyPhase()
+        }
+        actionError = nil
+        geminiState = .checking
+        geminiState = await actions.beginGeminiSignIn()
+        if geminiState.isReady {
+            meetingConsent.openAIProcessingConfirmed = false
+        }
     }
 
     func forgetCodexProfile() async {

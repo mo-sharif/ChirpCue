@@ -13,8 +13,8 @@ Build a native, local-first macOS meeting coach that:
 - shows a live source-aware transcript, using YOU and THEM only when mic and meeting-output attribution is trustworthy;
 - produces a short, speakable cue first;
 - automatically follows with either an extractively verified repo-grounded continuation or fixed local clarification or abstention text;
-- uses either the user's ChatGPT-managed Codex subscription or first-party Claude.ai subscription, never an OpenAI or Anthropic API key;
-- lets Codex read only sanitized snapshots and reviewed skills, while Claude receives only bounded host-selected exact lines from the same sealed snapshot;
+- uses the user's ChatGPT-managed Codex subscription, first-party Claude.ai subscription, or Google sign-in through the official Antigravity CLI, never a provider API key;
+- lets Codex read only sanitized snapshots and reviewed skills, while Claude and Gemini receive only bounded host-selected exact lines from the same sealed snapshot;
 - never speaks, sends, pastes, or changes code for the user.
 
 This is implemented as a personal release candidate. It does not embed a provider voice mode. Apple frameworks handle local audio capture and transcription. The selected Deep path is either Codex app-server authenticated through the user's ChatGPT account or a one-turn, tool-free Claude Code process authenticated through the user's first-party Claude subscription. Live generation, signed-app audio, UI, and latency gates remain open in the production-readiness ledger.
@@ -493,7 +493,15 @@ Claude cannot open the sealed snapshot. A host-side builder re-reads and hash-ch
 
 Anthropic currently treats programmatic subscription use as a separate Agent SDK credit pool; plan limits and extra-usage terms may apply. ChirpCue does not claim it consumes the normal interactive allowance or can never incur extra usage.
 
-### 9.5 Codex app-server methods needed
+### 9.5 Gemini subscription route
+
+Gemini is a third parallel provider through Google sign-in in the official Antigravity CLI, not the retired Gemini CLI OAuth integration and not the Gemini API. ChirpCue accepts only `~/.local/bin/agy`, owned by the current user, not writable by group or world, signed by Google Team ID `EQHXZ8M8AV` with identifier `cli`, and inside the tested `1.1.12..<1.2.0` range. API keys, Google Cloud credentials, proxy overrides, and alternate binaries are excluded.
+
+The interactive sign-in helper uses a scrubbed app-owned home only for the official browser flow. Preflight and every meeting use fresh disposable homes, accept only the resulting native-Keychain session, and never reuse file-token fallback or accumulated CLI customizations for inference. Each meeting launches print mode from an empty disposable workspace with one custom main agent. That agent has only `view_file`, may open only the bounded private `input.json`, cannot be invoked as a subagent, and has no commands, URLs, writes, MCP, plugins, skills, or live-working-tree access. Meeting content never enters arguments or environment values. Repository evidence uses the Claude host-side selection and shared local evidence-verification path; Codex remains the only provider allowed to invoke a reviewed repository skill.
+
+The model-access preflight proves that the current Google session exposes Gemini models but does not expose a stable account identity suitable for local email pinning. ChirpCue therefore rechecks model access before preparation and every Deep turn and names this limitation in its readiness ledger. It must not claim the Gemini route production-ready until an explicit paid/live smoke verifies Keychain persistence, structured output, customization isolation, session cleanup, and account behavior on the tested build.
+
+### 9.6 Codex app-server methods needed
 
 | Capability | App-server method or event |
 |---|---|

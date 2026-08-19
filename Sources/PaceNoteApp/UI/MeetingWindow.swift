@@ -847,11 +847,14 @@ extension InferenceConnectionState {
             case .codex: "No ChatGPT account is signed in through Codex."
             case .claude:
                 "Claude is signed out. Run `claude auth login --claudeai` in Terminal, then Recheck."
+            case .gemini:
+                "Google AI is signed out. Choose Sign in with Google, complete Terminal setup, then Recheck."
             }
         case .authenticationExpired(let message):
             switch provider {
             case .codex: "ChatGPT sign-in expired. \(message)"
             case .claude: "Claude account needs confirmation. \(message)"
+            case .gemini: "Google AI sign-in needs attention. \(message)"
             }
         case .ready(let account):
             "\(account.accountLabel), \(account.planLabel), \(account.modelCount) available model\(account.modelCount == 1 ? "" : "s")"
@@ -903,9 +906,9 @@ extension BrownoutReason {
         case .transcriberAssetMissing: "Speech model is unavailable"
         case .codexOffline: "AI provider is offline"
         case .authenticationExpired:
-            provider == .codex ? "ChatGPT sign-in expired" : "Claude sign-in expired"
+            "\(provider.shortTitle) sign-in expired"
         case .accountMismatch:
-            provider == .codex ? "ChatGPT account changed" : "Claude account changed"
+            "\(provider.shortTitle) account changed"
         case .protocolUnsupported:
             "\(provider.shortTitle) version is unsupported"
         case .appServerCrashed: "\(provider.shortTitle) process stopped"
@@ -936,9 +939,11 @@ extension BrownoutReason {
         case .transcriberAssetMissing: "Download the required Apple speech asset, then retry."
         case .codexOffline: "Suggestions are paused until the selected provider connection returns."
         case .authenticationExpired:
-            provider == .codex
-                ? "Sign in to ChatGPT again from meeting setup."
-                : "Run `claude auth login --claudeai`, then Recheck."
+            switch provider {
+            case .codex: "Sign in to ChatGPT again from meeting setup."
+            case .claude: "Run `claude auth login --claudeai`, then Recheck."
+            case .gemini: "Choose Sign in with Google, complete Terminal setup, then Recheck."
+            }
         case .accountMismatch:
             "Stop the meeting and confirm the intended \(provider.shortTitle) account."
         case .protocolUnsupported:

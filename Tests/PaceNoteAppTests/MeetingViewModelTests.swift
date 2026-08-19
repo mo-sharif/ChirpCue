@@ -443,6 +443,7 @@ final class MeetingViewModelTests: XCTestCase {
         let firstRun = PaceNoteDisclosureText.firstRunProviderProcessing.lowercased()
         XCTAssertTrue(firstRun.contains("openai"))
         XCTAssertTrue(firstRun.contains("anthropic"))
+        XCTAssertTrue(firstRun.contains("google"))
         XCTAssertTrue(firstRun.contains("claude v1"))
         XCTAssertTrue(firstRun.contains("excludes agents.md"))
 
@@ -456,6 +457,17 @@ final class MeetingViewModelTests: XCTestCase {
             XCTAssertTrue(normalized.contains("tool output"))
             XCTAssertTrue(normalized.contains("repository excerpts"))
             XCTAssertTrue(normalized.contains("transcript slices"))
+            XCTAssertTrue(normalized.contains("no zero-retention claim"))
+        }
+
+        for disclosure in [
+            PaceNoteDisclosureText.meetingProcessing(for: .gemini),
+            PaceNoteDisclosureText.processingSummary(for: .gemini),
+        ] {
+            let normalized = disclosure.lowercased()
+            XCTAssertTrue(normalized.contains("google"))
+            XCTAssertTrue(normalized.contains("transcript slices"))
+            XCTAssertTrue(normalized.contains("bounded host-selected lines"))
             XCTAssertTrue(normalized.contains("no zero-retention claim"))
         }
 
@@ -532,6 +544,34 @@ final class MeetingViewModelTests: XCTestCase {
 
         model.selectedProvider = .codex
         XCTAssertTrue(model.canCoach)
+    }
+
+    func testGeminiSignInUsesGoogleActionAndRevokesProviderConsent() async {
+        let events = EventHarness()
+        let ready = InferenceAccountSummary(
+            accountLabel: "Google account",
+            planLabel: "Google AI",
+            modelCount: 2
+        )
+        var actions = Self.actions(events: events, geminiState: .signedOut)
+        actions.beginGeminiSignIn = { .ready(ready) }
+        let model = MeetingViewModel(
+            actions: actions,
+            hasCompletedFirstRun: true,
+            selectedProvider: .gemini
+        )
+        await model.bootstrap()
+        model.meetingConsent.openAIProcessingConfirmed = true
+
+        XCTAssertTrue(
+            model.setupBlockers.contains(
+                "Sign in with Google through the official Antigravity CLI, then Recheck."
+            )
+        )
+        await model.signInToGemini()
+
+        XCTAssertEqual(model.geminiState, .ready(ready))
+        XCTAssertFalse(model.meetingConsent.openAIProcessingConfirmed)
     }
 
     func testExplicitClaudeAccountConfirmationRebindsTheCurrentSubscription() async {
@@ -1387,7 +1427,7 @@ final class MeetingViewModelTests: XCTestCase {
                 modelCount: 2
             )
         ),
-        claudeState: InferenceConnectionState = .notChecked
+        claudeState: InferenceConnectionState = .notChecked, geminiState: InferenceConnectionState = .notChecked
     ) -> MeetingActions {
         MeetingActions(
             sessionEvents: { await events.stream() },
@@ -1397,7 +1437,7 @@ final class MeetingViewModelTests: XCTestCase {
                     systemAudioPermission: .authorized,
                     codex: codexState,
                     outputSources: outputSources,
-                    claude: claudeState
+                    claude: claudeState, gemini: geminiState
                 )
             },
             requestCapturePermission: { _ in .authorized },
