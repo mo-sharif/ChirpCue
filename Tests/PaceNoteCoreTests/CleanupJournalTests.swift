@@ -346,13 +346,14 @@ final class CleanupJournalTests: XCTestCase {
         )
         try Data("installation".utf8).write(to: profile.appendingPathComponent("installation_id"))
         try Data("models".utf8).write(to: profile.appendingPathComponent("models_cache.json"))
+        try Data("sqlite".utf8).write(to: profile.appendingPathComponent("queue_1.sqlite"))
         try Data("sqlite".utf8).write(to: profile.appendingPathComponent("state_5.sqlite"))
 
         let report = try CodexStableProfileSanitizer().cleanTransientState(
             profileRoot: profile
         )
 
-        XCTAssertEqual(report.deletedEntryCount, 10)
+        XCTAssertEqual(report.deletedEntryCount, 11)
         for directory in [
             cache, plugins, sessions, shellSnapshots, skills, threadWriterLocks,
         ] {
@@ -377,6 +378,11 @@ final class CleanupJournalTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath: profile.appendingPathComponent("models_cache.json").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: profile.appendingPathComponent("queue_1.sqlite").path
             )
         )
         XCTAssertFalse(

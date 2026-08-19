@@ -133,6 +133,45 @@ final class PaceNoteRuntimeShutdownTests: XCTestCase {
         )
     }
 
+    func testStartupRebuildsIdleProfileWhenNewCodexStateIsNotYetAllowlisted() throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.remove() }
+        try Data("future-transient-state".utf8).write(
+            to: fixture.profile.appendingPathComponent("future_state.sqlite")
+        )
+
+        XCTAssertTrue(
+            try PaceNoteRuntime.recoverIdleCodexProfileForStartup(
+                applicationRoot: fixture.applicationRoot,
+                profileRoot: fixture.profile,
+                fileManager: .default
+            )
+        )
+        XCTAssertEqual(try fixture.entryNames(), ["config.toml"])
+    }
+
+    func testStartupRecoveryFailsClosedWhenIdleProfileCannotBeRebuilt() throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.remove() }
+        try Data("future-transient-state".utf8).write(
+            to: fixture.profile.appendingPathComponent("future_state.sqlite")
+        )
+        let fileManager = FailingProfileReplacementFileManager(profileRoot: fixture.profile)
+
+        XCTAssertThrowsError(
+            try PaceNoteRuntime.recoverIdleCodexProfileForStartup(
+                applicationRoot: fixture.applicationRoot,
+                profileRoot: fixture.profile,
+                fileManager: fileManager
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.profile.appendingPathComponent("future_state.sqlite").path
+            )
+        )
+    }
+
     func testShutdownPreservesProfileWhileAnyRecoveryOwnerRemains() throws {
         for blocker in RecoveryBlocker.allCases {
             let fixture = try ProfileFixture()
@@ -343,6 +382,7 @@ private enum RecoveryBlocker: CaseIterable {
 
 private final class ProfileFixture {
     let root: URL
+    let applicationRoot: URL
     let profile: URL
 
     init() throws {
@@ -350,7 +390,8 @@ private final class ProfileFixture {
             "pacenote-idle-shutdown-\(UUID().uuidString)",
             isDirectory: true
         )
-        profile = root.appendingPathComponent("Profiles/personal", isDirectory: true)
+        applicationRoot = root.appendingPathComponent("PaceNote", isDirectory: true)
+        profile = applicationRoot.appendingPathComponent("Profiles/personal", isDirectory: true)
         try FileManager.default.createDirectory(
             at: profile,
             withIntermediateDirectories: true,
@@ -375,5 +416,21 @@ private final class ProfileFixture {
 
     func remove() {
         try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private final class FailingProfileReplacementFileManager: FileManager, @unchecked Sendable {
+    private let profilePath: String
+
+    init(profileRoot: URL) {
+        profilePath = profileRoot.standardizedFileURL.path
+        super.init()
+    }
+
+    override func removeItem(at URL: URL) throws {
+        if URL.standardizedFileURL.path == profilePath {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try super.removeItem(at: URL)
     }
 }
