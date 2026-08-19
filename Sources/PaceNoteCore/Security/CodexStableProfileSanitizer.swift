@@ -208,6 +208,7 @@ public struct CodexStableProfileSanitizer {
         "logs_2.sqlite", "logs_2.sqlite-shm", "logs_2.sqlite-wal",
         "memories_1.sqlite", "memories_1.sqlite-shm", "memories_1.sqlite-wal",
         "models_cache.json",
+        "queue_1.sqlite", "queue_1.sqlite-shm", "queue_1.sqlite-wal",
         "state_5.sqlite", "state_5.sqlite-shm", "state_5.sqlite-wal",
     ]
     private static let persistentDirectoryNames: Set<String> = []
