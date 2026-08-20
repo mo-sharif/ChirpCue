@@ -79,6 +79,11 @@ public enum GeneralGuidancePolicy {
         "the question i’d ",
         "let's ",
         "let’s ",
+        "the key ",
+        "the safest ",
+        "a good default ",
+        "start by ",
+        "we should ",
     ]
 
     public static func accepts(_ candidate: String) -> Bool {

@@ -129,6 +129,28 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testFinalOutputQuestionAutomaticallyStartsQuickAndDeepWithoutMicrophone() async throws {
+        let harness = makeHarness(mode: .systemOutputOnly)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, "How should we isolate database access?", stability: .final))
+        )
+
+        let automaticAnswerArrived = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .quick }
+                && state.suggestions.contains { $0.stage == .deep }
+        }
+        let quickTurns = await harness.response.requestedTurns
+        let deepTurns = await harness.response.deepRequestedTurns
+
+        XCTAssertTrue(automaticAnswerArrived)
+        XCTAssertEqual(quickTurns.map(\.question), ["How should we isolate database access?"])
+        XCTAssertEqual(deepTurns.map(\.question), ["How should we isolate database access?"])
+        _ = await harness.controller.stop()
+    }
+
     func testCoachCurrentTurnForcesLatestOutputWithoutDuplicatingTranscript() async throws {
         let harness = makeHarness(mode: .systemOutputOnly)
         try await prepareAndStart(harness)
@@ -169,7 +191,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(transcriptArrived)
         try await harness.controller.coachCurrentTurn()
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         let cancelCountBeforeGap = await response.cancelCount
@@ -222,7 +244,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             XCTAssertTrue(transcriptArrived)
             try await harness.controller.coachCurrentTurn()
             let cueArrived = await eventually {
-                await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+                await harness.controller.state().suggestions.contains { $0.stage == .quick }
             }
             XCTAssertTrue(cueArrived)
             let cancelCountBeforeInterruption = await response.cancelCount
@@ -498,7 +520,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await harness.controller.submitTypedQuestion("Why is the first path slow?")
         let firstCueArrived = await eventually {
             let state = await harness.controller.state()
-            return state.suggestions.contains { $0.identity.generation == 1 && $0.stage == .bridge }
+            return state.suggestions.contains { $0.identity.generation == 1 && $0.stage == .quick }
         }
         clock.set(11)
         try await harness.controller.submitTypedQuestion("Why is the second path isolated?")
@@ -533,7 +555,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("How does the bounded queue work?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
 
@@ -579,7 +601,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("How does the request queue work?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         await deepBarrier.waitUntilEntered()
@@ -644,7 +666,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is the first path isolated?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         let firstState = await harness.controller.state()
@@ -681,7 +703,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is this queue bounded?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         let stateWithCue = await harness.controller.state()
@@ -720,7 +742,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is this queue bounded?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         await responseEventBarrier.waitUntilEntered()
@@ -768,7 +790,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is the first path slow?")
         let firstCueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(firstCueArrived)
         let firstState = await harness.controller.state()
@@ -838,7 +860,7 @@ final class MeetingSessionControllerTests: XCTestCase {
 
         let failureVisible = await eventually {
             let state = await harness.controller.state()
-            return state.suggestions.contains { $0.stage == .bridge }
+            return state.suggestions.contains { $0.stage == .quick }
                 && state.suggestions.allSatisfy { $0.stage != .deep }
                 && state.brownouts.contains { $0.reason == .deepUnavailable }
         }
@@ -1004,7 +1026,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is this queue bounded?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         await deepBarrier.waitUntilEntered()
@@ -1441,8 +1463,8 @@ final class MeetingSessionControllerTests: XCTestCase {
 
     func testExactAndNearBridgeSpeechContinueDeepGeneration() async throws {
         let bridgeTranscripts = [
-            "Let me think through that carefully for a second.",
-            "Let me think through that for a second.",
+            "I would separate the boundary before changing it.",
+            "I would separate boundary before changing it.",
         ]
 
         for bridgeTranscript in bridgeTranscripts {
@@ -1474,7 +1496,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             XCTAssertTrue(transcriptArrived)
             try await harness.controller.coachCurrentTurn()
             let cueArrived = await eventually {
-                await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+                await harness.controller.state().suggestions.contains { $0.stage == .quick }
             }
             XCTAssertTrue(cueArrived)
             await deepBarrier.waitUntilEntered()
@@ -1538,14 +1560,14 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(transcriptArrived)
         try await harness.controller.coachCurrentTurn()
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         await deepBarrier.waitUntilEntered()
         let cancelCountBeforeSpeech = await response.cancelCount
 
         clock.set(12)
-        let volatileBridge = "Let me think through that carefully"
+        let volatileBridge = "I would separate the boundary"
         await harness.microphoneTranscriber.emit(
             .result(
                 transcript(
@@ -1574,13 +1596,13 @@ final class MeetingSessionControllerTests: XCTestCase {
         let stateWhileSpeaking = await harness.controller.state()
         let heldTiming = await harness.controller.timingSnapshot()
         XCTAssertTrue(deepWasQueued)
-        XCTAssertTrue(stateWhileSpeaking.suggestions.contains { $0.stage == .bridge })
+        XCTAssertTrue(stateWhileSpeaking.suggestions.contains { $0.stage == .quick })
         XCTAssertFalse(stateWhileSpeaking.suggestions.contains { $0.stage == .deep })
         XCTAssertEqual(heldTiming.samples.first?.bridgeToConfirmedLocalSpeechMarginSeconds, 2)
         XCTAssertNil(heldTiming.samples.first?.turnStableToVerifiedDeepReadySeconds)
         XCTAssertEqual(heldTiming.samples.first?.deepOutcome, .pending)
 
-        let finalBridge = "Let me think through that carefully for a second."
+        let finalBridge = "I would separate the boundary before changing it."
         await harness.microphoneTranscriber.emit(
             .result(
                 transcript(
@@ -1630,7 +1652,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("How does the request queue work?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         await deepBarrier.waitUntilEntered()
@@ -1642,7 +1664,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             .result(
                 transcript(
                     .microphone,
-                    "Let me think through that carefully",
+                    "I would separate the boundary",
                     stability: .volatile,
                     confidence: 0.93,
                     hostTimeRange: hostTimeRange(start: 12)
@@ -1725,16 +1747,16 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(transcriptArrived)
         try await harness.controller.coachCurrentTurn()
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .bridge }
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
         }
         XCTAssertTrue(cueArrived)
         let stateWithCue = await harness.controller.state()
-        let cue = try XCTUnwrap(stateWithCue.suggestions.first { $0.stage == .bridge })
+        let cue = try XCTUnwrap(stateWithCue.suggestions.first { $0.stage == .quick })
         let cancelCountBeforeSpeech = await response.cancelCount
 
         clock.set(12)
         let substantiveResponse =
-            "Let me think through that carefully for a second because the queue is isolated"
+            "I would separate the boundary before changing it because the queue is isolated"
         await harness.microphoneTranscriber.emit(
             .result(
                 transcript(

@@ -9,7 +9,9 @@ public struct PromptFactory: Sendable {
 
         Return only JSON matching the supplied schema. Write the exact words the user can naturally say aloud now in at most 24 words. Style: \(Self.sanitizeStyle(speakingStyle)).
 
-        This fast lane has no repository evidence. Never state or imply implementation, code, deployment, metric, customer, or policy facts. If the question is technical, depends on such facts, or repository grounding is attached, give only a brief conversational bridge, set needsDeep to true, lower confidence, and explain the category in reason. The app treats needsDeep as advisory and always runs Deep automatically. Do not use markdown.
+        This fast lane has no repository evidence. Never state or imply implementation, code, deployment, metric, customer, or policy facts. Give a useful broadly applicable first answer immediately, in the voice of a pragmatic staff engineer. When one unknown materially changes the answer, ask one short clarifying question and follow it with a concrete default. Otherwise lead with one recommendation and its key tradeoff. Use first person where natural. Do not use generic waiting phrases such as "let me think" or "give me a second." For questions that depend on private facts, state the assumption or ask for the missing constraint rather than guessing. Set needsDeep to true; the app always runs Deep automatically. Do not use markdown.
+
+        \(GeneralGuidancePolicy.modelInstructions)
 
         Repository grounding attached: \(turn.repoAlias != nil || turn.groundingFingerprint != nil ? "yes" : "no")
 

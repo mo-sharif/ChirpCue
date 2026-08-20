@@ -65,4 +65,27 @@ final class TurnDetectorTests: XCTestCase {
 
         XCTAssertNotNil(detector.candidate(at: 2, force: true))
     }
+
+    func testCommonSpokenQuestionWithoutPunctuationTriggersAutomatically() {
+        let questions = [
+            "Where's your plan for securing database access",
+            "Talk me through the retry strategy",
+            "Describe how you would isolate the service",
+        ]
+
+        for (index, question) in questions.enumerated() {
+            var detector = TurnDetector()
+            detector.observe(
+                TranscriptSegment(
+                    source: .them,
+                    text: question,
+                    startedAt: Double(index),
+                    endedAt: Double(index + 1),
+                    isFinal: true,
+                    confidence: 0.9
+                )
+            )
+            XCTAssertEqual(detector.candidate(at: Double(index + 1))?.text, question)
+        }
+    }
 }
