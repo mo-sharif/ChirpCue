@@ -29,6 +29,7 @@ struct MeetingWindow: View {
                 TranscriptPane(segments: model.transcript)
                     .frame(minWidth: 390)
                 SuggestionsPane(
+                    phase: model.phase,
                     quick: model.quickSuggestion,
                     deep: model.deepSuggestion,
                     deepFailure: model.brownouts.sorted(by: { $0.rawValue < $1.rawValue })
@@ -465,6 +466,7 @@ private struct TranscriptRow: View {
 }
 
 private struct SuggestionsPane: View {
+    let phase: MeetingPhase
     let quick: SuggestionCard?
     let deep: SuggestionCard?
     let deepFailure: BrownoutReason?
@@ -507,20 +509,36 @@ private struct SuggestionsPane: View {
                 }
 
                 if quick == nil && deep == nil {
-                    ContentUnavailableView {
-                        Label("No suggestion yet", systemImage: "text.bubble")
-                    } description: {
-                        Text(
-                            "A brief speaking cue appears first. A concise answer follows; repository-specific answers are evidence checked."
-                        )
+                    if phase == .candidateQuestion || phase == .thinking {
+                        VStack(spacing: 14) {
+                            ProgressView()
+                                .controlSize(.regular)
+                            Text("Generating a quick answer…")
+                                .font(.headline)
+                            Text("A higher-reasoning answer is already running in parallel.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 230)
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        ContentUnavailableView {
+                            Label("Listening for a question", systemImage: "text.bubble")
+                        } description: {
+                            Text(
+                                "ChirpCue automatically starts a fast AI answer when the other person finishes a question."
+                            )
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 230)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 230)
                 }
 
                 if let quick {
                     SuggestionCardView(
                         title: quick.stage == .bridge ? "Say now" : "Quick answer",
-                        subtitle: deepFailure == nil ? "While I check" : "Temporary bridge",
+                        subtitle: quick.stage == .bridge
+                            ? "Emergency fallback"
+                            : (deepFailure == nil ? "Fast AI • deeper answer running" : "Fast AI"),
                         card: quick,
                         tint: .blue,
                         systemImage: "lock.fill",
@@ -531,7 +549,7 @@ private struct SuggestionsPane: View {
                 if let deep {
                     let presentation = deepPresentation(for: deep)
                     SuggestionCardView(
-                        title: "Then say",
+                        title: "Detailed answer",
                         subtitle: presentation.subtitle,
                         card: deep,
                         tint: presentation.tint,

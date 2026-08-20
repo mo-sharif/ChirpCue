@@ -1,7 +1,7 @@
 # ChirpCue: Subscription Meeting Coach
 
 Status: Release candidate; live subscription, audio, UI, latency, and optional distribution gates remain
-Date: 2026-08-08
+Date: 2026-08-20
 Target: macOS 26 or later on Apple silicon
 Companion document: [Design exploration](./CODEX_MEETING_COPILOT_DESIGN_EXPLORATION.md)
 
@@ -11,7 +11,7 @@ Build a native, local-first macOS meeting coach that:
 
 - captures the user's microphone and Mac system output from Google Meet, Zoom, Teams, FaceTime, or another meeting app;
 - shows a live source-aware transcript, using YOU and THEM only when mic and meeting-output attribution is trustworthy;
-- produces a short, speakable cue first;
+- produces a short, speakable low-reasoning AI answer first, with a deterministic local bridge only as a bounded fallback;
 - automatically follows with either an extractively verified repo-grounded continuation or fixed local clarification or abstention text;
 - uses the user's ChatGPT-managed Codex subscription, first-party Claude.ai subscription, or Google sign-in through the official Antigravity CLI, never a provider API key;
 - lets Codex read only sanitized snapshots and reviewed skills, while Claude and Gemini receive only bounded host-selected exact lines from the same sealed snapshot;
@@ -35,8 +35,8 @@ For a personal Mac app, this is the simplest credible architecture:
 2. AVAudioEngine captures the microphone.
 3. Apple's on-device Speech framework creates two timestamped transcript lanes.
 4. A local turn detector decides when the other party has probably asked a question.
-5. For every eligible turn, ChirpCue immediately shows one fixed local bridge while Deep runs. Codex uses a deny-by-default permission profile over an empty private context or sanitized repo/skill snapshot. Claude uses no tools and receives only an empty general payload or bounded exact lines selected locally from the sealed snapshot. The production coordinator never invokes model Quick.
-6. The UI keeps the bridge and the later visibly unverified general guidance, verified repository continuation, or fixed local clarification or hold state separate.
+5. For every eligible turn, ChirpCue starts Quick and Deep concurrently. Codex Quick uses the fastest compatible low-effort route and may state only broadly applicable guidance; Deep uses the high-reasoning route. If Quick fails validation or misses 1.25 seconds, ChirpCue shows the fixed local bridge. Codex Deep uses a deny-by-default permission profile over an empty private context or sanitized repo/skill snapshot. Claude and Gemini retain deterministic Quick fallback and their narrower tool-free Deep contracts.
+6. The UI keeps the fast answer or emergency bridge separate from the later visibly unverified general guidance, verified repository continuation, or fixed local clarification or hold state.
 
 This avoids the cost and latency of sending continuous audio to a realtime API. It also avoids pretending that a Codex subscription is a general-purpose OpenAI API allowance.
 
@@ -46,7 +46,7 @@ Transcription and generic meeting summaries are not the wedge. ChirpCue is diffe
 
 - repo-aware technical answers, with AGENTS.md and reviewed skill support limited to Codex;
 - useful general guidance when no repository is attached, explicitly labeled as unverified;
-- an instant cue that is structurally unable to invent repo facts;
+- a fast answer that is locally restricted from claiming private repository facts, with a deterministic fallback when it is late or rejected;
 - an extractively verified repository continuation, a labeled general continuation, or fixed local clarification or abstention text;
 - native Mac capture without a meeting bot;
 - personal subscription use, read-only isolation, and ephemeral meeting context.
@@ -62,7 +62,7 @@ Transcription and generic meeting summaries are not the wedge. ChirpCue is diffe
 - English transcription first.
 - Zero or one explicitly selected repository. Repository-specific questions route to one AGENTS scope within its sealed snapshot; repository-free turns have no file access and cannot claim codebase facts.
 - Explicitly selected read-only skills when Codex is selected; Claude v1 remains skill-free.
-- SAY NOW bridge and Deep suggestion cards.
+- Quick answer, emergency bridge, and Detailed answer cards.
 - Independent mic and output controls plus start, pause, resume, stop, dismiss, and Coach Current Turn controls.
 - Ephemeral meeting context by default.
 - Local latency and reliability metrics that do not retain meeting content.
@@ -134,7 +134,7 @@ Transcript behavior:
 
 Suggestion behavior:
 
-- SAY NOW is at most 24 words and must fit in one breath;
+- QUICK ANSWER is at most 24 words and must fit in one breath;
 - the card freezes as soon as the user begins speaking;
 - Deep progress remains visible but does not expose hidden chain-of-thought;
 - CONTINUE, CLARIFY, or HOLD appears automatically;
@@ -147,9 +147,9 @@ Remote question:
 
 > Why did we keep this asynchronous instead of calling the provider directly?
 
-Immediate technical bridge:
+Fast AI answer:
 
-> Let me think through that carefully for a second.
+> I would separate the user path from provider latency, then make retry ownership explicit.
 
 Deep continuation:
 
@@ -175,9 +175,12 @@ flowchart LR
     YL --> TD
     TD --> COORD["Turn coordinator"]
 
-    COORD --> CUE["Fixed local bridge"]
+    COORD --> Q["Low-effort Quick"]
+    COORD --> FALLBACK["Fixed fallback bridge"]
     COORD --> D["Deep Codex worker"]
     COORD --> BIND["Cue + DeepDraft binder"]
+    Q --> CUE["Validated displayed cue"]
+    FALLBACK --> CUE
     CUE --> UI["SwiftUI + AppKit panel"]
     CUE --> BIND
 
@@ -225,7 +228,7 @@ Use AVAudioEngine for the current macOS default microphone. Keep the mic and sys
 
 When speakers cause remote audio to leak into the microphone, compare recent transcript timing and similarity and suppress high-confidence duplicates. If the source remains uncertain, label the span UNKNOWN instead of guessing. Setup shows the enabled lanes, Mac-output scope, and permissions. It states that the microphone uses the current macOS default input rather than claiming to display an exact microphone device. After Start, independent callback watchdogs surface a missing route. Pre-capture live level meters are deferred.
 
-Automatic coaching requires the microphone lane because cue freezing and reply timing depend on local speech. With mic disabled, the app enters MIC_DISABLED manual mode: output transcription continues, no cue is triggered automatically, and the user presses Coach Current Turn to seal the latest stable output span. The user also freezes or dismisses that card manually, and cue-before-reply metrics are marked unavailable.
+Automatic coaching requires meeting-output capture, not microphone capture. With mic disabled, output transcription still triggers likely questions and both response stages automatically; ChirpCue simply cannot freeze the displayed answer around verified local speech or measure cue-before-reply timing. Coach Current Turn remains a retry for a missed boundary.
 
 Meeting-output capture is required for speech-driven coaching. With output disabled, the app enters OUTPUT_DISABLED: mic transcription may continue, but automatic coaching and Coach Current Turn are unavailable. Only a question explicitly typed or pasted by the user can start the bridge-and-Deep pipeline. This prevents the app from treating the user's own mic speech as the other party's question.
 
@@ -289,30 +292,30 @@ Every candidate question receives:
 - repo grounding fingerprint;
 - deadline budget.
 
-Deep starts automatically for every eligible response-required turn. The visible cue is always the exact fixed local bridge, regardless of topic. The production coordinator does not call model Quick, does not classify a turn to decide whether a model may write the first cue, and does not consult a model-controlled `needsDeep` value. Deep requires authentication, the pinned permission profile, and available usage-governor capacity. Repository mode additionally requires a fresh sealed snapshot and stable source attribution; general mode uses an empty private context with no repository or domain skill.
+Quick and Deep start concurrently for every eligible response-required turn. Codex Quick uses the fastest compatible route at low effort and must return at most 24 natural spoken words. Local policy rejects private-context claims, generic waiting language, malformed output, and stale identity. Deep always runs regardless of model-controlled `needsDeep`, using the high-reasoning route selected at runtime. Repository Deep additionally requires a fresh sealed snapshot and stable source attribution; general Deep uses an empty private context with no repository or domain skill.
 
 The visible cue is sealed exactly once:
 
-1. the coordinator immediately seals the deterministic bridge as displayedCue;
-2. the coordinator assigns the sealed text a cue ID and content hash;
+1. the coordinator starts Quick and Deep together under independent deadlines;
+2. a locally valid Quick answer becomes displayedCue; otherwise the coordinator seals the deterministic bridge at the Quick deadline;
 3. Deep independently returns a schema-bound DeepDraft;
 4. in repository mode, local verification accepts an answer candidate only when it exactly matches one extractive verified basis claim after case and whitespace normalization while preserving punctuation; in general mode, local validation requires `general_answer`, a null grounding fingerprint, and empty basis;
 5. a binder produces BoundDeep against exactly that cue ID, cue hash, and DeepDraft hash;
 6. only the locally validated BoundDeep bundle may display, with general guidance visibly distinguished from repository-verified evidence.
 
-Deterministic rules bind a repository answer or general answer as continue, a missing-context question as clarify, and an abstention as abstain. For a repository answer, the binder uses the verified extractive candidate. For `general_answer`, it uses the schema-validated candidate and marks the card as unverified general guidance. For clarification and abstention, it discards model candidate prose and inserts fixed local safe text. A validation failure emits `deepUnavailable`, leaves the bridge visible, and enters `DEEP_LIMITED`; rejected text is never shown. The production coordinator does not start a model reconciliation turn. Completion orderings are fixture-tested. Results are accepted only when meeting ID, turn ID, generation, cue binding, DeepDraft hash, and optional grounding fingerprint still match.
+Local deterministic reconciliation relates the verified Deep answer to the exact cue ID and hash without spending a third model turn. It binds an answer as continue, a missing-context question as clarify, and an abstention as abstain. A Deep validation failure leaves the fast cue or bridge visible and enters `DEEP_LIMITED`; rejected text is never shown. Completion orderings are fixture-tested. Results are accepted only when meeting ID, turn ID, generation, cue binding, DeepDraft hash, and optional grounding fingerprint still match.
 
-### 7.2 Immediate bridge
+### 7.2 Fast answer and emergency bridge
 
-Purpose: give the user a safe sentence to say immediately while Deep works.
+Purpose: give the user a useful, natural first answer while Deep works.
 
-The implemented deterministic bridge is:
+Codex Quick uses the fastest compatible low-effort model. It has no repository access and may give only broadly applicable guidance, a clarifying question, or a qualified default. The coordinator locally validates identity, word count, confidence, speakability, and absence of private-context claims before display.
+
+If Quick fails validation or misses the 1.25-second deadline, the implemented deterministic bridge is:
 
 > Let me think through that carefully for a second.
 
-It is local, immutable, and identical for every production turn. Meeting text cannot alter it. No model inference, topic classifier, repository access, subscription capacity, or network round trip sits on this first-cue path.
-
-Lower-level Quick and reconciliation protocol types and fixture tests remain for compatibility, but the production ResponseCoordinator neither invokes them nor displays their output.
+The fallback is local, immutable, and identical for every turn. Meeting text cannot alter it. Claude and Gemini currently use this fallback as their first cue because their reviewed subscription paths expose only the one-turn Deep contract.
 
 ### 7.3 Deep worker
 
@@ -359,17 +362,17 @@ When work becomes stale:
 4. retain the old card only as a dimmed visual reference;
 5. stop requesting more work, while acknowledging that inference already performed may still consume subscription usage.
 
-Local speech initially freezes the visible cue instead of cancelling Deep because saying the bridge while Deep works is the intended flow. At the end of the local turn, the coordinator either queues the grounded continuation or invalidates it under the rules above.
+Local speech that matches either the displayed Quick answer or fallback bridge freezes that cue instead of cancelling Deep. At the end of the local turn, the coordinator either releases the queued Detailed answer or invalidates stale work under the rules above.
 
 ### 7.5 Eligibility and usage governor
 
-Automatic coaching requires a likely meeting-output question or a user-triggered Coach Current Turn, stable enough source attribution, and available Codex capacity. A typed question can start coaching when output capture is unavailable. Repository-specific Deep additionally requires a selected, successfully sealed repository; otherwise PaceNote uses the clearly labeled general mode. The personal defaults allow one active Deep turn, at most six Codex Deep starts per minute, and at most two Claude Deep starts per minute. A local-limit message must identify ChirpCue as the source instead of implying that the provider subscription is exhausted. These limits must be tuned from measured plan usage. The local bridge consumes no subscription capacity.
+Automatic coaching requires a likely meeting-output question, or the user can retry with Coach Current Turn. A typed question can start coaching when output capture is unavailable. Repository-specific Deep additionally requires a selected, successfully sealed repository; otherwise ChirpCue uses the clearly labeled general mode. The personal defaults allow one active Deep turn, at most six Codex Deep starts per minute, and at most two Claude Deep starts per minute. A local-limit message must identify ChirpCue as the source instead of implying that the provider subscription is exhausted. The emergency bridge consumes no subscription capacity.
 
 `account/rateLimits/updated` can lower the local budget immediately; recovery is visible and never assumed on a timer alone.
 
 ### 7.6 Speakability
 
-Both stages output words for the user to say, not a report for the user to translate. The first stage is the fixed bridge; these style rules govern the Deep candidate.
+Both stages output words for the user to say, not a report for the user to translate. These style rules govern both the fast answer and Deep candidate.
 
 - Write in first person with contractions.
 - Lead with the answer or transition, not model process.
@@ -380,9 +383,9 @@ Both stages output words for the user to say, not a report for the user to trans
 
 ## 8. Output contracts
 
-Use an app-server structured output schema for Deep. These are conceptual shapes; the implementation generates exact client types from the pinned app-server schema. Lower-level QuickModelOutput and Reconciliation protocol types remain compatibility and test surfaces only; the production coordinator does not call them.
+Use strict app-server structured output schemas for Quick and Deep. Reconciliation is local and deterministic so the automatic flow spends exactly two model operations. These are conceptual shapes; the implementation generates exact client types from the pinned app-server schema.
 
-The coordinator seals the exact local bridge into CueEnvelope:
+The coordinator seals the accepted Quick answer or exact local fallback into CueEnvelope:
 
     {
       "id": "UUID",
@@ -390,8 +393,8 @@ The coordinator seals the exact local bridge into CueEnvelope:
       "generation": 1,
       "textHash": "sha256",
       "text": "24 words maximum",
-      "reason": "deterministic_safety_bridge",
-      "isDeterministicBridge": true
+      "reason": "technical_question | deterministic_safety_bridge",
+      "isDeterministicBridge": false
     }
 
 DeepDraft:
@@ -445,7 +448,7 @@ Local validation rejects:
 - a candidate that appends, combines, paraphrases, changes punctuation, or changes negation instead of exactly matching one extractive claim;
 - results for a stale turn ID, generation, cue hash, repo fingerprint, or cited file hash.
 
-If validation fails, no Deep card is displayed. The bridge remains visible, the UI enters `DEEP_LIMITED`, and the rejected text is never shown.
+If validation fails, no Deep card is displayed. The accepted Quick answer or emergency bridge remains visible, the UI enters `DEEP_LIMITED`, and the rejected text is never shown.
 
 ## 9. Codex subscription integration
 
@@ -578,7 +581,7 @@ Before creating meeting artifacts or starting any base thread, write a content-f
 - no ambient MCP servers, apps, hooks, browser, or external network tools are enabled;
 - instructionSources match the exact effective AGENTS chain mapped to that scope.
 
-Each eligible question uses an ephemeral Deep fork. The minimum transcript window is injected only into that fork. Meeting text never enters the reusable base thread, and the production coordinator creates no Quick or reconciliation fork. If a draft needs files governed by a different effective AGENTS chain, reject it and rerun once from the correct scope when deadline and the next Deep quota slot permit; a multi-scope answer otherwise clarifies or abstains in the MVP. If the tested build cannot create an ephemeral fork from the transcript-free base, all Codex coaching is unavailable; a transcript-bearing `thread/start` is not an allowed fallback.
+Each eligible question uses separate ephemeral Quick and Deep forks. Quick runs from an empty private context with no repository, instructions, or skills. The minimum transcript window enters only those ephemeral forks and never the reusable bases. Cue reconciliation is local and starts no third fork. If a draft needs files governed by a different effective AGENTS chain, reject it and rerun once from the correct scope when deadline and the next Deep quota slot permit; a multi-scope answer otherwise clarifies or abstains in the MVP. If the tested build cannot create an ephemeral fork from the transcript-free base, all Codex coaching is unavailable; a transcript-bearing reusable base is not an allowed fallback.
 
 ### 10.3 Freshness
 
@@ -620,7 +623,7 @@ Every Deep implementation claim must carry a repo alias, relative path, line ran
 - whether the claim contains at least two informative terms and matches one complete cited source line after case and whitespace normalization, with only a leading comment or list marker removable;
 - whether the answer candidate exactly matches one verified basis claim after case and whitespace normalization while preserving punctuation.
 
-The verifier does not combine support across claims and does not accept appended clauses, paraphrases, punctuation changes, or negation changes. A non-extractive claim, or a candidate without one exact punctuation-preserving claim match, fails closed. No Deep card is displayed; the bridge remains visible and the app enters `DEEP_LIMITED`. This conservative extractive gate intentionally withholds an answer when no complete source line is safe to say.
+The verifier does not combine support across claims and does not accept appended clauses, paraphrases, punctuation changes, or negation changes. A non-extractive claim, or a candidate without one exact punctuation-preserving claim match, fails closed. No Deep card is displayed; the accepted Quick answer or emergency bridge remains visible and the app enters `DEEP_LIMITED`. This conservative extractive gate intentionally withholds an answer when no complete source line is safe to say.
 
 ## 11. State and degradation model
 
@@ -631,7 +634,7 @@ Primary states:
       -> Ready
       -> Listening
       -> CandidateQuestion
-      -> BridgeVisible + DeepThinking
+      -> QuickOrFallbackVisible + DeepThinking
       -> Suggesting
       -> Listening
       -> Paused
@@ -643,16 +646,16 @@ Any active state can enter Brownout with one or more typed reasons:
 |---|---|
 | SYSTEM_AUDIO_LOST | Insert an OUTPUT audio gap and retry capture after the route stabilizes. |
 | MIC_LOST | Insert a MIC audio gap and ask the user to choose a microphone. |
-| MIC_DISABLED | Continue output transcription, but require manual Coach Current Turn and card controls. |
+| MIC_DISABLED | Continue output transcription and automatic coaching; cue-freezing and cue-before-reply timing are unavailable. |
 | OUTPUT_DISABLED | Allow mic-only transcription and explicit typed or pasted questions; disable speech-driven coaching and Coach Current Turn. |
 | TRANSCRIPT_UNCERTAIN | Show unstable text and suppress factual coaching. |
 | TRANSCRIBER_ASSET_MISSING | Guide the user through the local asset requirement. |
-| CODEX_OFFLINE | Continue transcription and show deterministic bridge text only. |
+| CODEX_OFFLINE | Continue transcription; use the deterministic bridge for an already-started turn and show provider recovery guidance. |
 | AUTH_EXPIRED | Pause Codex suggestions and request login. |
 | ACCOUNT_MISMATCH | Block Ready until the selected profile uses its expected ChatGPT account or workspace. |
 | PROTOCOL_UNSUPPORTED | Stop inference after a failed initialize handshake or schema mismatch. |
 | APP_SERVER_CRASHED | Cancel in-flight turns, preserve transcript-only mode, and offer one clean restart. |
-| DEEP_LIMITED | Keep the deterministic bridge visible with a Deep unavailable label. |
+| DEEP_LIMITED | Keep the accepted Quick answer or deterministic fallback visible with a Deep unavailable label. |
 | REPO_CHANGED | Cancel Deep, mark its evidence stale, and rebuild grounding. |
 | SNAPSHOT_BLOCKED | Keep Deep off until sensitive-file findings or snapshot errors are resolved. |
 | SNAPSHOT_BUSY | Discard the inconsistent copy and keep Deep off after two bounded retries until the user retries grounding. |
@@ -665,7 +668,7 @@ There are no silent infinite retries. Optional load is shed in this order:
 1. skip non-question turns;
 2. disable optional enrichment;
 3. route an ambiguous repo match to clarify instead of opening a second Deep scope;
-4. keep the deterministic bridge visible;
+4. keep the accepted Quick answer or deterministic fallback visible;
 5. enter transcript-only mode.
 
 Provenance and evidence validation are never silently removed to save time.
@@ -737,14 +740,14 @@ All latency begins at the locally detected end of the meeting-output turn. These
 | Metric | Target |
 |---|---|
 | Turn boundary decision | p95 at or below 700 ms |
-| Deterministic bridge visible | hard UI deadline at or below 1.25 s |
-| Bridge visible before the user begins replying | 85% or better in mic-enabled scripted dogfood |
+| Fast AI answer or deterministic fallback visible | hard UI deadline at or below 1.25 s |
+| First cue visible before the user begins replying | 85% or better in mic-enabled scripted dogfood |
 | Estimated spoken duration of sayNow | 7.5 seconds or less |
 | Internal DeepDraft completion, never user-visible | p50 at or below 8 s, p95 at or below 15 s |
 | Verified and cue-bound Deep card visible | p50 at or below 10 s, p95 at or below 25 s |
 | Mic-to-output clock skew in a controlled 30-minute loopback | p95 at or below 80 ms |
 | Stale result displayed after a newer turn | 0 |
-| First cue differs from the approved deterministic bridge | 0 |
+| Rejected or stale Quick output displayed | 0 |
 | Invalid path or line citation shown | 0 |
 
 The verified card metric is the only user-facing Deep latency target. No draft or uncited stream is shown early to improve a benchmark. The app also freezes a useful card while the user is speaking instead of replacing words underneath the user's eyes.
@@ -758,7 +761,7 @@ Evaluate with sanitized technical meeting fixtures and real repo snapshots, neve
 | Technical entity transcription recall | 90% or better on selected-repo vocabulary |
 | Meeting-output question boundary precision | 90% or better |
 | Meeting-output question boundary recall | 85% or better |
-| Model-written first cues | 0 across the evaluation set |
+| Useful locally valid Codex Quick answers | 90% or better across the evaluation set |
 | Deep citation path and line validity | 100% |
 | Deep claim-to-citation support | 95% or better |
 | Displayed Deep answer candidate exactly matches one extractive verified basis claim while preserving punctuation | 100% |
@@ -797,9 +800,9 @@ Build no audio UI yet. Prove:
 - account/read, model/list, and account rate-limit events;
 - pinned schema generation;
 - transcript-free base persistence plus transcript-bearing ephemeral forks with disk audits;
-- immediate deterministic bridge plus automatic Deep for every eligible turn, with no model Quick or model reconciliation call on the production coordinator path;
-- strict structured outputs;
-- immediate-bridge, early-Deep, late-Deep, timeout, and stale completion ordering;
+- concurrent low-effort Quick and high-reasoning Deep for every eligible turn, with deterministic fallback at the Quick deadline;
+- strict structured outputs and local Quick speakability/private-context validation;
+- Quick-success, Quick-timeout, fallback, early-Deep, late-Deep, and stale completion ordering;
 - immutable displayed-cue and DeepDraft hash binding;
 - ephemeral repo fork;
 - sanitized immutable snapshot with sensitive-file exclusions;
@@ -832,13 +835,13 @@ Go/no-go: a controlled 30-minute loopback must meet the 80 ms skew target. A 30-
 - menu-bar lifecycle;
 - compact floating SwiftUI window;
 - rolling transcript;
-- SAY NOW bridge and Deep cards;
+- Quick answer, emergency fallback, and Detailed answer cards;
 - freeze, dismiss, Coach Current Turn, pause, and stop shortcuts;
 - generation-based cancellation;
 - visible brownout states;
 - accessibility and reduced-motion support.
 
-Go/no-go: meet bridge visibility, cue-before-user-speech, Deep latency, and stale-card targets on sanitized replays.
+Go/no-go: meet first-cue visibility, cue-before-user-speech, Deep latency, and stale-card targets on sanitized replays.
 
 ### M3. Repo, skills, and evidence, 5 to 7 days
 
@@ -884,8 +887,8 @@ They must:
 2. prove an empty general context cannot read repository files, then build, secret-scan, seal, and fingerprint a repo and skill snapshot;
 3. activate and verify the deny-by-default named permission profile;
 4. create one immutable turn;
-5. seal the exact deterministic bridge immediately for every eligible turn and start Deep automatically without invoking a classifier, model Quick, model reconciliation, or a model-controlled `needsDeep` value;
-6. prove lower-level Quick and reconciliation stubs are never called by the production coordinator;
+5. start low-effort Quick and high-reasoning Deep concurrently for every eligible turn, accept only a locally valid Quick cue, and seal the exact deterministic fallback at the Quick deadline without consulting model-controlled `needsDeep`;
+6. prove Quick, fallback, and reconciliation completion orderings remain bound to the current turn and cue;
 7. bind Deep to that cue's ID and hash under every completion ordering;
 8. reject a stale Deep result after synthetic turn, gap, pause, TTL, and repo-change events;
 9. require every general answer to use `general_answer` with null fingerprint and empty basis, and validate every repository citation against snapshot and live-source hashes, require each claim to copy one complete cited line, and require the repository answer candidate to exactly match one extractive basis claim while preserving punctuation;

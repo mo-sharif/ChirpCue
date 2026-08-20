@@ -4,12 +4,12 @@ import XCTest
 @testable import PaceNoteCore
 
 final class ResponseCoordinatorTests: XCTestCase {
-    func testDeterministicBridgeRemainsImmutableWhenDeepArrives() async throws {
+    func testFastAIAnswerAppearsBeforeDeepAndBindsReconciliation() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
         let generator = ScriptedGenerator(
             quickDelay: .milliseconds(10),
             deepDelay: .milliseconds(25),
-            quickText: "The synchronous path would couple latency to downstream availability.",
+            quickText: "I would decouple the caller from downstream latency, then make retries explicit.",
             turn: turn
         )
         let coordinator = ResponseCoordinator(
@@ -21,13 +21,16 @@ final class ResponseCoordinatorTests: XCTestCase {
         let cue = try XCTUnwrap(events.compactMap(\.cue).first)
         let deep = try XCTUnwrap(events.compactMap(\.deep).first)
 
-        XCTAssertTrue(cue.isDeterministicBridge)
-        XCTAssertEqual(cue.text, "Let me think through that carefully for a second.")
+        XCTAssertFalse(cue.isDeterministicBridge)
+        XCTAssertEqual(
+            cue.text,
+            "I would decouple the caller from downstream latency, then make retries explicit."
+        )
         XCTAssertEqual(deep.cueID, cue.id)
         XCTAssertEqual(deep.cueHash, cue.textHash)
         XCTAssertEqual(deep.kind, .generalAnswer)
         XCTAssertTrue(deep.basis.isEmpty)
-        XCTAssertEqual(deep.transition, "")
+        XCTAssertEqual(deep.transition, "More specifically,")
         XCTAssertEqual(deep.sayNext, generator.deepText)
         XCTAssertLessThanOrEqual(deep.composedText.split(separator: " ").count, 40)
     }
@@ -102,12 +105,12 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertEqual(events.compactMap(\.deep).count, 1)
     }
 
-    func testNontechnicalTurnStillUsesBridgeAndDeep() async throws {
+    func testNontechnicalTurnUsesFastAIAnswerAndDeep() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
         let generator = ScriptedGenerator(
             quickDelay: .milliseconds(5),
             deepDelay: .milliseconds(15),
-            quickText: "Yes, that is how I would frame it.",
+            quickText: "I would frame the decision around reversibility and the cost of being wrong.",
             turn: turn,
             quickNeedsDeep: false
         )
@@ -120,7 +123,7 @@ final class ResponseCoordinatorTests: XCTestCase {
 
         let events = await Self.collect(coordinator.suggestions(for: turn))
 
-        XCTAssertTrue(try XCTUnwrap(events.compactMap(\.cue).first).isDeterministicBridge)
+        XCTAssertFalse(try XCTUnwrap(events.compactMap(\.cue).first).isDeterministicBridge)
         XCTAssertEqual(events.compactMap(\.deep).count, 1)
         XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(250))
     }

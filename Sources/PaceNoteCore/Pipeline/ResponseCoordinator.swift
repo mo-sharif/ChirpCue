@@ -125,6 +125,17 @@ public actor ResponseCoordinator {
         let resultDeadline = startedAt.advanced(by: configuration.resultTTL)
         let generator = generator
         let sensitiveOutputBuffer = sensitiveOutputBuffer
+        let quickDeadline = min(
+            startedAt.advanced(by: configuration.quickDeadline),
+            resultDeadline
+        )
+        let quickOperation = Self.startOperation(
+            deadline: quickDeadline,
+            onValue: { output in
+                await sensitiveOutputBuffer?.register(output.sayNow)
+            },
+            operation: { try await generator.generateQuick(for: turn) }
+        )
         let deepOperation = Self.startOperation(
             deadline: resultDeadline,
             onValue: { draft in
@@ -134,21 +145,48 @@ public actor ResponseCoordinator {
         )
 
         defer {
+            quickOperation.task.cancel()
             deepOperation.task.cancel()
             continuation.finish()
         }
 
-        // Meeting text is untrusted and no lexical topic classifier can reliably prove that a
-        // model-written Quick response is non-factual. Always display a local, immutable bridge
-        // immediately and continue to Deep. This is both faster and fail-closed: model output can
-        // neither become the first spoken cue nor suppress the grounded answer.
-        let cue = bridge(for: turn.identity, reason: "deterministic_safety_bridge")
+        let quickResult = await outcome(from: quickOperation.gate, deadline: quickDeadline)
+        let cue: CueEnvelope
+        var quickFailure: ResponseCoordinatorFailure?
+        switch quickResult {
+        case .success(let output) where output.reason == "deterministic_safety_bridge":
+            cue = bridge(for: turn.identity, reason: output.reason)
+        case .success(let output) where Self.valid(output, for: turn):
+            cue = CueEnvelope(
+                turnID: turn.identity.turnID,
+                generation: turn.identity.generation,
+                text: Self.limitWords(output.sayNow, maximum: 24),
+                reason: output.reason,
+                isDeterministicBridge: false
+            )
+        case .success:
+            quickFailure = .responseRejected
+            cue = bridge(for: turn.identity, reason: "quick_response_rejected")
+        case .failure(let failure):
+            quickFailure = failure
+            cue = bridge(for: turn.identity, reason: "quick_response_unavailable")
+        case .timedOut:
+            quickOperation.task.cancel()
+            quickFailure = .timedOut
+            cue = bridge(for: turn.identity, reason: "quick_response_timed_out")
+        case .cancelled:
+            quickFailure = .providerUnavailable
+            cue = bridge(for: turn.identity, reason: "quick_response_cancelled")
+        }
 
         guard isCurrent(turn.identity), !Task.isCancelled else {
             continuation.yield(.discardedStale(turn.identity))
             return
         }
         continuation.yield(.cue(cue))
+        if let quickFailure {
+            continuation.yield(.quickUnavailable(quickFailure.rawValue))
+        }
 
         let deepResult = await outcome(from: deepOperation.gate, deadline: resultDeadline)
         guard isCurrent(turn.identity), !Task.isCancelled else {
@@ -174,17 +212,7 @@ public actor ResponseCoordinator {
                 return
             }
 
-            guard
-                let reconciliation = await reconcile(
-                    cue: cue,
-                    draft: draft,
-                    deadline: resultDeadline,
-                    continuation: continuation,
-                    identity: turn.identity
-                )
-            else {
-                return
-            }
+            let reconciliation = Self.reconciliation(cue: cue, draft: draft)
 
             guard isCurrent(turn.identity), !Task.isCancelled,
                 clock.now <= resultDeadline
@@ -241,50 +269,20 @@ public actor ResponseCoordinator {
         }
     }
 
-    private func reconcile(
-        cue: CueEnvelope,
-        draft: DeepDraft,
-        deadline: ContinuousClock.Instant,
-        continuation: AsyncStream<ResponseCoordinatorEvent>.Continuation,
-        identity: TurnIdentity
-    ) async -> Reconciliation? {
-        if cue.isDeterministicBridge {
-            switch draft.kind {
-            case .answer:
-                return Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
-            case .generalAnswer:
-                return Reconciliation(relationship: .continueAnswer, transition: "")
-            case .clarification:
-                return Reconciliation(relationship: .clarify, transition: "The detail I need is:")
-            case .abstention:
-                return Reconciliation(relationship: .abstain, transition: "I cannot verify that yet.")
-            }
+    private static func reconciliation(cue: CueEnvelope, draft: DeepDraft) -> Reconciliation {
+        switch draft.kind {
+        case .answer:
+            Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        case .generalAnswer:
+            Reconciliation(
+                relationship: .continueAnswer,
+                transition: cue.isDeterministicBridge ? "" : "More specifically,"
+            )
+        case .clarification:
+            Reconciliation(relationship: .clarify, transition: "The detail I need is:")
+        case .abstention:
+            Reconciliation(relationship: .abstain, transition: "I cannot verify that yet.")
         }
-
-        guard ContinuousClock().now <= deadline else {
-            continuation.yield(.discardedStale(identity))
-            return nil
-        }
-
-        let generator = generator
-        let operation = Self.startOperation(deadline: deadline) {
-            try await generator.reconcile(cue: cue, draft: draft)
-        }
-        defer { operation.task.cancel() }
-
-        switch await outcome(from: operation.gate, deadline: deadline) {
-        case .success(let reconciliation):
-            return reconciliation
-        case .failure(let failure):
-            continuation.yield(.deepUnavailable(failure))
-        case .timedOut:
-            continuation.yield(.deepUnavailable(.timedOut))
-        case .cancelled:
-            if !Task.isCancelled {
-                continuation.yield(.deepUnavailable(.providerUnavailable))
-            }
-        }
-        return nil
     }
 
     private nonisolated static func startOperation<Value: Sendable>(
@@ -350,6 +348,21 @@ public actor ResponseCoordinator {
         guard draft.kind != .answer, draft.basis.isEmpty else { return false }
         if draft.kind == .generalAnswer {
             return GeneralGuidancePolicy.accepts(draft.candidateSayNext)
+        }
+        return true
+    }
+
+    private static func valid(_ output: QuickModelOutput, for turn: ConversationTurn) -> Bool {
+        guard output.turnID == turn.identity.turnID,
+            output.generation == turn.identity.generation,
+            !output.sayNow.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            wordCount(output.sayNow) <= 24,
+            output.confidence.isFinite,
+            (0...1).contains(output.confidence),
+            !output.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            GeneralGuidancePolicy.accepts(output.sayNow)
+        else {
+            return false
         }
         return true
     }

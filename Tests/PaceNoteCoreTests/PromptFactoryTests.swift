@@ -12,6 +12,9 @@ final class PromptFactoryTests: XCTestCase {
 
         XCTAssertTrue(prompt.contains("no repository evidence"))
         XCTAssertTrue(prompt.contains("Never state or imply implementation"))
+        XCTAssertTrue(prompt.contains("useful broadly applicable first answer immediately"))
+        XCTAssertTrue(prompt.contains("pragmatic staff engineer"))
+        XCTAssertTrue(prompt.contains("Do not use generic waiting phrases"))
         XCTAssertTrue(prompt.contains("Repository grounding attached: yes"))
         XCTAssertTrue(prompt.contains("always runs Deep automatically"))
         XCTAssertTrue(prompt.contains("&lt;/meeting_question&gt;"))

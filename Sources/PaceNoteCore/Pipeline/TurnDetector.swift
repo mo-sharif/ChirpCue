@@ -82,8 +82,10 @@ public struct TurnDetector: Sendable {
         let lowercased = text.lowercased()
         let prefixes = [
             "why ", "how ", "what ", "when ", "where ", "which ", "who ",
+            "why's ", "how's ", "what's ", "when's ", "where's ", "who's ",
             "can you ", "could you ", "would you ", "will you ", "do you ",
-            "walk me through ", "tell me ", "explain ", "help me understand ",
+            "walk me through ", "talk me through ", "tell me ", "describe ", "explain ",
+            "help me understand ", "give me ",
         ]
         return prefixes.contains { lowercased.hasPrefix($0) }
     }

@@ -1158,13 +1158,6 @@ public actor MeetingSessionController {
         let segment = ingest(result, source: outputSource)
         turnDetector.observe(segment)
         boundaryTask?.cancel()
-        guard configuration.captureMode.capturesMicrophone else {
-            // Without the local-speech lane PaceNote cannot know whether the user
-            // has started answering. Keep transcription live, but require the
-            // explicit Coach Current Turn action to freeze and coach this span.
-            boundaryTask = nil
-            return
-        }
         if segment.isFinal {
             await detectTurnBoundary(force: false)
         } else {
@@ -1423,12 +1416,10 @@ public actor MeetingSessionController {
             let card = SuggestionCard(identity: identity, stage: stage, text: cue.text)
             suggestions.removeAll { $0.identity == identity && $0.stage != .deep }
             suggestions.insert(card, at: 0)
-            if cue.isDeterministicBridge {
-                timingLedger.recordBridgeReady(
-                    generation: identity.generation,
-                    at: time.now()
-                )
-            }
+            timingLedger.recordBridgeReady(
+                generation: identity.generation,
+                at: time.now()
+            )
             phase = .suggesting
             emit(.suggestionUpserted(card))
             emitState()
@@ -1500,7 +1491,7 @@ public actor MeetingSessionController {
         }
         guard
             let card = suggestions.first(where: {
-                $0.identity == identity && $0.stage == .bridge
+                $0.identity == identity && ($0.stage == .quick || $0.stage == .bridge)
             })
         else {
             return nil

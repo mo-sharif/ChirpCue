@@ -74,17 +74,17 @@ This is the completion contract for the personal production build. A checked ite
 
 ## Response behavior
 
-- [x] Every eligible production turn immediately shows the exact deterministic local bridge, keeps it immutable, and starts automatic Deep without invoking a classifier, model Quick, model reconciliation, or a model-controlled `needsDeep` value.
-- [x] Cue-bound Deep results, word budgets, TTL, stale-generation cancellation, and proof that lower-level Quick and reconciliation stubs are not invoked by the production coordinator have automated coverage.
+- [x] Every eligible production turn automatically starts Codex Quick and high-reasoning Deep concurrently. A locally valid low-effort Quick answer displays within a 1.25-second budget; the exact deterministic bridge is used only when Quick fails, times out, or the selected provider has no reviewed model-Quick path. Model-controlled `needsDeep` never suppresses Deep.
+- [x] Quick validation, emergency fallback, locally reconciled cue-bound Deep results, word budgets, TTL, stale-generation cancellation, and output-only automatic coaching have automated coverage. No third reconciliation model turn is spent.
 - [x] Repository-free Deep uses a distinct `general_answer` kind from an empty private context, requires a null grounding fingerprint and empty basis, rejects repository-answer kinds and explicit local codebase or production-state claims, and reaches the UI with an explicit unverified-guidance label.
 - [x] A repository Deep answer candidate must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation; each claim must contain at least two informative terms and copy one complete freshly verified source line, apart from a leading comment or list marker. Appended, combined, paraphrased, punctuation-changed, and negation-changed candidates fail closed.
-- [x] Strict Deep and evidence schemas reject unknown or malformed fields. Lower-level Quick and reconciliation schema fixtures remain compatibility tests, not production response paths.
+- [x] Strict Quick, Deep, and evidence schemas reject unknown or malformed fields; Quick also passes local staff-engineer speakability and private-context-claim checks before display, and reconciliation is deterministic local code.
 - [x] Deep completion, evidence rejection, rate-governor, turn-detector, gap, pause, route-loss, transcriber-failure, and user-interruption paths have fixture or controller coverage.
-- [x] Speaking the displayed bridge no longer cancels Deep. Volatile exact or omission-tolerant bridge speech freezes the visible card, queues a mid-speech Deep result, and releases it only after the final bridge transcript; a bridge plus substantive reply still invalidates stale work.
-- [x] A bounded content-free timing ledger measures turn-stable-to-controller-ready bridge latency, signed bridge-to-confirmed-speech margin, controller acceptance of verified Deep, stale outcomes, and user dismissals. Empty samples remain explicitly not evaluated, and Stop returns the snapshot before clearing live metrics. SwiftUI render acknowledgement and the distinct turn-boundary p95 remain live dogfood gates below.
+- [x] Speaking the displayed Quick answer or fallback bridge no longer cancels Deep. Volatile exact or omission-tolerant cue speech freezes the visible card, queues a mid-speech Deep result, and releases it only after the final cue transcript; a cue plus substantive reply still invalidates stale work.
+- [x] A bounded content-free timing ledger measures turn-stable-to-controller-ready first-cue latency, signed cue-to-confirmed-speech margin, controller acceptance of verified Deep, stale outcomes, and user dismissals. Empty samples remain explicitly not evaluated, and Stop returns the snapshot before clearing live metrics. SwiftUI render acknowledgement and the distinct turn-boundary p95 remain live dogfood gates below.
 - [x] Dismiss clears only the identity-bound suggestion, cancels and joins its generation, leaves capture and transcript active, and remains independent from Stop. A bounded in-memory cleanup ledger retains normalized fragments from transcript, displayed, held, queued, dismissed, and late-arriving response content until Stop audits app-owned provider state; overflow and audit failure preserve the cleanup journal and fail closed.
-- [ ] A live meeting proves the bridge appears before the user replies and a later Deep continuation or clarification remains natural to speak.
-- [ ] Dogfood meets measured bridge-visibility, Deep, stale-card, and speakability targets.
+- [ ] A live meeting proves the Quick answer or fallback appears before the user replies and a later Deep continuation or clarification remains natural to speak.
+- [ ] Dogfood meets measured first-cue visibility, Deep, stale-card, and speakability targets.
 
 ## Repository and skill isolation
 
@@ -118,8 +118,8 @@ This is the completion contract for the personal production build. A checked ite
 - [x] The coaching window is configured to join every Space, remain available beside full-screen apps, stay visible when another app activates, and retain window-capture protection.
 - [x] Main-window and menu-bar status indicators derive from the capture ownership flag rather than response phase, so active capture remains red while thinking, suggesting, or in a brownout; model lifecycle tests cover the ownership transitions.
 - [x] Decorative banner transitions and transcript auto-scroll honor SwiftUI Reduce Motion, and the glass backdrop already honors Reduce Transparency.
-- [ ] Setup, transcript, bridge, Deep, degraded, paused, and ended states render correctly in the packaged app.
-- [ ] The packaged app visually confirms the capture indicator across listening, bridge, Deep, suggesting, and brownout states.
+- [ ] Setup, transcript, Quick, fallback, Deep, degraded, paused, and ended states render correctly in the packaged app.
+- [ ] The packaged app visually confirms the capture indicator across listening, Quick, fallback, Deep, suggesting, and brownout states.
 - [ ] Keyboard navigation, VoiceOver labels, text scaling, contrast, reduced motion, and screen-share-safe behavior pass manual review.
 - [ ] Menu-bar controls and the floating window work across Spaces and meeting apps without stealing focus.
 - [x] CI rejects production references to speech output, audio playback, clipboard mutation, UI automation, Apple Events, and ambient network clients. Packaged-app verification rejects Apple Events/debug entitlements and the app has no auto-speak, auto-paste, or auto-send control path.

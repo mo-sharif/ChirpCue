@@ -30,14 +30,14 @@
 
 All screenshots use synthetic preview data and initiate no capture or provider request.
 
-ChirpCue captures your microphone and selected Mac meeting output into separate local transcript lanes. It immediately shows a fixed bridge you can use while it thinks, then replaces that with a short staff-engineer response, clarifying question, or evidence-backed answer from one repository you explicitly sealed.
+ChirpCue captures your microphone and selected Mac meeting output into separate local transcript lanes. When it detects a question, it automatically starts a fast low-reasoning AI answer and a high-reasoning answer in parallel. The fast answer gives you natural words to say immediately; the detailed answer follows while you speak. A fixed local bridge appears only if the fast lane misses its deadline or fails.
 
 You always speak for yourself. ChirpCue never speaks, pastes, sends, clicks, joins a meeting, records secretly, or changes code.
 
 ## What makes it different
 
 - **Universal Mac audio:** works with Google Meet, Zoom, Teams, or another meeting app by capturing the selected app's output.
-- **Two-stage help:** an immediate local bridge, followed automatically by a deeper response.
+- **Two-stage AI help:** an automatic fast answer, followed by a higher-reasoning response; the local bridge is emergency fallback only.
 - **Natural speaking prompts:** short first-person recommendations and clarifying questions instead of generic AI checklists.
 - **Optional codebase grounding:** one exact read-only sealed snapshot, with local evidence verification before a repository claim is shown.
 - **Subscription sign-in:** ChatGPT-authenticated Codex, a first-party personal Claude.ai Pro/Max login, or Gemini through Google sign-in in the official Antigravity CLI. No API keys.
@@ -76,7 +76,7 @@ Claude programmatic use can follow separate Agent SDK allowance and extra-usage 
 4. Optionally inspect and seal one repository. Codex may use one reviewed read-only skill; Claude and Gemini remain tool-restricted and receive only bounded host-selected lines.
    ChirpCue shows the grounding ceilings during review, accepts files up to 8 MiB, and visibly excludes larger files instead of rejecting the whole repository.
 5. Confirm that participants have been informed and that you have permission to process the conversation.
-6. Start the meeting, then speak, edit, dismiss, or ignore every suggestion yourself.
+6. Start the meeting. ChirpCue automatically coaches likely questions; speak, edit, dismiss, retry, or ignore every suggestion yourself.
 
 Use **Pause** to stop capture temporarily. Use **Dismiss** to clear the current answer while transcription continues. Use **Stop** at the end so ChirpCue can join provider work, scrub memory, delete temporary state, and verify cleanup.
 
