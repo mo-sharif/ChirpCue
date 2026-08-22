@@ -470,18 +470,11 @@ private struct StableProfileLifecycleFixture {
     }
 
     func removeOwnedTemporaryRoot(fileManager: FileManager = .default) throws {
-        let expectedParent =
-            applicationRoot
-            .appendingPathComponent("Meetings/SmokeTests", isDirectory: true)
-            .standardizedFileURL
-        guard ownedTemporaryRoot.deletingLastPathComponent().standardizedFileURL == expectedParent,
-            ownedTemporaryRoot.path.hasPrefix(expectedParent.path + "/")
-        else {
-            throw StableProfileLifecycleSmokeError.invalidOwnedTemporaryRoot
-        }
-        if fileManager.fileExists(atPath: ownedTemporaryRoot.path) {
-            try fileManager.removeItem(at: ownedTemporaryRoot)
-        }
+        try LiveSmokeStorageCleanup.removeOwnedRoot(
+            ownedTemporaryRoot,
+            applicationRoot: applicationRoot,
+            fileManager: fileManager
+        )
     }
 
     private static func locateCodexExecutable(fileManager: FileManager) -> URL {

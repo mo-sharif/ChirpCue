@@ -21,8 +21,11 @@ struct MeetingWindow: View {
                         : .move(edge: .top).combined(with: .opacity)
                 )
             }
-            if !model.brownouts.isEmpty {
-                BrownoutBanner(reasons: model.brownouts, provider: model.selectedProvider)
+            if !model.limitedModeBrownouts.isEmpty {
+                BrownoutBanner(
+                    reasons: model.limitedModeBrownouts,
+                    provider: model.selectedProvider
+                )
             }
             Divider()
             HSplitView {
@@ -544,6 +547,7 @@ private struct SuggestionsPane: View {
                         systemImage: "lock.fill",
                         symbolAccessibilityLabel: "Suggestion locked"
                     )
+                    .id(quick.id)
                     .accessibilitySortPriority(2)
                 }
                 if let deep {
@@ -556,6 +560,7 @@ private struct SuggestionsPane: View {
                         systemImage: presentation.systemImage,
                         symbolAccessibilityLabel: presentation.accessibilityLabel
                     )
+                    .id(deep.id)
                     .accessibilitySortPriority(1)
                 } else if let deepFailure, quick != nil {
                     VStack(alignment: .leading, spacing: 8) {
@@ -564,7 +569,7 @@ private struct SuggestionsPane: View {
                             systemImage: "exclamationmark.arrow.triangle.2.circlepath"
                         )
                         .font(.caption.weight(.semibold))
-                        Text("The temporary bridge is complete; no deeper answer arrived.")
+                        Text("The quick answer stays available; no detailed answer arrived.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Button("Retry Answer", action: retry)
@@ -842,6 +847,8 @@ extension InferenceConnectionState {
         case .signedOut: "Sign in"
         case .authenticationExpired: "Sign-in expired"
         case .ready(let account): account.planLabel
+        case .readyLimited: "Ready, limited"
+        case .readyCapacityUnconfirmed: "Ready, capacity unconfirmed"
         case .limited: "Limited"
         case .unavailable: "Unavailable"
         }
@@ -850,6 +857,7 @@ extension InferenceConnectionState {
     var tint: Color {
         switch self {
         case .ready: .green
+        case .readyLimited, .readyCapacityUnconfirmed: .orange
         case .checking: .blue
         case .signedOut, .authenticationExpired, .limited, .unavailable: .orange
         case .notChecked: .secondary
@@ -876,6 +884,10 @@ extension InferenceConnectionState {
             }
         case .ready(let account):
             "\(account.accountLabel), \(account.planLabel), \(account.modelCount) available model\(account.modelCount == 1 ? "" : "s")"
+        case .readyLimited(let account, let message):
+            "\(account.accountLabel), \(account.planLabel). \(message)"
+        case .readyCapacityUnconfirmed(let account, let message):
+            "\(account.accountLabel), \(account.planLabel). \(message)"
         case .limited(let message), .unavailable(let message): message
         }
     }
@@ -904,6 +916,7 @@ extension TranscriptSource {
 extension BrownoutReason {
     var suggestionFailureTitle: String {
         switch self {
+        case .providerLimited: "Provider subscription capacity is limited"
         case .deepLimited: "ChirpCue's local Deep limit was reached"
         case .deepBusy: "Deep answer is still busy"
         case .deepTimedOut: "Deep answer timed out"
@@ -930,7 +943,11 @@ extension BrownoutReason {
         case .protocolUnsupported:
             "\(provider.shortTitle) version is unsupported"
         case .appServerCrashed: "\(provider.shortTitle) process stopped"
-        case .quickLimited: "Quick coaching is rate-limited"
+        case .providerLimited: "\(provider.shortTitle) subscription capacity is limited"
+        case .quickLimited: "ChirpCue's local Quick limit was reached"
+        case .quickTimedOut: "Quick coaching timed out"
+        case .quickUnavailable: "Quick coaching is unavailable"
+        case .quickRejected: "Quick answer failed validation"
         case .deepLimited: "ChirpCue's local Deep limit was reached"
         case .deepBusy: "Deep coaching is already running"
         case .deepTimedOut: "Deep coaching timed out"
@@ -949,8 +966,10 @@ extension BrownoutReason {
         switch self {
         case .systemAudioLost: "Reopen setup and select the meeting app again."
         case .microphoneLost: "Reconnect the current Mac microphone or use manual coaching."
-        case .microphoneDisabled: "Automatic turn detection is off. Use Coach Current Turn."
-        case .outputDisabled: "Only microphone speech is available."
+        case .microphoneDisabled:
+            "If meeting output is on, questions are still coached automatically. Your side is not transcribed."
+        case .outputDisabled:
+            "Automatic meeting-output question detection is unavailable; typed coaching still works."
         case .transcriptUncertain: "Confirm the question before speaking a suggestion."
         case .transcriptionUnavailable:
             "Stop and restart this meeting. Audio capture is still connected."
@@ -968,7 +987,16 @@ extension BrownoutReason {
             "Install the tested \(provider.shortTitle) version before continuing."
         case .appServerCrashed:
             "Reconnect \(provider.shortTitle) from setup. Existing cards stay visible."
-        case .quickLimited: "A deterministic bridge may appear while capacity recovers."
+        case .providerLimited:
+            "The local bridge stays available. ChirpCue will recheck capacity on the next question without spending a local model slot."
+        case .quickLimited:
+            "The local bridge stays available. Wait for ChirpCue's rolling Quick allowance to recover."
+        case .quickTimedOut:
+            "The fallback stays visible; \(AppBrand.displayName) retries Quick on the next question."
+        case .quickUnavailable:
+            "Reconnect the selected provider. The fallback stays visible for this question."
+        case .quickRejected:
+            "The fallback stays visible; \(AppBrand.displayName) retries Quick on the next question."
         case .deepLimited:
             "Wait up to one minute, then use Retry Answer. This local pause does not mean your \(provider.shortTitle) subscription is exhausted."
         case .deepBusy: "Wait for the active answer or retry after it finishes."

@@ -137,6 +137,17 @@ public actor CleanupJournalStore {
         }
     }
 
+    public func recordThreads(_ threadIDs: [String], meetingID: UUID) throws {
+        guard threadIDs.allSatisfy(Self.isOpaqueIdentifier) else {
+            throw CleanupJournalError.invalidThreadIdentifier
+        }
+        try mutate(meetingID: meetingID) { entry in
+            for threadID in threadIDs where !entry.threadIDs.contains(threadID) {
+                entry.threadIDs.append(threadID)
+            }
+        }
+    }
+
     public func removeThread(_ threadID: String, meetingID: UUID) throws {
         guard Self.isOpaqueIdentifier(threadID) else { throw CleanupJournalError.invalidThreadIdentifier }
         try mutate(meetingID: meetingID) { entry in

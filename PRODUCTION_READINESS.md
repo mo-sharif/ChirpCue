@@ -12,6 +12,7 @@ This is the completion contract for the personal production build. A checked ite
 - [ ] A clean-checkout test, lint, release build, package, and verification sequence passes at the final committed revision.
 - [ ] Debug and release builds are confirmed warning-free from a clean checkout at the final committed revision.
 - [x] Grounding test fixtures use throwing XCTest teardown blocks, so an owned temporary repository that cannot be removed fails visibly instead of leaving silent residue.
+- [x] Version `0.3.2` documents the final automatic-turn, usage-governor, response-cleanup, and transient-error hardening without changing any live, manual, or distribution gate.
 
 ## Codex subscription path
 
@@ -26,7 +27,7 @@ This is the completion contract for the personal production build. A checked ite
 - [x] A zero-generation preflight proves the dedicated profile's account, model, permission, skill, thread create/delete, cleanup, and no-`auth.json` behavior.
 - [x] Bounded real general and repository-grounded Deep generations pass on the target subscription, including strict schemas, evidence where required, latency capture, persistent-thread deletion, verified absence of ephemeral threads, profile sanitization, and canary audit.
 - [ ] The Deep model route meets measured latency and quality targets on the target account.
-- [x] Newer and unknown app-server versions fail closed. Any future version-range expansion requires the compatibility, schema, lifecycle, permission, and cleanup suites to pass before the policy changes.
+- [x] Official Codex builds at or above the minimum protocol version are accepted without a maximum-version ceiling. Every build still fails closed unless the runtime capability, schema, permission-profile, lifecycle, and cleanup contracts pass.
 
 ## Claude subscription path
 
@@ -76,15 +77,21 @@ This is the completion contract for the personal production build. A checked ite
 
 - [x] Every eligible production turn automatically starts Codex Quick and high-reasoning Deep concurrently. A locally valid low-effort Quick answer displays within a 1.25-second budget; the exact deterministic bridge is used only when Quick fails, times out, or the selected provider has no reviewed model-Quick path. Model-controlled `needsDeep` never suppresses Deep.
 - [x] Quick validation, emergency fallback, locally reconciled cue-bound Deep results, word budgets, TTL, stale-generation cancellation, and output-only automatic coaching have automated coverage. No third reconciliation model turn is spent.
+- [x] Progressive and final revisions retain one Speech segment ID, and automated detector plus controller coverage proves that one segment can start at most one automatic response while its transcript still updates to the final text.
 - [x] Repository-free Deep uses a distinct `general_answer` kind from an empty private context, requires a null grounding fingerprint and empty basis, rejects repository-answer kinds and explicit local codebase or production-state claims, and reaches the UI with an explicit unverified-guidance label.
 - [x] A repository Deep answer candidate must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation; each claim must contain at least two informative terms and copy one complete freshly verified source line, apart from a leading comment or list marker. Appended, combined, paraphrased, punctuation-changed, and negation-changed candidates fail closed.
 - [x] Strict Quick, Deep, and evidence schemas reject unknown or malformed fields; Quick also passes local staff-engineer speakability and private-context-claim checks before display, and reconciliation is deterministic local code.
 - [x] Deep completion, evidence rejection, rate-governor, turn-detector, gap, pause, route-loss, transcriber-failure, and user-interruption paths have fixture or controller coverage.
-- [x] Speaking the displayed Quick answer or fallback bridge no longer cancels Deep. Volatile exact or omission-tolerant cue speech freezes the visible card, queues a mid-speech Deep result, and releases it only after the final cue transcript; a cue plus substantive reply still invalidates stale work.
+- [x] Clearly attributed local speech no longer cancels Deep. Any volatile local speech holds the current cue, queues a mid-speech validated Deep result, and releases it after the final local transcript; uncertain microphone attribution does not claim this behavior.
+- [x] The local governor reserves before provider preparation, commits only immediately before model launch, and refunds canceled committed work. Its rolling ledger retains up to 8 Codex Quick, 6 Codex Deep, 2 Claude Deep, or 2 Gemini Deep non-refunded starts per minute; one active Deep remains exclusive even after its 60-second rolling timestamp expires. These local controls do not claim to remove or refund remote subscription quotas.
+- [x] A validated Quick result can display before its tracked ephemeral-fork cleanup finishes. Pending and cancellation cleanup is coalesced and joined before reopening or shutdown; rejected Quick, Deep, reconciliation, cancellation, missing receipt, delete, and journal-update failures all block later inference. Only a raw transport-close, transport-unavailable, or request-timeout failure schedules the one bounded reconnect; local journal and non-transient protocol failures stay fail-closed without inventing a reconnect.
+- [x] Local Quick/Deep limits, provider subscription capacity, timeout, provider-unavailable, and validation-rejection states have distinct visible labels. Known provider exhaustion still permits capture, transcription, and the local bridge, suppresses model launch, and performs a bounded capacity recheck on a later eligible question. A non-completed Codex turn is labeled provider-limited only after `account/rateLimits/read` confirms exhaustion.
+- [x] Transport-closed, transport-unavailable, and request-timeout failures trigger one coalesced recovery at the next cancellation boundary: the failed client is joined, thread cleanup is verified before replacement validation, Quick and Deep bases rebuild atomically, and no turn is replayed. A later real response clears the prior cleanup/offline banner; same-turn Deep or a deterministic bridge cannot hide an unresolved cleanup failure.
 - [x] A bounded content-free timing ledger measures turn-stable-to-controller-ready first-cue latency, signed cue-to-confirmed-speech margin, controller acceptance of verified Deep, stale outcomes, and user dismissals. Empty samples remain explicitly not evaluated, and Stop returns the snapshot before clearing live metrics. SwiftUI render acknowledgement and the distinct turn-boundary p95 remain live dogfood gates below.
 - [x] Dismiss clears only the identity-bound suggestion, cancels and joins its generation, leaves capture and transcript active, and remains independent from Stop. A bounded in-memory cleanup ledger retains normalized fragments from transcript, displayed, held, queued, dismissed, and late-arriving response content until Stop audits app-owned provider state; overflow and audit failure preserve the cleanup journal and fail closed.
 - [ ] A live meeting proves the Quick answer or fallback appears before the user replies and a later Deep continuation or clarification remains natural to speak.
 - [ ] Dogfood meets measured first-cue visibility, Deep, stale-card, and speakability targets.
+- [ ] A live exhausted-allowance/reset exercise proves capture and transcription continue, no model launch occurs while capacity is unavailable, the provider-limit label is accurate, and the next eligible question resumes model coaching after reset.
 
 ## Repository and skill isolation
 
@@ -102,6 +109,7 @@ This is the completion contract for the personal production build. A checked ite
 - [x] Product privacy and security contracts document OpenAI and Anthropic subscription processing, consent, retention limits, and failure boundaries.
 - [x] Transcript-bearing model work is designed as ephemeral forks; base threads are transcript-free and journaled for deletion.
 - [x] Automated cleanup tests cover journal recovery, expected-cwd lookup, thread deletion, snapshot and private-root deletion, stable-profile sanitization, residual scanning, and fail-closed reports.
+- [x] Opt-in smoke cleanup removes its owned fixture root, preserves sibling probes, rejects out-of-scope targets, and atomically removes the shared `SmokeTests` parent only when empty so successful probes leave no empty shared parent.
 - [x] The dedicated stable Codex profile has an exclusive cross-process lease outside the sanitizer root; runtime and opt-in profile probes reject concurrent ownership.
 - [x] Packaged signed-out preflight followed by graceful Quit removes all transient stable-profile databases, while unit coverage preserves them whenever an active, pending, or journal recovery owner remains.
 - [x] The canonical dedicated-profile configuration disables history persistence, analytics, memories, agents, apps, hooks, browser, and computer-use surfaces.

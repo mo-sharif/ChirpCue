@@ -46,4 +46,52 @@ final class UsageGovernorTests: XCTestCase {
             .admitted
         )
     }
+
+    func testCancelledCommittedDeepReservationRefundsAllowance() throws {
+        var governor = UsageGovernor(quickPerMinute: 1, deepPerMinute: 1)
+        let now = Date(timeIntervalSince1970: 1_000)
+        let first = try XCTUnwrap(governor.reserve(.deep, at: now).reservation)
+        governor.commit(first)
+        governor.finish(first, refundCommitted: true)
+
+        let replacement = governor.reserve(.deep, at: now.addingTimeInterval(1))
+        XCTAssertNotNil(replacement.reservation)
+    }
+
+    func testUncommittedSupersededReservationsDoNotConsumeRollingLimits() throws {
+        var governor = UsageGovernor(quickPerMinute: 1, deepPerMinute: 1)
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        let quick = try XCTUnwrap(governor.reserve(.quick, at: now).reservation)
+        governor.finish(quick)
+        XCTAssertNotNil(governor.reserve(.quick, at: now).reservation)
+
+        let deep = try XCTUnwrap(governor.reserve(.deep, at: now).reservation)
+        governor.finish(deep)
+        XCTAssertNotNil(governor.reserve(.deep, at: now).reservation)
+    }
+
+    func testRollingWindowExpirationDoesNotReleaseActiveDeepExclusivity() throws {
+        var governor = UsageGovernor(quickPerMinute: 1, deepPerMinute: 1)
+        let now = Date(timeIntervalSince1970: 1_000)
+        let active = try XCTUnwrap(governor.reserve(.deep, at: now).reservation)
+        governor.commit(active)
+
+        XCTAssertEqual(
+            governor.reserve(.deep, at: now.addingTimeInterval(61)),
+            .deepAlreadyActive
+        )
+
+        governor.finish(active)
+        XCTAssertNotNil(
+            governor.reserve(.deep, at: now.addingTimeInterval(61)).reservation
+        )
+    }
+}
+
+private extension GovernorReservationDecision {
+    var reservation: GovernorReservation? {
+        guard case .reserved(let reservation) = self else { return nil }
+        return reservation
+    }
 }

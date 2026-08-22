@@ -2,12 +2,19 @@ import Foundation
 
 public protocol ResponseGenerating: Sendable {
     func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput
+    func awaitQuickCleanup(for identity: TurnIdentity) async throws
     func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation
 }
 
+public extension ResponseGenerating {
+    func awaitQuickCleanup(for identity: TurnIdentity) async throws {}
+}
+
 public enum ResponseCoordinatorFailure: String, Equatable, Sendable {
     case rateLimited
+    case providerCapacityUnavailable
+    case cleanupUnavailable
     case busy
     case timedOut
     case providerUnavailable
@@ -18,7 +25,8 @@ public enum ResponseCoordinatorFailure: String, Equatable, Sendable {
 public enum ResponseCoordinatorEvent: Equatable, Sendable {
     case cue(CueEnvelope)
     case deep(BoundDeep)
-    case quickUnavailable(String)
+    case quickUnavailable(ResponseCoordinatorFailure)
+    case quickCleanupUnavailable(ResponseCoordinatorFailure)
     case deepUnavailable(ResponseCoordinatorFailure)
     case discardedStale(TurnIdentity)
 }
@@ -57,6 +65,9 @@ public actor ResponseSensitiveOutputBuffer {
 }
 
 public struct ResponseCoordinatorConfiguration: Sendable {
+    public static let deterministicFallback =
+        "I'd start by clarifying the goal and constraints, then walk through the tradeoffs before committing to an approach."
+
     public let quickDeadline: Duration
     public let resultTTL: Duration
     public let bridgeText: String
@@ -64,7 +75,7 @@ public struct ResponseCoordinatorConfiguration: Sendable {
     public init(
         quickDeadline: Duration = .seconds(2),
         resultTTL: Duration = .seconds(20),
-        bridgeText: String = "Let me think through that carefully for a second."
+        bridgeText: String = ResponseCoordinatorConfiguration.deterministicFallback
     ) {
         self.quickDeadline = quickDeadline
         self.resultTTL = resultTTL
@@ -150,7 +161,10 @@ public actor ResponseCoordinator {
             continuation.finish()
         }
 
-        let quickResult = await outcome(from: quickOperation.gate, deadline: quickDeadline)
+        let quickResult = await Self.outcome(
+            from: quickOperation.gate,
+            deadline: quickDeadline
+        )
         let cue: CueEnvelope
         var quickFailure: ResponseCoordinatorFailure?
         switch quickResult {
@@ -185,25 +199,78 @@ public actor ResponseCoordinator {
         }
         continuation.yield(.cue(cue))
         if let quickFailure {
-            continuation.yield(.quickUnavailable(quickFailure.rawValue))
+            continuation.yield(.quickUnavailable(quickFailure))
         }
 
-        let deepResult = await outcome(from: deepOperation.gate, deadline: resultDeadline)
+        let cleanupOperation = Self.startOperation(
+            deadline: resultDeadline,
+            operation: {
+                try await generator.awaitQuickCleanup(for: turn.identity)
+                return QuickCleanupConfirmation()
+            }
+        )
+        defer { cleanupOperation.task.cancel() }
+
+        await withTaskGroup(of: PostCueOperationOutcome.self) { group in
+            group.addTask {
+                .deep(
+                    await Self.outcome(
+                        from: deepOperation.gate,
+                        deadline: resultDeadline
+                    )
+                )
+            }
+            group.addTask {
+                .quickCleanup(
+                    await Self.outcome(
+                        from: cleanupOperation.gate,
+                        deadline: resultDeadline
+                    )
+                )
+            }
+
+            for await outcome in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                switch outcome {
+                case .deep(let result):
+                    emitDeepResult(
+                        result,
+                        turn: turn,
+                        cue: cue,
+                        deadline: resultDeadline,
+                        continuation: continuation
+                    )
+                case .quickCleanup(let result):
+                    emitQuickCleanupResult(result, continuation: continuation)
+                }
+            }
+        }
+    }
+
+    private func emitDeepResult(
+        _ result: DeadlineOutcome<DeepDraft>,
+        turn: ConversationTurn,
+        cue: CueEnvelope,
+        deadline: ContinuousClock.Instant,
+        continuation: AsyncStream<ResponseCoordinatorEvent>.Continuation
+    ) {
         guard isCurrent(turn.identity), !Task.isCancelled else {
             continuation.yield(.discardedStale(turn.identity))
             return
         }
 
-        switch deepResult {
+        switch result {
         case .failure(let failure):
             continuation.yield(.deepUnavailable(failure))
         case .timedOut:
-            deepOperation.task.cancel()
             continuation.yield(.deepUnavailable(.timedOut))
         case .cancelled:
             continuation.yield(.deepUnavailable(.providerUnavailable))
         case .success(let draft):
-            guard clock.now <= resultDeadline else {
+            guard ContinuousClock().now <= deadline else {
                 continuation.yield(.discardedStale(turn.identity))
                 return
             }
@@ -213,9 +280,8 @@ public actor ResponseCoordinator {
             }
 
             let reconciliation = Self.reconciliation(cue: cue, draft: draft)
-
             guard isCurrent(turn.identity), !Task.isCancelled,
-                clock.now <= resultDeadline
+                ContinuousClock().now <= deadline
             else {
                 continuation.yield(.discardedStale(turn.identity))
                 return
@@ -246,7 +312,25 @@ public actor ResponseCoordinator {
         }
     }
 
-    private func outcome<Value: Sendable>(
+    private func emitQuickCleanupResult(
+        _ result: DeadlineOutcome<QuickCleanupConfirmation>,
+        continuation: AsyncStream<ResponseCoordinatorEvent>.Continuation
+    ) {
+        switch result {
+        case .success:
+            break
+        case .failure(let failure):
+            continuation.yield(.quickCleanupUnavailable(failure))
+        case .timedOut:
+            continuation.yield(.quickCleanupUnavailable(.timedOut))
+        case .cancelled:
+            if !Task.isCancelled {
+                continuation.yield(.quickCleanupUnavailable(.providerUnavailable))
+            }
+        }
+    }
+
+    private nonisolated static func outcome<Value: Sendable>(
         from gate: DeadlineGate<Value>,
         deadline: ContinuousClock.Instant
     ) async -> DeadlineOutcome<Value> {
@@ -397,6 +481,8 @@ public actor ResponseCoordinator {
             return .providerUnavailable
         }
         switch responseError {
+        case .providerCapacityUnavailable:
+            return .providerCapacityUnavailable
         case .quickRateLimited, .deepRateLimited:
             return .rateLimited
         case .deepAlreadyActive:
@@ -405,8 +491,10 @@ public actor ResponseCoordinator {
             return .responseRejected
         case .groundingUnavailable, .groundingMismatch, .skillPolicyMismatch:
             return .groundingUnavailable
+        case .cleanupFailed:
+            return .cleanupUnavailable
         case .signInRequired, .credentialStoreUnavailable, .accountMismatch,
-            .protocolUnsupported, .runtimeUnavailable, .notPrepared, .cleanupFailed:
+            .protocolUnsupported, .runtimeUnavailable, .notPrepared:
             return .providerUnavailable
         }
     }
@@ -417,6 +505,13 @@ private enum DeadlineOutcome<Value: Sendable>: Sendable {
     case failure(ResponseCoordinatorFailure)
     case timedOut
     case cancelled
+}
+
+private struct QuickCleanupConfirmation: Sendable {}
+
+private enum PostCueOperationOutcome: Sendable {
+    case deep(DeadlineOutcome<DeepDraft>)
+    case quickCleanup(DeadlineOutcome<QuickCleanupConfirmation>)
 }
 
 private struct PendingOperation<Value: Sendable>: Sendable {

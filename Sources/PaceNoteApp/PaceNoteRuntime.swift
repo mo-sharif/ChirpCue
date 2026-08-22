@@ -947,7 +947,7 @@ actor PaceNoteRuntime {
                 responseCoordinatorConfiguration: ResponseCoordinatorConfiguration(
                     quickDeadline: .milliseconds(1_250),
                     resultTTL: .seconds(30),
-                    bridgeText: "Let me think through that carefully for a second."
+                    bridgeText: ResponseCoordinatorConfiguration.deterministicFallback
                 ),
                 resourceCleaner: cleaner
             )
@@ -1488,21 +1488,27 @@ actor PaceNoteRuntime {
         UserDefaults.standard.set(identityHash, forKey: Self.accountIdentityKey)
 
         do {
-            async let modelsRequest = client.listModels(includeHidden: false)
-            async let rateLimitsRequest = client.rateLimits()
-            let (models, rateLimits) = try await (modelsRequest, rateLimitsRequest)
-            guard rateLimits.hasAvailableCapacity else {
-                return .limited(
-                    "The ChatGPT account is connected, but its Codex allowance is temporarily exhausted. Wait for it to reset, then choose Recheck."
+            let models = try await client.listModels(includeHidden: false)
+            let summary = CodexAccountSummary(
+                accountLabel: Self.redactedEmail(email),
+                planLabel: Self.planLabel(account.planType),
+                modelCount: models.count
+            )
+            do {
+                let rateLimits = try await client.rateLimits()
+                guard rateLimits.hasAvailableCapacity else {
+                    return .readyLimited(
+                        summary,
+                        "Codex model capacity is temporarily exhausted. Meetings, transcription, and the local bridge can still start; ChirpCue rechecks before the next model launch."
+                    )
+                }
+            } catch {
+                return .readyCapacityUnconfirmed(
+                    summary,
+                    "Codex allowance could not be read. Meetings, transcription, and the local bridge can still start; model access is checked again before use."
                 )
             }
-            return .ready(
-                CodexAccountSummary(
-                    accountLabel: Self.redactedEmail(email),
-                    planLabel: Self.planLabel(account.planType),
-                    modelCount: models.count
-                )
-            )
+            return .ready(summary)
         } catch {
             return .limited("The ChatGPT account is connected, but Codex model access is unavailable.")
         }

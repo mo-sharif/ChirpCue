@@ -1,7 +1,7 @@
 # ChirpCue: Subscription Meeting Coach
 
-Status: Release candidate; live subscription, audio, UI, latency, and optional distribution gates remain
-Date: 2026-08-20
+Status: Release candidate; target quality and latency, live Claude and Gemini generation, remaining audio and UI, and optional distribution gates remain
+Date: 2026-08-22
 Target: macOS 26 or later on Apple silicon
 Companion document: [Design exploration](./CODEX_MEETING_COPILOT_DESIGN_EXPLORATION.md)
 
@@ -17,9 +17,9 @@ Build a native, local-first macOS meeting coach that:
 - lets Codex read only sanitized snapshots and reviewed skills, while Claude and Gemini receive only bounded host-selected exact lines from the same sealed snapshot;
 - never speaks, sends, pastes, or changes code for the user.
 
-This is implemented as a personal release candidate. It does not embed a provider voice mode. Apple frameworks handle local audio capture and transcription. The selected Deep path is either Codex app-server authenticated through the user's ChatGPT account or a one-turn, tool-free Claude Code process authenticated through the user's first-party Claude subscription. Live generation, signed-app audio, UI, and latency gates remain open in the production-readiness ledger.
+This is implemented as a personal release candidate. It does not embed a provider voice mode. Apple frameworks handle local audio capture and transcription. The selected Deep path is Codex app-server authenticated through the user's ChatGPT account, a one-turn tool-free Claude Code process authenticated through the user's first-party Claude subscription, or a one-turn file-scoped Antigravity CLI process authenticated through Google sign-in. Codex sign-in and bounded live generation gates have passed; target Deep quality and latency, live Claude and Gemini generation, remaining audio and UI, and distribution gates remain open in the production-readiness ledger.
 
-Codex-specific protocol, thread, permission-profile, AGENTS.md, and skill sections below apply only when Codex is selected. Claude never uses those surfaces; section 9.4 defines its narrower execution contract.
+Codex-specific protocol, thread, permission-profile, AGENTS.md, and skill sections below apply only when Codex is selected. Claude and Gemini never use those Codex surfaces; sections 9.4 and 9.5 define their narrower execution contracts.
 
 The core product promise is:
 
@@ -97,7 +97,7 @@ The user opens PaceNote from the menu bar and chooses:
 - speaking style: Direct, Calm, or Technical;
 - retention: Ephemeral, which is the MVP default.
 
-The app requires a per-meeting confirmation of source scope and permission to capture. Before Start, it checks audio permissions and source selection, transcription assets, ChatGPT identity, Codex rate limits, repo state, discovered AGENTS.md files, and the selected skills. After capture begins, callback and route watchdogs expose missing or changed audio as a visible brownout. It shows Ready only after the preflight checks pass or identifies the exact degraded mode. Pre-capture live level meters are deferred beyond the personal release candidate.
+The app requires a per-meeting confirmation of source scope and permission to capture. Before Start, it checks audio permissions and source selection, transcription assets, selected-provider authentication and model access, Codex subscription capacity when Codex is selected, repo state, discovered AGENTS.md files, and Codex-only reviewed skills when applicable. After capture begins, callback and route watchdogs expose missing or changed audio as a visible brownout. It shows Ready only after the preflight checks pass or identifies the exact degraded mode. Pre-capture live level meters are deferred beyond the personal release candidate.
 
 System output is required for automatic or manual Coach Current Turn suggestions. If output capture is disabled, the app enters OUTPUT_DISABLED: it may show a mic-only transcript, but it does not infer the other party's question or generate a response from captured speech. The user can still type or paste an explicit question into a separate Ask field. If both capture lanes are disabled, the app cannot enter Listening.
 
@@ -113,7 +113,9 @@ The default interface is a compact floating macOS window with menu-bar controls:
     │ THEM  But why not do that synchronously?                   │
     ├────────────────────────────────────────────────────────────┤
     │ SAY NOW                                                    │
-    │ Let me think through that carefully for a second.         │
+    │ I'd start by clarifying the goal and constraints, then    │
+    │ walk through the tradeoffs before committing to an        │
+    │ approach.                                                 │
     ├────────────────────────────────────────────────────────────┤
     │ Checking the repo... auth flow · 3 files inspected         │
     ├────────────────────────────────────────────────────────────┤
@@ -277,7 +279,7 @@ A candidate meeting-output turn ends when:
 - local speech has not already started;
 - the text resembles a question, objection, direct request, or handoff.
 
-A global shortcut lets the user force coaching for the current turn. Material transcript revisions create a new generation and cancel any answer based on the older text.
+A progressive Speech result keeps one segment ID through its partial and final revisions. Once that segment ID starts automatic coaching, later text revisions for the same segment update the transcript but cannot start a second automatic response. A new Speech segment can create a new generation, and the user can explicitly retry the current turn with Coach Current Turn.
 
 ## 7. Two-speed response pipeline
 
@@ -303,7 +305,7 @@ The visible cue is sealed exactly once:
 5. a binder produces BoundDeep against exactly that cue ID, cue hash, and DeepDraft hash;
 6. only the locally validated BoundDeep bundle may display, with general guidance visibly distinguished from repository-verified evidence.
 
-Local deterministic reconciliation relates the verified Deep answer to the exact cue ID and hash without spending a third model turn. It binds an answer as continue, a missing-context question as clarify, and an abstention as abstain. A Deep validation failure leaves the fast cue or bridge visible and enters `DEEP_LIMITED`; rejected text is never shown. Completion orderings are fixture-tested. Results are accepted only when meeting ID, turn ID, generation, cue binding, DeepDraft hash, and optional grounding fingerprint still match.
+Local deterministic reconciliation relates the verified Deep answer to the exact cue ID and hash without spending a third model turn. It binds an answer as continue, a missing-context question as clarify, and an abstention as abstain. A Deep validation failure leaves the fast cue or bridge visible and enters `DEEP_REJECTED`; rejected text is never shown. Completion orderings are fixture-tested. Results are accepted only when meeting ID, turn ID, generation, cue binding, DeepDraft hash, and optional grounding fingerprint still match.
 
 ### 7.2 Fast answer and emergency bridge
 
@@ -313,9 +315,11 @@ Codex Quick uses the fastest compatible low-effort model. It has no repository a
 
 If Quick fails validation or misses the 1.25-second deadline, the implemented deterministic bridge is:
 
-> Let me think through that carefully for a second.
+> I'd start by clarifying the goal and constraints, then walk through the tradeoffs before committing to an approach.
 
 The fallback is local, immutable, and identical for every turn. Meeting text cannot alter it. Claude and Gemini currently use this fallback as their first cue because their reviewed subscription paths expose only the one-turn Deep contract.
+
+A locally validated Codex Quick answer becomes visible as soon as validation completes; it does not wait for deletion of its transcript-bearing ephemeral fork. That deletion remains tracked as part of the same turn. The coordinator keeps Deep and the visible Quick card responsive while cleanup finishes, but a missing cleanup receipt or deletion failure is surfaced and fails closed before further inference can proceed.
 
 ### 7.3 Deep worker
 
@@ -348,11 +352,11 @@ Neither DeepDraft nor streamed Deep text is user-visible. Evidence verification 
 An answer becomes stale after any of these:
 
 - a newer meeting-output turn;
-- a material revision to its source transcript;
+- a new response-bearing Speech segment or an explicit retry with a newer generation;
 - pause, stop, audio gap, or source uncertainty;
 - repo, AGENTS, or skill invalidation;
-- a 20-second display TTL;
-- a completed local reply that the turn detector classifies as a topic change.
+- a 30-second production result TTL;
+- explicit dismissal of the current suggestion.
 
 When work becomes stale:
 
@@ -362,13 +366,17 @@ When work becomes stale:
 4. retain the old card only as a dimmed visual reference;
 5. stop requesting more work, while acknowledging that inference already performed may still consume subscription usage.
 
-Local speech that matches either the displayed Quick answer or fallback bridge freezes that cue instead of cancelling Deep. At the end of the local turn, the coordinator either releases the queued Detailed answer or invalidates stale work under the rules above.
+Clearly attributed local speech holds rather than cancels Deep. A volatile local transcript freezes the current cue; if Deep finishes during that speech, its validated card is queued. The final local transcript releases the queued Detailed answer. Uncertain microphone attribution does not claim this behavior, and normal stale-work rules still apply to a newer remote turn, dismissal, pause, stop, capture failure, or grounding invalidation.
+
+Request-scoped Quick and Deep failures are transient and nonblocking. Local rate limiting, timeout, provider unavailability, and validation rejection use distinct visible labels. Their cards and brownouts clear when the next turn begins, and a successful Deep also clears response-only brownouts. Provider-capacity exhaustion persists across turns until a validated model Quick or Deep proves that capacity returned. Cleanup failures are not transient response errors: they remain visible and fail closed until cleanup succeeds.
 
 ### 7.5 Eligibility and usage governor
 
-Automatic coaching requires a likely meeting-output question, or the user can retry with Coach Current Turn. A typed question can start coaching when output capture is unavailable. Repository-specific Deep additionally requires a selected, successfully sealed repository; otherwise ChirpCue uses the clearly labeled general mode. The personal defaults allow one active Deep turn, at most six Codex Deep starts per minute, and at most two Claude Deep starts per minute. A local-limit message must identify ChirpCue as the source instead of implying that the provider subscription is exhausted. The emergency bridge consumes no subscription capacity.
+Automatic coaching requires a likely meeting-output question, or the user can retry with Coach Current Turn. A typed question can start coaching when output capture is unavailable. Repository-specific Deep additionally requires a selected, successfully sealed repository; otherwise ChirpCue uses the clearly labeled general mode. The rolling local ledger retains up to eight non-refunded Codex Quick starts, six non-refunded Codex Deep starts, two non-refunded Claude Deep starts, or two non-refunded Gemini Deep starts per minute, with one active Deep at a time. A local-limit message must identify ChirpCue as the source instead of implying that the provider subscription is exhausted. The emergency bridge consumes no subscription capacity.
 
-`account/rateLimits/updated` can lower the local budget immediately; recovery is visible and never assumed on a timer alone.
+The local governor reserves capacity before provider preparation but commits a rolling slot only immediately before a model-generation launch. Work canceled or superseded before model launch releases its reservation without spending a local rolling slot; canceled committed work refunds the local slot. Codex may already have created a transcript-bearing ephemeral fork before commit, so cancellation still joins verified cleanup. This local accounting does not prove that a remote provider observed no request or refunded subscription usage. Deep exclusivity is tracked independently from the 60-second rolling window, so a Deep operation that runs longer than one minute still blocks a second Deep until the first operation finishes.
+
+Preparation and recovery read a remote-capacity snapshot through `account/rateLimits/read`; ChirpCue does not mutate its local governor from app-server notifications. Known provider exhaustion is labeled separately, does not block capture, transcription, or the local bridge, and suppresses model launches until a bounded read on a later eligible question reports capacity. A failed terminal model turn is called provider-limited only when that bounded read confirms exhaustion. Local limits cannot eliminate, increase, or guarantee availability under remote subscription quotas.
 
 ### 7.6 Speakability
 
@@ -448,7 +456,7 @@ Local validation rejects:
 - a candidate that appends, combines, paraphrases, changes punctuation, or changes negation instead of exactly matching one extractive claim;
 - results for a stale turn ID, generation, cue hash, repo fingerprint, or cited file hash.
 
-If validation fails, no Deep card is displayed. The accepted Quick answer or emergency bridge remains visible, the UI enters `DEEP_LIMITED`, and the rejected text is never shown.
+If validation fails, no Deep card is displayed. The accepted Quick answer or emergency bridge remains visible, the UI enters `DEEP_REJECTED`, and the rejected text is never shown.
 
 ## 9. Codex subscription integration
 
@@ -464,7 +472,7 @@ Exactly one PaceNote process or opt-in live probe may own the dedicated profile.
 
 The app-server owns token refresh, account status, model discovery, Codex usage limits, threads, turns, streamed events, and approvals. No OpenAI API key is stored or requested.
 
-On 2026-08-07, the installed application-bundled executable reported `codex-cli 0.147.0-alpha.1.2`. The dedicated PaceNote profile has not yet completed its one-time sign-in or live generation gates. Account, plan, models, and rate limits must be discovered after sign-in through account/read, model/list, and account/rateLimits/read; none is assumed from the binary version.
+On 2026-08-07, the installed application-bundled executable reported `codex-cli 0.147.0-alpha.1.2`. The dedicated ChirpCue profile has since completed its one-time sign-in, zero-generation lifecycle, and bounded live general and repository-grounded generation gates recorded in the production-readiness ledger; target Deep latency and quality remain open. Account, plan, models, and rate limits are still discovered after sign-in through account/read, model/list, and account/rateLimits/read; none is assumed from the binary version.
 
 ### 9.2 Important boundary
 
@@ -479,7 +487,7 @@ A Codex subscription is not general API credit. PaceNote works without an API ke
 - Use stdio, not the experimental WebSocket transport.
 - Keep Codex history persistence set to `none`. Register every transcript-free base thread required by thread/fork for deletion, and never enable plaintext TUI logging.
 - Put every transcript-bearing production Deep request in an ephemeral fork. Post-meeting cleanup must delete the base and fork threads, sanitize app-server transient databases from the stable profile, and scan for meeting and grounding canaries.
-- Add a compatibility test before accepting a newer Codex build.
+- Accept newer signed Codex builds above the minimum only when the existing runtime capability, schema, permission-profile, lifecycle, and cleanup contract checks pass; extend those checks before relying on a newly introduced surface.
 - Treat this as a personal release candidate until the live gates pass. The verified Codex manual marks the app-server command itself experimental, so distribution requires a fresh support and terms review.
 
 Every connection must complete initialize and receive its response, then send initialized before calling account, model, thread, turn, or skill methods. The client opts into experimentalApi only for the pinned named-permission-profile surface and rejects any unplanned experimental feature. A failed handshake, missing permission-profile support, or schema mismatch enters PROTOCOL_UNSUPPORTED and stops repo-grounded inference.
@@ -512,7 +520,7 @@ The model-access preflight proves that the current Google session exposes Gemini
 | Account and plan | account/read |
 | Login and logout | account/login/start and account/logout |
 | Runtime models | model/list |
-| Subscription pressure | account/rateLimits/read and account/rateLimits/updated |
+| Subscription capacity snapshot and bounded recheck | account/rateLimits/read |
 | Repo base context | thread/start |
 | Ephemeral question context | thread/fork with ephemeral enabled |
 | Meeting-thread cleanup | thread/delete |
@@ -623,7 +631,7 @@ Every Deep implementation claim must carry a repo alias, relative path, line ran
 - whether the claim contains at least two informative terms and matches one complete cited source line after case and whitespace normalization, with only a leading comment or list marker removable;
 - whether the answer candidate exactly matches one verified basis claim after case and whitespace normalization while preserving punctuation.
 
-The verifier does not combine support across claims and does not accept appended clauses, paraphrases, punctuation changes, or negation changes. A non-extractive claim, or a candidate without one exact punctuation-preserving claim match, fails closed. No Deep card is displayed; the accepted Quick answer or emergency bridge remains visible and the app enters `DEEP_LIMITED`. This conservative extractive gate intentionally withholds an answer when no complete source line is safe to say.
+The verifier does not combine support across claims and does not accept appended clauses, paraphrases, punctuation changes, or negation changes. A non-extractive claim, or a candidate without one exact punctuation-preserving claim match, fails closed. No Deep card is displayed; the accepted Quick answer or emergency bridge remains visible and the app enters `DEEP_REJECTED`. This conservative extractive gate intentionally withholds an answer when no complete source line is safe to say.
 
 ## 11. State and degradation model
 
@@ -655,7 +663,16 @@ Any active state can enter Brownout with one or more typed reasons:
 | ACCOUNT_MISMATCH | Block Ready until the selected profile uses its expected ChatGPT account or workspace. |
 | PROTOCOL_UNSUPPORTED | Stop inference after a failed initialize handshake or schema mismatch. |
 | APP_SERVER_CRASHED | Cancel in-flight turns, preserve transcript-only mode, and offer one clean restart. |
-| DEEP_LIMITED | Keep the accepted Quick answer or deterministic fallback visible with a Deep unavailable label. |
+| PROVIDER_LIMITED | Keep capture, transcription, and the local bridge available; suppress model launch and retain the warning until one bounded shared recheck admits a validated model response. |
+| QUICK_LIMITED | Keep the deterministic fallback visible and identify the local Quick rolling limit. |
+| QUICK_TIMED_OUT | Keep the deterministic fallback visible and identify the Quick deadline. |
+| QUICK_UNAVAILABLE | Keep the deterministic fallback visible and identify provider unavailability. |
+| QUICK_REJECTED | Keep the deterministic fallback visible and identify local Quick validation rejection. |
+| DEEP_LIMITED | Keep the accepted Quick answer or deterministic fallback visible and identify the local Deep rolling limit. |
+| DEEP_BUSY | Keep the current cue visible while the active Deep retains exclusivity. |
+| DEEP_TIMED_OUT | Keep the current cue visible and identify the Deep deadline. |
+| DEEP_UNAVAILABLE | Keep the current cue visible and identify provider unavailability. |
+| DEEP_REJECTED | Keep the current cue visible and identify local Deep validation rejection. |
 | REPO_CHANGED | Cancel Deep, mark its evidence stale, and rebuild grounding. |
 | SNAPSHOT_BLOCKED | Keep Deep off until sensitive-file findings or snapshot errors are resolved. |
 | SNAPSHOT_BUSY | Discard the inconsistent copy and keep Deep off after two bounded retries until the user retries grounding. |
@@ -703,6 +720,7 @@ When Codex is selected, transcript slices, repo excerpts, tool output, AGENTS.md
 - Stop or End clears visible transcript and cards immediately, interrupts all turns, deletes meeting-created base and fork threads, terminates the meeting app-server after a bounded grace period, seals realtime audio writers, overwrites queued and historical audio, removes sealed snapshots and temporary context, sanitizes allowlisted transient state from the stable profile, restores its canonical restrictive configuration, and audits for meeting and grounding canaries. It emits a stopped event and clears the red capture indicator only after every owned audio handle is destroyed. An incomplete audio teardown keeps the red indicator visible and leaves only Stop enabled so the same owner can retry safely.
 - Stop deletes the complete private meeting root before removing its cleanup-journal entry. A residual finding, unsafe stable-profile entry, failed root deletion, or failed audit leaves cleanup pending and blocks another meeting.
 - Startup runs a janitor before sign-in or capture. It reads the cleanup journal, deletes app-created threads after app-server initialization, finds unjournaled thread IDs by their expected snapshot cwd when needed, removes abandoned meeting roots, sanitizes stable-profile transient state, and repeats the residual audit.
+- Opt-in live smoke fixtures delete their owned root and then atomically remove the shared `SmokeTests` parent only when it is empty. They preserve sibling fixtures and reject cleanup targets outside a direct child of that shared parent, so a completed probe leaves no empty shared parent without racing another probe.
 - All base-thread cwd values live under the meeting's private root. If a crash occurred before a thread ID was journaled, the janitor lists appServer threads at the journaled expected cwd values and deletes every match.
 - Logout calls `account/logout`. Sign Out and Forget Profile also deletes the dedicated `CODEX_HOME`, local account-identity binding, and profile state after explicit user confirmation, then recreates an empty private profile.
 - A crash cannot run graceful cleanup. The next launch performs the same disk audit and cleanup before Ready.
@@ -779,7 +797,7 @@ Also record:
 - clarification and abstention frequency;
 - questions that received no suggestion;
 - Deep model selection;
-- Codex rate-limit transitions;
+- provider-capacity snapshots and local limit transitions;
 - calls per meeting minute;
 - time spent in brownout;
 - card dismiss and Coach Current Turn actions.
@@ -797,7 +815,7 @@ Build no audio UI yet. Prove:
 - ChatGPT login without an API key;
 - initialize and initialized handshake;
 - Keychain credential storage, expected account/workspace binding, logout, and profile deletion;
-- account/read, model/list, and account rate-limit events;
+- account/read, model/list, and account/rateLimits/read snapshots;
 - pinned schema generation;
 - transcript-free base persistence plus transcript-bearing ephemeral forks with disk audits;
 - concurrent low-effort Quick and high-reasoning Deep for every eligible turn, with deterministic fallback at the Quick deadline;
@@ -886,16 +904,17 @@ They must:
 1. launch and initialize the pinned app-server with dedicated, identity-bound ChatGPT auth and no API key;
 2. prove an empty general context cannot read repository files, then build, secret-scan, seal, and fingerprint a repo and skill snapshot;
 3. activate and verify the deny-by-default named permission profile;
-4. create one immutable turn;
+4. create one immutable turn and prove partial and final revisions of the same Speech segment ID start at most one automatic response;
 5. start low-effort Quick and high-reasoning Deep concurrently for every eligible turn, accept only a locally valid Quick cue, and seal the exact deterministic fallback at the Quick deadline without consulting model-controlled `needsDeep`;
-6. prove Quick, fallback, and reconciliation completion orderings remain bound to the current turn and cue;
+6. prove Quick, fallback, and reconciliation completion orderings remain bound to the current turn and cue, and prove a validated Quick can display before tracked fork cleanup finishes while cleanup failure remains visible and fail-closed;
 7. bind Deep to that cue's ID and hash under every completion ordering;
 8. reject a stale Deep result after synthetic turn, gap, pause, TTL, and repo-change events;
 9. require every general answer to use `general_answer` with null fingerprint and empty basis, and validate every repository citation against snapshot and live-source hashes, require each claim to copy one complete cited line, and require the repository answer candidate to exactly match one extractive basis claim while preserving punctuation;
 10. fail secret reads, symlink and subprocess escapes, writes, tool network, and unapproved skills;
-11. simulate Deep rate limiting, Codex offline, protocol mismatch, app-server crash, and identity mismatch;
-12. force crashes around thread creation and prove startup cleanup leaves no meeting text or repo grounding in app-owned threads, the stable profile's transient state, logs, snapshots, or crash artifacts;
-13. exercise logout, profile deletion, and startup cleanup.
+11. simulate typed Quick and Deep local limits, provider-capacity exhaustion, timeouts, provider failures, validation rejection, Codex offline, protocol mismatch, app-server crash, and identity mismatch, then prove a later automatic turn clears request-scoped response state while provider-capacity state clears only after a later validated model response;
+12. prove canceled or pre-provider work does not spend a local rolling slot and active Deep exclusivity remains held beyond rolling-window expiry;
+13. force crashes around thread creation and prove startup cleanup leaves no meeting text or repo grounding in app-owned threads, the stable profile's transient state, logs, snapshots, or crash artifacts;
+14. exercise logout, profile deletion, startup cleanup, and opt-in smoke-root removal without leaving an empty shared parent.
 
 This keeps the highest-risk product behavior independently verifiable instead of relying on the audio and UI paths to reveal orchestration problems.
 

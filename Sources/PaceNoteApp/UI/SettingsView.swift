@@ -230,7 +230,7 @@ struct SettingsView: View {
                         )
                     )
                     PrivacySettingRow(
-                        title: "No automatic response",
+                        title: "Never speaks or sends for you",
                         detail: "\(AppBrand.displayName) never speaks, pastes, sends, or clicks for you."
                     )
                     PrivacySettingRow(

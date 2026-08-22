@@ -57,6 +57,132 @@ final class CleanupJournalTests: XCTestCase {
         XCTAssertTrue(secondReport.failures.isEmpty)
     }
 
+    func testThreadOnlyJanitorDiscoversUnreportedThreadAndPreservesMeetingState() async throws {
+        let fixture = try Fixture()
+        let snapshot = fixture.meetingRoot.appendingPathComponent(
+            "snapshot",
+            isDirectory: true
+        )
+        let marker = snapshot.appendingPathComponent("meeting-state")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data("preserve".utf8).write(to: marker)
+        let journal = try CleanupJournalStore(
+            journalURL: fixture.journalURL,
+            allowedRoot: fixture.root
+        )
+        let meetingID = UUID()
+        try await journal.begin(
+            CleanupJournalEntry(
+                meetingID: meetingID,
+                profileID: "personal",
+                privateRoot: fixture.meetingRoot,
+                snapshotRoots: [snapshot],
+                expectedThreadCwds: [snapshot],
+                threadIDs: ["thread-recorded"]
+            )
+        )
+        let originalEntries = try await journal.entries()
+        let original = try XCTUnwrap(originalEntries.first)
+        let client = CleanupClient()
+
+        let report = await CleanupJanitor(journal: journal).runThreadOnly(
+            client: client,
+            meetingID: meetingID
+        )
+
+        XCTAssertTrue(report.failures.isEmpty)
+        XCTAssertEqual(report.deletedThreadCount, 2)
+        XCTAssertEqual(report.deletedSnapshotCount, 0)
+        let deleted = await client.deleted
+        XCTAssertEqual(deleted, Set(["thread-recorded", "thread-by-cwd"]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        let entries = try await journal.entries()
+        let preserved = try XCTUnwrap(entries.first)
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(preserved.meetingID, original.meetingID)
+        XCTAssertEqual(preserved.profileID, original.profileID)
+        XCTAssertEqual(preserved.privateRoot, original.privateRoot)
+        XCTAssertEqual(preserved.snapshotRoots, original.snapshotRoots)
+        XCTAssertEqual(preserved.expectedThreadCwds, original.expectedThreadCwds)
+        XCTAssertEqual(preserved.createdAt, original.createdAt)
+        XCTAssertTrue(preserved.threadIDs.isEmpty)
+    }
+
+    func testThreadOnlyJanitorFailsClosedBeforeDeletionWhenDiscoveryFails() async throws {
+        let fixture = try Fixture()
+        let snapshot = fixture.meetingRoot.appendingPathComponent(
+            "snapshot",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        let journal = try CleanupJournalStore(
+            journalURL: fixture.journalURL,
+            allowedRoot: fixture.root
+        )
+        let meetingID = UUID()
+        try await journal.begin(
+            CleanupJournalEntry(
+                meetingID: meetingID,
+                profileID: "personal",
+                privateRoot: fixture.meetingRoot,
+                snapshotRoots: [snapshot],
+                expectedThreadCwds: [snapshot],
+                threadIDs: ["thread-recorded"]
+            )
+        )
+        let client = FailingTrackedThreadCleanupClient()
+
+        let report = await CleanupJanitor(journal: journal).runThreadOnly(
+            client: client,
+            meetingID: meetingID
+        )
+
+        XCTAssertTrue(report.failures.contains { $0.resource == "thread-cwd" })
+        XCTAssertEqual(report.deletedThreadCount, 0)
+        XCTAssertEqual(report.deletedSnapshotCount, 0)
+        let deleteAttempts = await client.deleteAttempts
+        XCTAssertEqual(deleteAttempts, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshot.path))
+        let entries = try await journal.entries()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.threadIDs, ["thread-recorded"])
+    }
+
+    func testThreadOnlyJanitorJournalsUnreportedThreadBeforeDeletion() async throws {
+        let fixture = try Fixture()
+        let snapshot = fixture.meetingRoot.appendingPathComponent(
+            "snapshot",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        let journal = try CleanupJournalStore(
+            journalURL: fixture.journalURL,
+            allowedRoot: fixture.root
+        )
+        let meetingID = UUID()
+        try await journal.begin(
+            CleanupJournalEntry(
+                meetingID: meetingID,
+                profileID: "personal",
+                privateRoot: fixture.meetingRoot,
+                snapshotRoots: [snapshot],
+                expectedThreadCwds: [snapshot]
+            )
+        )
+
+        let report = await CleanupJanitor(journal: journal).runThreadOnly(
+            client: PresentRejectedUnreportedThreadCleanupClient(),
+            meetingID: meetingID
+        )
+
+        XCTAssertTrue(report.failures.contains { $0.resource == "thread" })
+        XCTAssertEqual(report.deletedSnapshotCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshot.path))
+        let entries = try await journal.entries()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.threadIDs, ["thread-unreported"])
+    }
+
     func testRemoveThreadIsScopedAndIdempotent() async throws {
         let fixture = try Fixture()
         let journal = try CleanupJournalStore(
@@ -679,6 +805,18 @@ private struct FailingThreadDiscoveryClient: ThreadCleanupClient {
     }
 }
 
+private actor FailingTrackedThreadCleanupClient: ThreadCleanupClient {
+    private(set) var deleteAttempts = 0
+
+    func deleteThread(id: String) async throws {
+        deleteAttempts += 1
+    }
+
+    func threadIDs(cwd: URL) async throws -> [String] {
+        throw CleanupJournalError.meetingNotFound
+    }
+}
+
 private actor MissingThreadCleanupClient: ThreadCleanupClient {
     private(set) var deleteAttempts = 0
 
@@ -696,6 +834,14 @@ private struct PresentRejectedThreadCleanupClient: ThreadCleanupClient {
     }
 
     func threadIDs(cwd: URL) async throws -> [String] { ["persisted-thread"] }
+}
+
+private struct PresentRejectedUnreportedThreadCleanupClient: ThreadCleanupClient {
+    func deleteThread(id: String) async throws {
+        throw CodexClientError.requestFailed(method: "thread/delete", code: -32_600)
+    }
+
+    func threadIDs(cwd: URL) async throws -> [String] { ["thread-unreported"] }
 }
 
 private final class Fixture {

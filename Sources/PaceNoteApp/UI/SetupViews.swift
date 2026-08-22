@@ -436,7 +436,7 @@ private struct CaptureSetupSection: View {
                 if !model.microphoneEnabled {
                     Label(
                         model.outputEnabled
-                            ? "Meeting output will still be transcribed. With the microphone off, \(AppBrand.displayName) waits for you to press Coach Current Turn instead of suggesting automatically."
+                            ? "Meeting output will still be transcribed and questions will be coached automatically. Your side of the conversation will not be transcribed."
                             : "Capture is off. Enable the microphone or meeting output before starting.",
                         systemImage: "info.circle"
                     )
@@ -1144,6 +1144,9 @@ private extension InferenceConnectionState {
     func setupTitle(for provider: MeetingInferenceProvider) -> String {
         switch self {
         case .ready: "\(provider.shortTitle) subscription preflight passed"
+        case .readyLimited: "\(provider.shortTitle) is ready with limited model capacity"
+        case .readyCapacityUnconfirmed:
+            "\(provider.shortTitle) is ready; model capacity will be checked before use"
         case .authenticationExpired:
             "\(provider.shortTitle) account needs attention"
         case .signedOut: "Sign in to \(provider.shortTitle)"

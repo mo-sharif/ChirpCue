@@ -368,11 +368,12 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
         else {
             throw LiveSubscriptionSmokeError.unsafeEnvironment
         }
-        applicationRoot =
+        let allocatedApplicationRoot =
             supportRoot.appendingPathComponent("PaceNote", isDirectory: true)
             .standardizedFileURL
+        applicationRoot = allocatedApplicationRoot
         let allocatedRoot =
-            applicationRoot
+            allocatedApplicationRoot
             .appendingPathComponent("Meetings/SmokeTests", isDirectory: true)
             .appendingPathComponent(
                 "pacenote-subscription-smoke-\(UUID().uuidString)",
@@ -395,7 +396,10 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
         var initializationCompleted = false
         defer {
             if !initializationCompleted {
-                try? FileManager.default.removeItem(at: allocatedRoot)
+                try? LiveSmokeStorageCleanup.removeOwnedRoot(
+                    allocatedRoot,
+                    applicationRoot: allocatedApplicationRoot
+                )
             }
         }
 
@@ -781,6 +785,12 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
         do {
             try await cleaner.deletePrivateRoot()
             privateRootRemoved = !FileManager.default.fileExists(atPath: meetingRoot.path)
+            if privateRootRemoved {
+                try LiveSmokeStorageCleanup.removeOwnedRoot(
+                    meetingRoot,
+                    applicationRoot: applicationRoot
+                )
+            }
             if !privateRootRemoved { failures.append(.privateRootDeletion) }
         } catch {
             failures.append(.privateRootDeletion)

@@ -28,6 +28,7 @@ public actor MeetingSessionController {
 
     private struct BridgeSpeechHold: Sendable {
         let identity: TurnIdentity
+        let sourceSegmentID: UUID
         let bridgeText: String
     }
 
@@ -169,6 +170,8 @@ public actor MeetingSessionController {
     private var latestOutputObservation: TranscriptObservation?
     private var bridgeSpeechHold: BridgeSpeechHold?
     private var queuedDeepResponse: QueuedDeepResponse?
+    private var responseCleanupFailureGeneration: UInt64?
+    private var responseProviderFailureGeneration: UInt64?
     private var continuation: AsyncStream<MeetingSessionEvent>.Continuation?
     private var preparationAttempt: UUID?
     private var preparationTask: Task<MeetingSessionState, Error>?
@@ -389,6 +392,9 @@ public actor MeetingSessionController {
                 usesRealtimeQuick: preparedRuntime.usesRealtimeQuick
             )
             deactivateBrownout(reason: .codexOffline)
+            responseCleanupFailureGeneration = nil
+            deactivateBrownout(reason: .providerLimited)
+            responseProviderFailureGeneration = nil
             deactivateBrownout(reason: .authenticationExpired)
             deactivateBrownout(reason: .accountMismatch)
             deactivateBrownout(reason: .protocolUnsupported)
@@ -1204,9 +1210,18 @@ public actor MeetingSessionController {
         guard lifecycle == .running else { return }
         switch decision {
         case .suppressEcho:
-            suppressCurrentMicrophonePartial()
+            let suppressedSegmentID = microphonePartialID
+            let preservesHeldSpeechIdentity =
+                observation.result.stability == .volatile
+                && bridgeSpeechHold?.sourceSegmentID == suppressedSegmentID
+            suppressCurrentMicrophonePartial(
+                preservingIdentity: preservesHeldSpeechIdentity
+            )
             deactivateBrownout(reason: .speakerUncertain, lane: .microphone)
             emitState()
+            if observation.result.stability == .final {
+                releaseQueuedDeepAfterHeldSpeech(completing: suppressedSegmentID)
+            }
 
         case .attribute(let source, let speakerUncertain):
             let attributedSource =
@@ -1223,18 +1238,19 @@ public actor MeetingSessionController {
                         at: observation.result.hostTimeRange?.start.seconds
                     )
                 }
+                let segment = ingest(observation.result, source: attributedSource)
                 if observation.result.stability == .volatile {
-                    holdDeepForLikelyBridgeSpeech(observation.result.text)
-                } else if completesDisplayedBridge(observation.result.text) {
-                    _ = ingest(observation.result, source: attributedSource)
-                    releaseQueuedDeepAfterBridge()
-                    return
-                } else {
-                    await cancelGenerationForLocalSpeech()
-                    guard lifecycle == .running else { return }
+                    holdDeepDuringLocalSpeech(segment)
                 }
+                if observation.result.stability == .final {
+                    releaseQueuedDeepAfterHeldSpeech(completing: segment.id)
+                }
+                return
             }
-            _ = ingest(observation.result, source: attributedSource)
+            let segment = ingest(observation.result, source: attributedSource)
+            if observation.result.stability == .final {
+                releaseQueuedDeepAfterHeldSpeech(completing: segment.id)
+            }
         }
     }
 
@@ -1255,13 +1271,15 @@ public actor MeetingSessionController {
         return segment
     }
 
-    private func suppressCurrentMicrophonePartial() {
+    private func suppressCurrentMicrophonePartial(preservingIdentity: Bool = false) {
         guard let microphonePartialID else { return }
         timeline = TranscriptTimeline(
             retention: configuration.transcriptRetention,
             segments: timeline.segments.filter { $0.id != microphonePartialID }
         )
-        self.microphonePartialID = nil
+        if !preservingIdentity {
+            self.microphonePartialID = nil
+        }
         emit(.transcriptRemoved(microphonePartialID))
     }
 
@@ -1393,8 +1411,18 @@ public actor MeetingSessionController {
             cleanupNeedleLedger.register(cue.text)
         case .deep(let deep):
             registerCleanupContent(deep)
-        case .quickUnavailable, .deepUnavailable, .discardedStale:
+        case .quickUnavailable, .quickCleanupUnavailable, .deepUnavailable, .discardedStale:
             break
+        }
+        if case .quickCleanupUnavailable = event {
+            responseCleanupFailureGeneration = max(
+                responseCleanupFailureGeneration ?? 0,
+                identity.generation
+            )
+            activateBrownout(.init(reason: .codexOffline))
+            updateOperationalPhase()
+            emitState()
+            return
         }
         guard lifecycle == .running, currentIdentity == identity else {
             timingLedger.recordStaleDiscard(
@@ -1413,6 +1441,16 @@ public actor MeetingSessionController {
                 return
             }
             let stage: SuggestionStage = cue.isDeterministicBridge ? .bridge : .quick
+            if !cue.isDeterministicBridge {
+                clearProviderCapacityFailure(after: identity)
+            }
+            if !cue.isDeterministicBridge,
+                let failedGeneration = responseCleanupFailureGeneration,
+                identity.generation > failedGeneration
+            {
+                responseCleanupFailureGeneration = nil
+                deactivateBrownout(reason: .codexOffline)
+            }
             let card = SuggestionCard(identity: identity, stage: stage, text: cue.text)
             suggestions.removeAll { $0.identity == identity && $0.stage != .deep }
             suggestions.insert(card, at: 0)
@@ -1433,14 +1471,42 @@ public actor MeetingSessionController {
                 return
             }
             clearTransientResponseBrownouts()
+            clearProviderCapacityFailure(after: identity)
+            if let failedGeneration = responseCleanupFailureGeneration,
+                identity.generation > failedGeneration
+            {
+                responseCleanupFailureGeneration = nil
+                deactivateBrownout(reason: .codexOffline)
+            }
             if bridgeSpeechHold?.identity == identity {
                 queuedDeepResponse = QueuedDeepResponse(identity: identity, response: deep)
             } else {
                 displayDeep(deep, identity: identity)
             }
 
-        case .quickUnavailable:
-            activateBrownout(.init(reason: .quickLimited))
+        case .quickUnavailable(let failure):
+            let reason: BrownoutReason =
+                switch failure {
+                case .rateLimited: .quickLimited
+                case .providerCapacityUnavailable: .providerLimited
+                case .cleanupUnavailable: .codexOffline
+                case .timedOut: .quickTimedOut
+                case .responseRejected: .quickRejected
+                case .busy, .providerUnavailable, .groundingUnavailable: .quickUnavailable
+                }
+            activateBrownout(.init(reason: reason))
+            if failure == .providerCapacityUnavailable {
+                responseProviderFailureGeneration = max(
+                    responseProviderFailureGeneration ?? 0,
+                    identity.generation
+                )
+            }
+            if failure == .cleanupUnavailable {
+                responseCleanupFailureGeneration = max(
+                    responseCleanupFailureGeneration ?? 0,
+                    identity.generation
+                )
+            }
             updateOperationalPhase()
             emitState()
 
@@ -1452,14 +1518,31 @@ public actor MeetingSessionController {
             let reason: BrownoutReason =
                 switch failure {
                 case .rateLimited: .deepLimited
+                case .providerCapacityUnavailable: .providerLimited
+                case .cleanupUnavailable: .codexOffline
                 case .busy: .deepBusy
                 case .timedOut: .deepTimedOut
                 case .providerUnavailable: .deepUnavailable
                 case .responseRejected, .groundingUnavailable: .deepRejected
                 }
             activateBrownout(.init(reason: reason))
+            if failure == .providerCapacityUnavailable {
+                responseProviderFailureGeneration = max(
+                    responseProviderFailureGeneration ?? 0,
+                    identity.generation
+                )
+            }
+            if failure == .cleanupUnavailable {
+                responseCleanupFailureGeneration = max(
+                    responseCleanupFailureGeneration ?? 0,
+                    identity.generation
+                )
+            }
             updateOperationalPhase()
             emitState()
+
+        case .quickCleanupUnavailable:
+            break
 
         case .discardedStale:
             timingLedger.recordStaleDiscard(
@@ -1469,39 +1552,28 @@ public actor MeetingSessionController {
         }
     }
 
-    private func holdDeepForLikelyBridgeSpeech(_ text: String) {
+    private func holdDeepDuringLocalSpeech(_ segment: TranscriptSegment) {
         guard bridgeSpeechHold == nil,
-            let reference = displayedBridgeReference(),
-            Self.isLikelyBridgeSpeech(text, bridgeText: reference.bridgeText)
+            generationTask != nil,
+            let currentIdentity
         else {
             return
         }
-        bridgeSpeechHold = reference
+        bridgeSpeechHold = BridgeSpeechHold(
+            identity: currentIdentity,
+            sourceSegmentID: segment.id,
+            bridgeText: segment.text
+        )
     }
 
-    private func completesDisplayedBridge(_ text: String) -> Bool {
-        guard let reference = displayedBridgeReference() else { return false }
-        return Self.isCompletedBridgeSpeech(text, bridgeText: reference.bridgeText)
-    }
-
-    private func displayedBridgeReference() -> BridgeSpeechHold? {
-        guard let identity = currentIdentity else { return nil }
-        if let bridgeSpeechHold, bridgeSpeechHold.identity == identity {
-            return bridgeSpeechHold
-        }
-        guard
-            let card = suggestions.first(where: {
-                $0.identity == identity && ($0.stage == .quick || $0.stage == .bridge)
-            })
+    private func releaseQueuedDeepAfterHeldSpeech(completing sourceSegmentID: UUID?) {
+        guard let bridgeSpeechHold,
+            sourceSegmentID == nil || bridgeSpeechHold.sourceSegmentID == sourceSegmentID
         else {
-            return nil
+            return
         }
-        return BridgeSpeechHold(identity: identity, bridgeText: card.text)
-    }
-
-    private func releaseQueuedDeepAfterBridge() {
-        let completedIdentity = bridgeSpeechHold?.identity ?? currentIdentity
-        bridgeSpeechHold = nil
+        let completedIdentity = bridgeSpeechHold.identity
+        self.bridgeSpeechHold = nil
         guard let queuedDeepResponse else { return }
         self.queuedDeepResponse = nil
         guard lifecycle == .running,
@@ -1550,22 +1622,6 @@ public actor MeetingSessionController {
         generationTask = nil
         updateOperationalPhase()
         emitState()
-    }
-
-    private func cancelGenerationForLocalSpeech() async {
-        guard
-            generationTask != nil
-                || (currentIdentity != nil && suggestions.isEmpty)
-                || bridgeSpeechHold != nil
-                || queuedDeepResponse != nil
-        else {
-            return
-        }
-        await cancelCurrentGeneration(
-            clearSuggestions: false,
-            invalidation: .localSpeech
-        )
-        updateOperationalPhase()
     }
 
     private func cancelCurrentGeneration(
@@ -1723,6 +1779,9 @@ public actor MeetingSessionController {
     private func clearTransientResponseBrownouts() {
         for reason in [
             BrownoutReason.quickLimited,
+            .quickTimedOut,
+            .quickUnavailable,
+            .quickRejected,
             .deepLimited,
             .deepBusy,
             .deepTimedOut,
@@ -1731,6 +1790,16 @@ public actor MeetingSessionController {
         ] {
             deactivateBrownout(reason: reason)
         }
+    }
+
+    private func clearProviderCapacityFailure(after identity: TurnIdentity) {
+        if let failedGeneration = responseProviderFailureGeneration,
+            identity.generation <= failedGeneration
+        {
+            return
+        }
+        responseProviderFailureGeneration = nil
+        deactivateBrownout(reason: .providerLimited)
     }
 
     private func updateOperationalPhase() {
@@ -1761,8 +1830,10 @@ public actor MeetingSessionController {
     private var hasBlockingBrownout: Bool {
         brownouts.contains { brownout in
             switch brownout.reason {
-            case .microphoneDisabled, .outputDisabled, .quickLimited, .deepLimited,
-                .deepBusy, .deepTimedOut, .deepUnavailable, .deepRejected, .speakerUncertain:
+            case .microphoneDisabled, .outputDisabled, .providerLimited, .quickLimited,
+                .quickTimedOut,
+                .quickUnavailable, .quickRejected, .deepLimited, .deepBusy, .deepTimedOut,
+                .deepUnavailable, .deepRejected, .speakerUncertain:
                 false
             default:
                 true
@@ -1816,6 +1887,8 @@ public actor MeetingSessionController {
         outputPartialID = nil
         turnDetector.invalidate()
         suggestions.removeAll(keepingCapacity: false)
+        responseCleanupFailureGeneration = nil
+        responseProviderFailureGeneration = nil
         emit(.transcriptsCleared)
         emit(.suggestionsCleared(currentIdentity))
     }
@@ -1861,70 +1934,6 @@ public actor MeetingSessionController {
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
-    private static func isLikelyBridgeSpeech(
-        _ text: String,
-        bridgeText: String
-    ) -> Bool {
-        guard let candidate = boundedSpeechTokens(text),
-            let bridge = boundedSpeechTokens(bridgeText),
-            candidate.count >= 2,
-            candidate.count <= bridge.count
-        else {
-            return false
-        }
-        return isOrderedSubsequence(candidate, of: bridge)
-    }
-
-    private static func isCompletedBridgeSpeech(
-        _ text: String,
-        bridgeText: String
-    ) -> Bool {
-        guard let candidate = boundedSpeechTokens(text),
-            let bridge = boundedSpeechTokens(bridgeText)
-        else {
-            return false
-        }
-        if candidate == bridge { return true }
-        guard bridge.count > 1 else { return false }
-
-        let maximumOmissions = min(3, max(1, bridge.count / 3))
-        let minimumCandidateCount = max(2, bridge.count - maximumOmissions)
-        guard candidate.count >= minimumCandidateCount,
-            candidate.count < bridge.count
-        else {
-            return false
-        }
-        return isOrderedSubsequence(candidate, of: bridge)
-    }
-
-    private static func boundedSpeechTokens(_ text: String) -> [String]? {
-        let maximumTextBytes = 256
-        let maximumTokenCount = 32
-        guard text.utf8.count <= maximumTextBytes else { return nil }
-        let tokens = text.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-        guard !tokens.isEmpty, tokens.count <= maximumTokenCount else { return nil }
-        return tokens
-    }
-
-    private static func isOrderedSubsequence(
-        _ candidate: [String],
-        of reference: [String]
-    ) -> Bool {
-        var referenceIndex = reference.startIndex
-        for token in candidate {
-            while referenceIndex < reference.endIndex,
-                reference[referenceIndex] != token
-            {
-                reference.formIndex(after: &referenceIndex)
-            }
-            guard referenceIndex < reference.endIndex else { return false }
-            reference.formIndex(after: &referenceIndex)
-        }
-        return true
-    }
-
     private static func lostReason(for lane: AudioLane) -> BrownoutReason {
         lane == .microphone ? .microphoneLost : .systemAudioLost
     }
@@ -1937,7 +1946,7 @@ public actor MeetingSessionController {
             .responseAccountMismatch
         case .protocolUnsupported:
             .responseProtocolUnsupported
-        case .quickRateLimited, .deepRateLimited:
+        case .providerCapacityUnavailable, .quickRateLimited, .deepRateLimited:
             .responseRateLimited
         default:
             .responseUnavailable
@@ -1952,6 +1961,8 @@ public actor MeetingSessionController {
             .init(reason: .accountMismatch)
         case .protocolUnsupported:
             .init(reason: .protocolUnsupported)
+        case .providerCapacityUnavailable:
+            .init(reason: .providerLimited)
         case .quickRateLimited:
             .init(reason: .quickLimited)
         case .deepRateLimited:

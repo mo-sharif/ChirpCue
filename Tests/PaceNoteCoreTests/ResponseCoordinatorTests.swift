@@ -35,6 +35,47 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertLessThanOrEqual(deep.composedText.split(separator: " ").count, 40)
     }
 
+    func testValidatedQuickAndDeepAreVisibleWhileQuickCleanupRemainsPending() async throws {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let cleanupGate = QuickCleanupGate()
+        let coordinator = ResponseCoordinator(
+            generator: QuickCleanupControlledGenerator(turn: turn, cleanupGate: cleanupGate),
+            configuration: .init(quickDeadline: .milliseconds(100), resultTTL: .seconds(1))
+        )
+
+        let stream = await coordinator.suggestions(for: turn)
+        var iterator = stream.makeAsyncIterator()
+        let firstEvent = await iterator.next()
+        let first = try XCTUnwrap(firstEvent)
+        let cue = try XCTUnwrap(first.cue)
+        XCTAssertFalse(cue.isDeterministicBridge)
+
+        await cleanupGate.waitUntilSuspended()
+        let secondEvent = await iterator.next()
+        let second = try XCTUnwrap(secondEvent)
+        XCTAssertNotNil(second.deep)
+
+        await cleanupGate.release()
+        while await iterator.next() != nil {}
+    }
+
+    func testQuickCleanupFailureIsVisibleWithoutSuppressingQuickOrDeep() async {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let coordinator = ResponseCoordinator(
+            generator: QuickCleanupControlledGenerator(
+                turn: turn,
+                cleanupError: MeetingResponseError.cleanupFailed
+            ),
+            configuration: .init(quickDeadline: .milliseconds(100), resultTTL: .seconds(1))
+        )
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+
+        XCTAssertEqual(events.compactMap(\.cue).count, 1)
+        XCTAssertEqual(events.compactMap(\.deep).count, 1)
+        XCTAssertEqual(events.compactMap(\.quickCleanupUnavailable), [.cleanupUnavailable])
+    }
+
     func testBridgeDoesNotWaitForQuickModel() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
         let generator = ScriptedGenerator(
@@ -53,7 +94,11 @@ final class ResponseCoordinatorTests: XCTestCase {
         let deep = try XCTUnwrap(events.compactMap(\.deep).first)
 
         XCTAssertTrue(cue.isDeterministicBridge)
-        XCTAssertEqual(cue.text, "Let me think through that carefully for a second.")
+        XCTAssertEqual(
+            cue.text,
+            "I'd start by clarifying the goal and constraints, then walk through the tradeoffs before committing to an approach."
+        )
+        XCTAssertLessThanOrEqual(cue.text.split(whereSeparator: { $0.isWhitespace }).count, 24)
         XCTAssertEqual(deep.cueHash, cue.textHash)
     }
 
@@ -307,6 +352,25 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertEqual(events.compactMap(\.deepUnavailable), [.providerUnavailable])
     }
 
+    func testProviderCapacityFailureRemainsDistinctFromLocalRateLimit() async {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let coordinator = ResponseCoordinator(
+            generator: FailingDeepGenerator(error: .providerCapacityUnavailable),
+            configuration: .init(resultTTL: .seconds(1))
+        )
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+
+        XCTAssertEqual(
+            events.compactMap(\.quickUnavailable),
+            [.providerCapacityUnavailable]
+        )
+        XCTAssertEqual(
+            events.compactMap(\.deepUnavailable),
+            [.providerCapacityUnavailable]
+        )
+    }
+
     func testDeterministicBridgeBypassesReconciliationModel() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
         let generator = HangingGenerator(hangingStage: .reconcile)
@@ -393,6 +457,14 @@ private extension ResponseCoordinatorEvent {
 
     var deepUnavailable: ResponseCoordinatorFailure? {
         if case .deepUnavailable(let value) = self { value } else { nil }
+    }
+
+    var quickUnavailable: ResponseCoordinatorFailure? {
+        if case .quickUnavailable(let value) = self { value } else { nil }
+    }
+
+    var quickCleanupUnavailable: ResponseCoordinatorFailure? {
+        if case .quickCleanupUnavailable(let value) = self { value } else { nil }
     }
 }
 
@@ -594,5 +666,85 @@ private struct CancellationResistantLateGenerator: ResponseGenerating {
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
         Reconciliation(relationship: .continueAnswer, transition: "")
+    }
+}
+
+private struct QuickCleanupControlledGenerator: ResponseGenerating {
+    let turn: ConversationTurn
+    let cleanupGate: QuickCleanupGate?
+    let cleanupError: (any Error & Sendable)?
+
+    init(
+        turn: ConversationTurn,
+        cleanupGate: QuickCleanupGate? = nil,
+        cleanupError: (any Error & Sendable)? = nil
+    ) {
+        self.turn = turn
+        self.cleanupGate = cleanupGate
+        self.cleanupError = cleanupError
+    }
+
+    func generateQuick(for requestedTurn: ConversationTurn) async throws -> QuickModelOutput {
+        QuickModelOutput(
+            turnID: requestedTurn.identity.turnID,
+            generation: requestedTurn.identity.generation,
+            sayNow: "I would separate the immediate decision from the implementation details.",
+            needsDeep: true,
+            confidence: 0.8,
+            reason: "technical_question"
+        )
+    }
+
+    func awaitQuickCleanup(for identity: TurnIdentity) async throws {
+        if let cleanupGate { await cleanupGate.suspend() }
+        if let cleanupError { throw cleanupError }
+    }
+
+    func generateDeep(for requestedTurn: ConversationTurn) async throws -> DeepDraft {
+        DeepDraft(
+            turnID: requestedTurn.identity.turnID,
+            generation: requestedTurn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext: "I would isolate the caller with a queued boundary and explicit failure handling.",
+            confidence: 0.9,
+            basis: []
+        )
+    }
+
+    func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
+        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+    }
+}
+
+private actor QuickCleanupGate {
+    private var suspended = false
+    private var released = false
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async {
+        suspended = true
+        let waiters = suspensionWaiters
+        suspensionWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilSuspended() async {
+        guard !suspended else { return }
+        await withCheckedContinuation { continuation in
+            suspensionWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 }
