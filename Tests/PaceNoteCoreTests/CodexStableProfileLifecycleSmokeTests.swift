@@ -12,6 +12,42 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
     private static let optInEnvironmentKey =
         "PACENOTE_RUN_CODEX_STABLE_PROFILE_LIFECYCLE_SMOKE"
 
+    func testMeetingGeneratorPrepareRetriesHungThreadStartsThenSanitizes() async throws {
+        guard ProcessInfo.processInfo.environment[Self.optInEnvironmentKey] == "1" else {
+            throw XCTSkip(
+                "Set \(Self.optInEnvironmentKey)=1 after signing in through ChirpCue to run the dedicated-profile preparation smoke."
+            )
+        }
+
+        let fixture = try StableProfileLifecycleFixture()
+        let profileLease = try CodexProfileLease.acquire(profileRoot: fixture.profileRoot)
+        defer { withExtendedLifetime(profileLease) {} }
+
+        let generator = CodexMeetingResponseGenerator(
+            configuration: MeetingResponseConfiguration(
+                meetingID: fixture.meetingID,
+                meetingPrivateRoot: fixture.ownedTemporaryRoot,
+                codexProfileRoot: fixture.profileRoot,
+                executableURL: fixture.codexExecutableURL,
+                clientVersion: "0.3.3",
+                groundingSnapshot: nil,
+                deepComplexity: .hardTechnical
+            ),
+            journal: fixture.journal
+        )
+
+        do {
+            _ = try await generator.prepare()
+        } catch {
+            _ = await generator.shutdown()
+            try? fixture.removeOwnedTemporaryRoot()
+            throw error
+        }
+        let cleanup = await generator.shutdown()
+        XCTAssertTrue(cleanup.failures.isEmpty)
+        try fixture.removeOwnedTemporaryRoot()
+    }
+
     func testDedicatedProfileZeroGenerationLifecycleThenSanitize() async throws {
         guard ProcessInfo.processInfo.environment[Self.optInEnvironmentKey] == "1" else {
             throw XCTSkip(

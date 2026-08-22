@@ -2448,7 +2448,7 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertTrue(report.failures.contains(.deleteThread))
     }
 
-    func testInitialPrepareRetriesInferenceOnlyOnceWhileCleaningFinalLostResponse() async throws {
+    func testInitialPrepareRetriesInferenceTwiceWhileCleaningFinalLostResponse() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
         let threadStore = FakePersistentThreadStore()
@@ -2464,12 +2464,20 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
             threadIDPrefix: "retry-",
             threadStore: threadStore
         )
-        let cleanupOnly = FakeMeetingCodexClient(
+        let third = FakeMeetingCodexClient(
+            realtime: false,
+            lostBaseResponseNumber: 1,
+            threadIDPrefix: "third-",
+            threadStore: threadStore
+        )
+        let finalCleanup = FakeMeetingCodexClient(
             realtime: false,
             threadIDPrefix: "cleanup-",
             threadStore: threadStore
         )
-        let clientFactory = SequencedCodexClientFactory(clients: [first, retry, cleanupOnly])
+        let clientFactory = SequencedCodexClientFactory(
+            clients: [first, retry, third, finalCleanup]
+        )
         let generator = fixture.generator(clientFactory: { configuration in
             try await clientFactory.connect(configuration)
         })
@@ -2481,16 +2489,18 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let factoryCalls = await clientFactory.callCount()
         let firstBases = await first.baseCount()
         let retryBases = await retry.baseCount()
-        let cleanupBases = await cleanupOnly.baseCount()
+        let thirdBases = await third.baseCount()
         let retryDeleted = await retry.deletedThreadIDs()
-        let cleanupDeleted = await cleanupOnly.deletedThreadIDs()
+        let thirdDeleted = await third.deletedThreadIDs()
+        let cleanupDeleted = await finalCleanup.deletedThreadIDs()
         let remainingThreads = await threadStore.threadIDs()
-        XCTAssertEqual(factoryCalls, 3)
+        XCTAssertEqual(factoryCalls, 4)
         XCTAssertEqual(firstBases, 1)
         XCTAssertEqual(retryBases, 1)
-        XCTAssertEqual(cleanupBases, 0)
+        XCTAssertEqual(thirdBases, 1)
         XCTAssertEqual(retryDeleted, ["first-base-1"])
-        XCTAssertEqual(cleanupDeleted, ["retry-base-1"])
+        XCTAssertEqual(thirdDeleted, ["retry-base-1"])
+        XCTAssertEqual(cleanupDeleted, ["third-base-1"])
         XCTAssertTrue(remainingThreads.isEmpty)
         let entries = try await fixture.journal.entries()
         XCTAssertTrue(entries.first?.threadIDs.isEmpty == true)

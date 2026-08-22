@@ -1017,7 +1017,7 @@ final class MeetingViewModel {
         // Capture can become live while the runtime is still finishing Start. Keep the visible
         // capture indicator conservative until success or verified cleanup returns.
         isCaptureActive = request.microphoneEnabled || request.outputEnabled
-        statusDetail = "Starting only the capture sources you approved."
+        statusDetail = "Preparing \(selectedProvider.shortTitle), then starting only the capture sources you approved."
 
         let result = await withTaskCancellationHandler {
             await startTask.result

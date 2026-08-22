@@ -105,6 +105,6 @@ ChirpCue is licensed under the [Apache License 2.0](LICENSE). Community particip
 
 ## Current status
 
-Version 0.3.2 hardens automatic turn deduplication, Quick and Deep continuity, local usage accounting, and fail-closed cleanup. This remains an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
+Version 0.3.3 adds bounded fresh-process recovery when current Codex app-server builds accept `thread/start` without returning a response. It also keeps provider preparation visible during Start. This remains an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
 
 ChirpCue is an independent open-source project and is not affiliated with or endorsed by Apple, Anthropic, Google, Microsoft, OpenAI, or Zoom.
