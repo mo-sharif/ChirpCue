@@ -324,6 +324,10 @@ final class MeetingViewModelTests: XCTestCase {
         let startTask = Task { @MainActor in await model.startMeeting() }
         await startBarrier.waitUntilEntered()
         XCTAssertTrue(model.isCaptureActive)
+        XCTAssertEqual(
+            model.statusDetail,
+            "Preparing Codex, then starting only the capture sources you approved."
+        )
 
         model.meetingConsent.participantPermission = false
         await startBarrier.waitUntilCancellationObserved()

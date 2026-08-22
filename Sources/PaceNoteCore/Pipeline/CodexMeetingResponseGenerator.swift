@@ -225,7 +225,10 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     private func performPrepare(operationID: UUID) async throws -> MeetingResponseRuntime {
-        var retriesRemaining = 1
+        // Current Codex app-server builds can occasionally accept thread/start without ever
+        // returning its response. Retire the poisoned process, discover and delete any orphaned
+        // thread, then allow two fresh-process retries before failing closed.
+        var retriesRemaining = 2
         while true {
             do {
                 return try await performPrepareAttempt(operationID: operationID)
