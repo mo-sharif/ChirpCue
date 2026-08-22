@@ -2577,6 +2577,14 @@ final class MeetingSessionControllerTests: XCTestCase {
                 )
             )
         )
+        let changedOutputVisible = await eventually {
+            await harness.controller.state().transcript.contains {
+                $0.source == .them
+                    && $0.text == "The remote speaker is finishing a different thought"
+            }
+        }
+        XCTAssertTrue(changedOutputVisible)
+
         await harness.microphoneTranscriber.emit(
             .result(
                 transcript(
