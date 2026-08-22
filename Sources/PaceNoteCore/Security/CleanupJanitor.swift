@@ -134,6 +134,77 @@ public actor CleanupJanitor {
         return report
     }
 
+    /// Removes only Codex threads for one active meeting. The meeting journal and
+    /// every disposable filesystem root remain available to the active session.
+    public func runThreadOnly(
+        client: any ThreadCleanupClient,
+        meetingID: UUID
+    ) async -> CleanupReport {
+        var report = CleanupReport()
+        let entry: CleanupJournalEntry
+        do {
+            let entries = try await journal.entries()
+            guard let matchingEntry = entries.first(where: { $0.meetingID == meetingID }) else {
+                throw CleanupJournalError.meetingNotFound
+            }
+            try await journal.validateForCleanup(matchingEntry)
+            entry = matchingEntry
+        } catch {
+            report.failures.append(.init(resource: "cleanup-journal", reason: Self.safe(error)))
+            return report
+        }
+
+        var threadIDs = Set(entry.threadIDs)
+        do {
+            for cwd in entry.expectedThreadCwds {
+                threadIDs.formUnion(try await client.threadIDs(cwd: cwd))
+            }
+        } catch {
+            report.failures.append(.init(resource: "thread-cwd", reason: Self.safe(error)))
+            return report
+        }
+
+        do {
+            try await journal.recordThreads(threadIDs.sorted(), meetingID: meetingID)
+        } catch {
+            report.failures.append(.init(resource: "cleanup-journal", reason: Self.safe(error)))
+            return report
+        }
+
+        for threadID in threadIDs.sorted() {
+            do {
+                try await client.deleteThread(id: threadID)
+                report.deletedThreadCount += 1
+            } catch let deletionError {
+                do {
+                    guard
+                        try await Self.threadIsAbsent(
+                            threadID,
+                            expectedCwds: entry.expectedThreadCwds,
+                            client: client
+                        )
+                    else {
+                        report.failures.append(
+                            .init(resource: "thread", reason: Self.safe(deletionError))
+                        )
+                        continue
+                    }
+                } catch {
+                    report.failures.append(.init(resource: "thread-cwd", reason: Self.safe(error)))
+                    continue
+                }
+            }
+
+            do {
+                try await journal.removeThread(threadID, meetingID: meetingID)
+            } catch {
+                report.failures.append(.init(resource: "cleanup-journal", reason: Self.safe(error)))
+            }
+        }
+
+        return report
+    }
+
     private static func threadIsAbsent(
         _ threadID: String,
         expectedCwds: [URL],

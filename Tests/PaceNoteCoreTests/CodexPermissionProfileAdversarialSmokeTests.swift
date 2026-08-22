@@ -619,7 +619,10 @@ private final class PermissionMatrixFixture: @unchecked Sendable {
         var initialized = false
         defer {
             if !initialized {
-                try? FileManager.default.removeItem(at: allocatedRoot)
+                try? LiveSmokeStorageCleanup.removeOwnedRoot(
+                    allocatedRoot,
+                    applicationRoot: allocatedApplicationRoot
+                )
             }
         }
 
@@ -1278,21 +1281,11 @@ private final class PermissionMatrixFixture: @unchecked Sendable {
     }
 
     private func removeOwnedRoot() throws {
-        let expectedParent =
-            applicationRoot
-            .appendingPathComponent("Meetings/SmokeTests", isDirectory: true)
-            .standardizedFileURL
-        guard root.deletingLastPathComponent().standardizedFileURL == expectedParent,
-            root.standardizedFileURL.path.hasPrefix(expectedParent.path + "/")
-        else {
-            throw PermissionMatrixError.fixtureSetupFailed
-        }
-        if fileManager.fileExists(atPath: root.path) {
-            try fileManager.removeItem(at: root)
-        }
-        guard !fileManager.fileExists(atPath: root.path) else {
-            throw PermissionMatrixError.cleanupFailed
-        }
+        try LiveSmokeStorageCleanup.removeOwnedRoot(
+            root,
+            applicationRoot: applicationRoot,
+            fileManager: fileManager
+        )
     }
 
     private func skillsForSnapshot(in result: CodexSkillsResult) -> [CodexSkill] {

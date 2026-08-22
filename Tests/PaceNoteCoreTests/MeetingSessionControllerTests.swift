@@ -151,6 +151,484 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testQuickFailuresUseAccurateTransientBrownouts() async throws {
+        let cases: [(MeetingResponseError, BrownoutReason)] = [
+            (.quickRateLimited, .quickLimited),
+            (.providerCapacityUnavailable, .providerLimited),
+            (.runtimeUnavailable, .quickUnavailable),
+            (.invalidOutput, .quickRejected),
+        ]
+
+        for (failure, expectedBrownout) in cases {
+            let response = FakeMeetingResponseGenerator(
+                slowDeepGenerations: [1],
+                quickFailuresRemaining: 1,
+                quickFailure: failure
+            )
+            let harness = makeHarness(mode: .systemOutputOnly, response: response)
+            try await prepareAndStart(harness)
+
+            await harness.outputTranscriber.emit(
+                .result(
+                    transcript(
+                        .output,
+                        "How should we isolate database access?",
+                        stability: .final
+                    )
+                )
+            )
+
+            let failureVisible = await eventually {
+                let state = await harness.controller.state()
+                return state.suggestions.contains { $0.stage == .bridge }
+                    && state.brownouts.contains { $0.reason == expectedBrownout }
+            }
+            XCTAssertTrue(failureVisible, "Expected \(expectedBrownout) for \(failure)")
+            _ = await harness.controller.stop()
+        }
+    }
+
+    func testQuickTimeoutUsesAccurateTransientBrownout() async throws {
+        let response = FakeMeetingResponseGenerator(
+            slowQuickGenerations: [1],
+            slowDeepGenerations: [1]
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access?",
+                    stability: .final
+                )
+            )
+        )
+
+        let timeoutVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .bridge }
+                && state.brownouts.contains { $0.reason == .quickTimedOut }
+        }
+        XCTAssertTrue(timeoutVisible)
+        _ = await harness.controller.stop()
+    }
+
+    func testAutomaticQuestionAfterQuickFailureReplacesCardAndRecovers() async throws {
+        let response = FakeMeetingResponseGenerator(
+            slowDeepGenerations: [1],
+            quickFailuresRemaining: 1,
+            quickFailure: .quickRateLimited
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+        let firstQuestion = "How should we isolate database access?"
+
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, firstQuestion, stability: .final))
+        )
+        let firstFailureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .bridge }
+                && state.brownouts.contains { $0.reason == .quickLimited }
+        }
+        XCTAssertTrue(firstFailureVisible)
+        let failedState = await harness.controller.state()
+        let failedCard = try XCTUnwrap(failedState.suggestions.first)
+
+        let secondQuestion = "What should we monitor after deployment?"
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, secondQuestion, stability: .final))
+        )
+
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .quick }
+                && state.suggestions.contains { $0.stage == .deep }
+                && state.suggestions.allSatisfy { $0.identity != failedCard.identity }
+                && !state.brownouts.contains { $0.reason == .quickLimited }
+        }
+        let quickTurns = await response.requestedTurns
+        let deepTurns = await response.deepRequestedTurns
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(quickTurns.map(\.question), [firstQuestion, secondQuestion])
+        XCTAssertEqual(deepTurns.map(\.question), [firstQuestion, secondQuestion])
+        _ = await harness.controller.stop()
+    }
+
+    func testProviderCapacityWarningPersistsUntilALaterGenerationModelSucceeds() async throws {
+        let response = FakeMeetingResponseGenerator(
+            slowQuickGenerations: [2],
+            slowDeepGenerations: [2],
+            quickFailuresRemaining: 1,
+            quickFailure: .providerCapacityUnavailable,
+            deepFailuresRemaining: 1,
+            deepFailure: .providerCapacityUnavailable
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access?",
+                    stability: .final
+                )
+            )
+        )
+        let firstFailureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .bridge }
+                && state.brownouts.contains { $0.reason == .providerLimited }
+        }
+        XCTAssertTrue(firstFailureVisible)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "What should we monitor after deployment?",
+                    stability: .final
+                )
+            )
+        )
+        let secondBridgeKeptWarning = await eventually {
+            let state = await harness.controller.state()
+            let quickTurns = await response.requestedTurns
+            return quickTurns.count == 2
+                && state.suggestions.contains { $0.stage == .bridge }
+                && state.brownouts.contains { $0.reason == .providerLimited }
+        }
+        XCTAssertTrue(secondBridgeKeptWarning)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How would you roll this out safely?",
+                    stability: .final
+                )
+            )
+        )
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .quick }
+                && state.suggestions.contains { $0.stage == .deep }
+                && !state.brownouts.contains { $0.reason == .providerLimited }
+        }
+        XCTAssertTrue(recovered)
+        _ = await harness.controller.stop()
+    }
+
+    func testSameGenerationDeepSuccessDoesNotHideNewerProviderCapacityFailure() async throws {
+        let deepBarrier = AudioOperationBarrier()
+        let response = FakeMeetingResponseGenerator(
+            deepBarrier: deepBarrier,
+            quickFailuresRemaining: 1,
+            quickFailure: .providerCapacityUnavailable
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+        await deepBarrier.arm()
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access?",
+                    stability: .final
+                )
+            )
+        )
+        await deepBarrier.waitUntilEntered()
+        let quickFailureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .bridge }
+                && state.brownouts.contains { $0.reason == .providerLimited }
+        }
+        XCTAssertTrue(quickFailureVisible)
+
+        await deepBarrier.release()
+        let sameGenerationDeepVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .deep }
+                && state.brownouts.contains { $0.reason == .providerLimited }
+        }
+        XCTAssertTrue(sameGenerationDeepVisible)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "What should we monitor after deployment?",
+                    stability: .final
+                )
+            )
+        )
+        let laterGenerationRecovered = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .quick }
+                && state.suggestions.contains { $0.stage == .deep }
+                && !state.brownouts.contains { $0.reason == .providerLimited }
+        }
+        XCTAssertTrue(laterGenerationRecovered)
+        _ = await harness.controller.stop()
+    }
+
+    func testAutomaticQuestionAfterDeepFailureReplacesCardAndRecovers() async throws {
+        let response = FakeMeetingResponseGenerator(
+            deepFailuresRemaining: 1,
+            deepFailure: .deepRateLimited
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+        let firstQuestion = "How should we isolate database access?"
+
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, firstQuestion, stability: .final))
+        )
+        let firstFailureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .quick }
+                && state.suggestions.allSatisfy { $0.stage != .deep }
+                && state.brownouts.contains { $0.reason == .deepLimited }
+        }
+        XCTAssertTrue(firstFailureVisible)
+        let failedState = await harness.controller.state()
+        let failedCard = try XCTUnwrap(failedState.suggestions.first)
+
+        let secondQuestion = "What should we monitor after deployment?"
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, secondQuestion, stability: .final))
+        )
+
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .quick }
+                && state.suggestions.contains { $0.stage == .deep }
+                && state.suggestions.allSatisfy { $0.identity != failedCard.identity }
+                && !state.brownouts.contains { $0.reason.isDeepResponseFailure }
+        }
+        let quickTurns = await response.requestedTurns
+        let deepTurns = await response.deepRequestedTurns
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(quickTurns.map(\.question), [firstQuestion, secondQuestion])
+        XCTAssertEqual(deepTurns.map(\.question), [firstQuestion, secondQuestion])
+        _ = await harness.controller.stop()
+    }
+
+    func testSuccessfulNextQuestionClearsRecoveredCleanupBrownout() async throws {
+        let response = FakeMeetingResponseGenerator(
+            slowDeepGenerations: [1],
+            quickCleanupFailuresRemaining: 1
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access?",
+                    stability: .final
+                )
+            )
+        )
+        let cleanupFailureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.brownouts.contains { $0.reason == .codexOffline }
+        }
+        XCTAssertTrue(cleanupFailureVisible)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "What should we monitor after deployment?",
+                    stability: .final
+                )
+            )
+        )
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .quick }
+                && !state.brownouts.contains { $0.reason == .codexOffline }
+        }
+        XCTAssertTrue(recovered)
+        _ = await harness.controller.stop()
+    }
+
+    func testSameTurnDeepSuccessDoesNotHideCleanupBrownout() async throws {
+        let deepBarrier = AudioOperationBarrier()
+        await deepBarrier.arm()
+        let response = FakeMeetingResponseGenerator(
+            deepBarrier: deepBarrier,
+            quickCleanupFailuresRemaining: 1
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access?",
+                    stability: .final
+                )
+            )
+        )
+        await deepBarrier.waitUntilEntered()
+        let cleanupFailureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.brownouts.contains { $0.reason == .codexOffline }
+        }
+        XCTAssertTrue(cleanupFailureVisible)
+
+        await deepBarrier.release()
+        let deepArrived = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .deep }
+        }
+        let state = await harness.controller.state()
+        XCTAssertTrue(deepArrived)
+        XCTAssertTrue(state.brownouts.contains { $0.reason == .codexOffline })
+        _ = await harness.controller.stop()
+    }
+
+    func testBridgeAloneDoesNotHideCleanupBrownout() async throws {
+        let response = FakeMeetingResponseGenerator(
+            slowQuickGenerations: [2],
+            slowDeepGenerations: [1, 2],
+            quickCleanupFailuresRemaining: 1
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access?",
+                    stability: .final
+                )
+            )
+        )
+        let cleanupFailureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.brownouts.contains { $0.reason == .codexOffline }
+        }
+        XCTAssertTrue(cleanupFailureVisible)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "What should we monitor after deployment?",
+                    stability: .final
+                )
+            )
+        )
+        let bridgeVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.suggestions.contains { $0.stage == .bridge }
+        }
+        let state = await harness.controller.state()
+        XCTAssertTrue(bridgeVisible)
+        XCTAssertTrue(state.brownouts.contains { $0.reason == .codexOffline })
+        _ = await harness.controller.stop()
+    }
+
+    func testFinalRevisionOfAutomaticQuestionDoesNotStartDuplicateResponse() async throws {
+        let clock = LockedMeetingTime(10)
+        let harness = makeHarness(mode: .systemOutputOnly, time: clock)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access",
+                    stability: .volatile,
+                    hostTimeRange: hostTimeRange(start: 8)
+                )
+            )
+        )
+        let firstResponseStarted = await eventually {
+            await harness.response.requestedTurns.count == 1
+        }
+        XCTAssertTrue(firstResponseStarted)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How should we isolate database access?",
+                    stability: .final,
+                    hostTimeRange: hostTimeRange(start: 8, duration: 2)
+                )
+            )
+        )
+        let finalRevisionVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.transcript.count == 1
+                && state.transcript.first?.isFinal == true
+                && state.transcript.first?.text == "How should we isolate database access?"
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        let requestedTurns = await harness.response.requestedTurns
+
+        XCTAssertTrue(finalRevisionVisible)
+        XCTAssertEqual(requestedTurns.count, 1)
+        _ = await harness.controller.stop()
+    }
+
+    func testExpandedFinalRevisionOfAutomaticQuestionStartsCorrectedResponse() async throws {
+        let clock = LockedMeetingTime(10)
+        let harness = makeHarness(mode: .systemOutputOnly, time: clock)
+        try await prepareAndStart(harness)
+        let partialQuestion = "How should we secure database access"
+        let finalQuestion = "How should we secure database access through our MCP?"
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    partialQuestion,
+                    stability: .volatile,
+                    hostTimeRange: hostTimeRange(start: 8)
+                )
+            )
+        )
+        let firstResponseStarted = await eventually {
+            await harness.response.requestedTurns.map(\.question) == [partialQuestion]
+        }
+        XCTAssertTrue(firstResponseStarted)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    finalQuestion,
+                    stability: .final,
+                    hostTimeRange: hostTimeRange(start: 8, duration: 2)
+                )
+            )
+        )
+
+        let correctedResponseStarted = await eventually {
+            await harness.response.requestedTurns.map(\.question)
+                == [partialQuestion, finalQuestion]
+        }
+        let state = await harness.controller.state()
+        XCTAssertTrue(correctedResponseStarted)
+        XCTAssertEqual(state.transcript.count, 1)
+        XCTAssertEqual(state.transcript.first?.text, finalQuestion)
+        XCTAssertEqual(state.transcript.first?.isFinal, true)
+        _ = await harness.controller.stop()
+    }
+
     func testCoachCurrentTurnForcesLatestOutputWithoutDuplicatingTranscript() async throws {
         let harness = makeHarness(mode: .systemOutputOnly)
         try await prepareAndStart(harness)
@@ -290,8 +768,8 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testProviderRateLimitIsPreservedForRecoveryUI() async throws {
-        let response = FakeMeetingResponseGenerator(prepareFailure: .quickRateLimited)
+    func testProviderCapacityLimitIsPreservedForRecoveryUI() async throws {
+        let response = FakeMeetingResponseGenerator(prepareFailure: .providerCapacityUnavailable)
         let harness = makeHarness(mode: .manualOnly, response: response)
 
         do {
@@ -303,12 +781,12 @@ final class MeetingSessionControllerTests: XCTestCase {
             XCTAssertEqual(failure, .responseRateLimited)
             XCTAssertEqual(
                 failure.errorDescription,
-                "The selected provider is temporarily rate limited. Wait for its allowance to reset, then choose Recheck and start again."
+                "The selected provider's subscription capacity is temporarily unavailable. Wait for its allowance to reset, then choose Recheck."
             )
         }
 
         let state = await harness.controller.state()
-        XCTAssertTrue(state.brownouts.contains { $0.reason == .quickLimited })
+        XCTAssertTrue(state.brownouts.contains { $0.reason == .providerLimited })
         _ = await harness.controller.stop()
     }
 
@@ -1637,6 +2115,59 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertEqual(clearedTiming, .empty)
     }
 
+    func testPartialFinalQuickSpeechKeepsDeepGenerationRunning() async throws {
+        let clock = LockedMeetingTime(10)
+        let deepBarrier = AudioOperationBarrier()
+        await deepBarrier.arm()
+        let response = FakeMeetingResponseGenerator(deepBarrier: deepBarrier)
+        let harness = makeHarness(
+            mode: .microphoneAndSystemOutput,
+            response: response,
+            time: clock,
+            microphoneAttributionDelay: .milliseconds(5),
+            soleNearbySpeakerConfirmed: true
+        )
+        try await prepareAndStart(harness)
+        try await harness.controller.submitTypedQuestion("How should we isolate the queue?")
+
+        let quickArrived = await eventually {
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
+        }
+        XCTAssertTrue(quickArrived)
+        await deepBarrier.waitUntilEntered()
+        let cancelCountBeforeSpeech = await response.cancelCount
+
+        clock.set(12)
+        let partialQuick = "I would separate the boundary"
+        await harness.microphoneTranscriber.emit(
+            .result(
+                transcript(
+                    .microphone,
+                    partialQuick,
+                    confidence: 0.94,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+        let partialBecameFinal = await eventually {
+            await harness.controller.state().transcript.contains {
+                $0.source == .you && $0.text == partialQuick && $0.isFinal
+            }
+        }
+        XCTAssertTrue(partialBecameFinal)
+        let cancelCountAfterSpeech = await response.cancelCount
+        XCTAssertEqual(cancelCountAfterSpeech, cancelCountBeforeSpeech)
+
+        await deepBarrier.release()
+        let deepArrived = await eventually {
+            await harness.controller.state().suggestions.contains { $0.stage == .deep }
+        }
+        XCTAssertTrue(deepArrived)
+        let cancelCountAfterDeep = await response.cancelCount
+        XCTAssertEqual(cancelCountAfterDeep, cancelCountBeforeSpeech)
+        _ = await harness.controller.stop()
+    }
+
     func testDismissDropsDeepQueuedWhileTheBridgeIsBeingSpoken() async throws {
         let clock = LockedMeetingTime(10)
         let deepBarrier = AudioOperationBarrier()
@@ -1693,7 +2224,8 @@ final class MeetingSessionControllerTests: XCTestCase {
         let stateAfterDismiss = await harness.controller.state()
         XCTAssertTrue(stateAfterDismiss.suggestions.isEmpty)
 
-        let finalBridge = "Let me think through that carefully for a second."
+        let finalBridge =
+            "I'd start by clarifying the goal and constraints, then walk through the tradeoffs before committing to an approach."
         await harness.microphoneTranscriber.emit(
             .result(
                 transcript(
@@ -1720,9 +2252,11 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testClearlyAttributedUserSpeechCancelsDeepAndPreservesDisplayedCue() async throws {
+    func testClearlyAttributedUserSpeechHoldsDeepUntilFinalTranscript() async throws {
         let clock = LockedMeetingTime(10)
-        let response = FakeMeetingResponseGenerator(slowDeepGenerations: [1])
+        let deepBarrier = AudioOperationBarrier()
+        await deepBarrier.arm()
+        let response = FakeMeetingResponseGenerator(deepBarrier: deepBarrier)
         let harness = makeHarness(
             mode: .microphoneAndSystemOutput,
             response: response,
@@ -1752,6 +2286,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(cueArrived)
         let stateWithCue = await harness.controller.state()
         let cue = try XCTUnwrap(stateWithCue.suggestions.first { $0.stage == .quick })
+        await deepBarrier.waitUntilEntered()
         let cancelCountBeforeSpeech = await response.cancelCount
 
         clock.set(12)
@@ -1775,9 +2310,19 @@ final class MeetingSessionControllerTests: XCTestCase {
         }
         let cancelCountAfterVolatile = await response.cancelCount
         let stateAfterVolatile = await harness.controller.state()
+        let holdAfterVolatile = await harness.controller.bridgeSpeechRetentionSnapshot()
         XCTAssertTrue(volatileSpeechVisible)
         XCTAssertEqual(cancelCountAfterVolatile, cancelCountBeforeSpeech)
         XCTAssertEqual(stateAfterVolatile.suggestions, [cue])
+        XCTAssertTrue(holdAfterVolatile.hasActiveHold)
+
+        await deepBarrier.release()
+        let deepQueued = await eventually {
+            await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+        }
+        let stateWithQueuedDeep = await harness.controller.state()
+        XCTAssertTrue(deepQueued)
+        XCTAssertFalse(stateWithQueuedDeep.suggestions.contains { $0.stage == .deep })
 
         await harness.microphoneTranscriber.emit(
             .result(
@@ -1790,23 +2335,278 @@ final class MeetingSessionControllerTests: XCTestCase {
             )
         )
 
-        let localSpeechInvalidatedDeep = await eventually {
+        let finalSpeechReleasedDeep = await eventually {
             let state = await harness.controller.state()
             let cancelCount = await response.cancelCount
             return state.transcript.contains {
                 $0.source == .you && $0.text == substantiveResponse && $0.isFinal
             }
-                && state.suggestions == [cue]
-                && cancelCount > cancelCountBeforeSpeech
+                && state.suggestions.contains { $0.stage == .deep }
+                && cancelCount == cancelCountBeforeSpeech
         }
-        XCTAssertTrue(localSpeechInvalidatedDeep)
-        await harness.controller.dismissSuggestion(identity: cue.identity)
-        let stateAfterDismiss = await harness.controller.state()
-        let timingAfterDismiss = await harness.controller.timingSnapshot()
-        XCTAssertTrue(stateAfterDismiss.suggestions.isEmpty)
-        XCTAssertEqual(timingAfterDismiss.userDismissedCount, 1)
-        XCTAssertEqual(timingAfterDismiss.samples.first?.invalidationOutcome, .localSpeech)
-        XCTAssertEqual(timingAfterDismiss.samples.first?.userDismissed, true)
+        let finalRetention = await harness.controller.bridgeSpeechRetentionSnapshot()
+        XCTAssertTrue(finalSpeechReleasedDeep)
+        XCTAssertFalse(finalRetention.hasActiveHold)
+        XCTAssertFalse(finalRetention.hasQueuedDeep)
+        _ = await harness.controller.stop()
+    }
+
+    func testHeldDeepReleasesWhenFinalMicrophoneAttributionChanges() async throws {
+        let localSpeech = "I would separate the boundary before changing it"
+        let cases: [(overlappingOutput: String, suppressesEcho: Bool)] = [
+            (localSpeech, true),
+            ("The remote speaker is still finishing a different thought", false),
+        ]
+
+        for testCase in cases {
+            let clock = LockedMeetingTime(10)
+            let deepBarrier = AudioOperationBarrier()
+            await deepBarrier.arm()
+            let response = FakeMeetingResponseGenerator(deepBarrier: deepBarrier)
+            let harness = makeHarness(
+                mode: .microphoneAndSystemOutput,
+                response: response,
+                time: clock,
+                microphoneAttributionDelay: .milliseconds(5),
+                soleNearbySpeakerConfirmed: true
+            )
+            try await prepareAndStart(harness)
+
+            await harness.outputTranscriber.emit(
+                .result(
+                    transcript(
+                        .output,
+                        "The remote speaker finished the previous thought",
+                        confidence: 0.94,
+                        hostTimeRange: hostTimeRange(start: 10)
+                    )
+                )
+            )
+            let initialOutputVisible = await eventually {
+                await harness.controller.state().transcript.contains {
+                    $0.source == .them && $0.text == "The remote speaker finished the previous thought"
+                }
+            }
+            XCTAssertTrue(initialOutputVisible)
+
+            try await harness.controller.submitTypedQuestion("How should we isolate the queue?")
+            let quickArrived = await eventually {
+                await harness.controller.state().suggestions.contains { $0.stage == .quick }
+            }
+            XCTAssertTrue(quickArrived)
+            await deepBarrier.waitUntilEntered()
+
+            clock.set(12)
+            await harness.microphoneTranscriber.emit(
+                .result(
+                    transcript(
+                        .microphone,
+                        localSpeech,
+                        stability: .volatile,
+                        confidence: 0.94,
+                        hostTimeRange: hostTimeRange(start: 12)
+                    )
+                )
+            )
+            let holdActivated = await eventually {
+                await harness.controller.bridgeSpeechRetentionSnapshot().hasActiveHold
+            }
+            XCTAssertTrue(holdActivated)
+
+            await deepBarrier.release()
+            let deepQueued = await eventually {
+                await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+            }
+            XCTAssertTrue(deepQueued)
+
+            await harness.outputTranscriber.emit(
+                .result(
+                    transcript(
+                        .output,
+                        testCase.overlappingOutput,
+                        confidence: 0.95,
+                        hostTimeRange: hostTimeRange(start: 12)
+                    )
+                )
+            )
+            let overlappingOutputVisible = await eventually {
+                await harness.controller.state().transcript.contains {
+                    $0.source == .them && $0.text == testCase.overlappingOutput
+                }
+            }
+            XCTAssertTrue(overlappingOutputVisible)
+
+            await harness.microphoneTranscriber.emit(
+                .result(
+                    transcript(
+                        .microphone,
+                        localSpeech,
+                        confidence: 0.94,
+                        hostTimeRange: hostTimeRange(start: 12)
+                    )
+                )
+            )
+
+            let deepReleased = await eventually {
+                let state = await harness.controller.state()
+                let retention = await harness.controller.bridgeSpeechRetentionSnapshot()
+                return state.suggestions.contains { $0.stage == .deep }
+                    && !retention.hasActiveHold
+                    && !retention.hasQueuedDeep
+            }
+            let finalState = await harness.controller.state()
+            XCTAssertTrue(deepReleased)
+            if testCase.suppressesEcho {
+                XCTAssertFalse(finalState.transcript.contains { $0.source == .you })
+            } else {
+                XCTAssertTrue(
+                    finalState.transcript.contains {
+                        $0.source == .unknown && $0.text == localSpeech
+                    }
+                )
+            }
+            _ = await harness.controller.stop()
+        }
+    }
+
+    func testHeldDeepReleasesAfterVolatileEchoSuppressionThenDifferentFinalAttribution()
+        async throws
+    {
+        let localSpeech = "I would separate the boundary before changing it"
+        let clock = LockedMeetingTime(10)
+        let deepBarrier = AudioOperationBarrier()
+        await deepBarrier.arm()
+        let response = FakeMeetingResponseGenerator(deepBarrier: deepBarrier)
+        let harness = makeHarness(
+            mode: .microphoneAndSystemOutput,
+            response: response,
+            time: clock,
+            microphoneAttributionDelay: .milliseconds(5),
+            soleNearbySpeakerConfirmed: true
+        )
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "The remote speaker finished the previous thought",
+                    confidence: 0.94,
+                    hostTimeRange: hostTimeRange(start: 10)
+                )
+            )
+        )
+        let initialOutputVisible = await eventually {
+            await harness.controller.state().transcript.contains {
+                $0.source == .them && $0.text == "The remote speaker finished the previous thought"
+            }
+        }
+        XCTAssertTrue(initialOutputVisible)
+
+        try await harness.controller.submitTypedQuestion("How should we isolate the queue?")
+        let quickArrived = await eventually {
+            await harness.controller.state().suggestions.contains { $0.stage == .quick }
+        }
+        XCTAssertTrue(quickArrived)
+        await deepBarrier.waitUntilEntered()
+
+        clock.set(12)
+        await harness.microphoneTranscriber.emit(
+            .result(
+                transcript(
+                    .microphone,
+                    localSpeech,
+                    stability: .volatile,
+                    confidence: 0.94,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+        let holdActivated = await eventually {
+            await harness.controller.bridgeSpeechRetentionSnapshot().hasActiveHold
+        }
+        XCTAssertTrue(holdActivated)
+
+        await deepBarrier.release()
+        let deepQueued = await eventually {
+            await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+        }
+        XCTAssertTrue(deepQueued)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    localSpeech,
+                    confidence: 0.95,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+        await harness.microphoneTranscriber.emit(
+            .result(
+                transcript(
+                    .microphone,
+                    localSpeech,
+                    stability: .volatile,
+                    confidence: 0.94,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+
+        let volatileEchoSuppressed = await eventually {
+            let state = await harness.controller.state()
+            let retention = await harness.controller.bridgeSpeechRetentionSnapshot()
+            return !state.transcript.contains {
+                $0.source == .you && $0.text == localSpeech
+            }
+                && retention.hasActiveHold
+                && retention.hasQueuedDeep
+                && !state.suggestions.contains { $0.stage == .deep }
+        }
+        XCTAssertTrue(volatileEchoSuppressed)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "The remote speaker is finishing a different thought",
+                    confidence: 0.95,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+        let changedOutputVisible = await eventually {
+            await harness.controller.state().transcript.contains {
+                $0.source == .them
+                    && $0.text == "The remote speaker is finishing a different thought"
+            }
+        }
+        XCTAssertTrue(changedOutputVisible)
+
+        await harness.microphoneTranscriber.emit(
+            .result(
+                transcript(
+                    .microphone,
+                    localSpeech,
+                    confidence: 0.94,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+
+        let deepReleased = await eventually {
+            let state = await harness.controller.state()
+            let retention = await harness.controller.bridgeSpeechRetentionSnapshot()
+            return state.transcript.contains {
+                $0.source == .unknown && $0.text == localSpeech && $0.isFinal
+            }
+                && state.suggestions.contains { $0.stage == .deep }
+                && !retention.hasActiveHold
+                && !retention.hasQueuedDeep
+        }
+        XCTAssertTrue(deepReleased)
         _ = await harness.controller.stop()
     }
 
@@ -1924,14 +2724,18 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         usesRealtimeQuick: true
     )
     let shutdownReport: MeetingResponseCleanupReport
+    let slowQuickGenerations: Set<UInt64>
     let slowDeepGenerations: Set<UInt64>
     let deepKind: DeepDraftKind
     let prepareBarrier: AudioOperationBarrier?
     let deepBarrier: AudioOperationBarrier?
     let cancelBarrier: AudioOperationBarrier?
     let prepareFailure: MeetingResponseError?
+    private var quickFailuresRemaining: Int
+    private let quickFailure: MeetingResponseError
     private var deepFailuresRemaining: Int
     private let deepFailure: MeetingResponseError
+    private var quickCleanupFailuresRemaining: Int
     private(set) var prepareCount = 0
     private(set) var cancelCount = 0
     private(set) var shutdownCount = 0
@@ -1939,6 +2743,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     private(set) var deepRequestedTurns: [ConversationTurn] = []
 
     init(
+        slowQuickGenerations: Set<UInt64> = [],
         slowDeepGenerations: Set<UInt64> = [],
         shutdownReport: MeetingResponseCleanupReport = .init(),
         deepKind: DeepDraftKind = .generalAnswer,
@@ -1946,9 +2751,13 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         deepBarrier: AudioOperationBarrier? = nil,
         cancelBarrier: AudioOperationBarrier? = nil,
         prepareFailure: MeetingResponseError? = nil,
+        quickFailuresRemaining: Int = 0,
+        quickFailure: MeetingResponseError = .runtimeUnavailable,
+        quickCleanupFailuresRemaining: Int = 0,
         deepFailuresRemaining: Int = 0,
         deepFailure: MeetingResponseError = .runtimeUnavailable
     ) {
+        self.slowQuickGenerations = slowQuickGenerations
         self.slowDeepGenerations = slowDeepGenerations
         self.shutdownReport = shutdownReport
         self.deepKind = deepKind
@@ -1956,6 +2765,9 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         self.deepBarrier = deepBarrier
         self.cancelBarrier = cancelBarrier
         self.prepareFailure = prepareFailure
+        self.quickFailuresRemaining = max(0, quickFailuresRemaining)
+        self.quickFailure = quickFailure
+        self.quickCleanupFailuresRemaining = max(0, quickCleanupFailuresRemaining)
         self.deepFailuresRemaining = max(0, deepFailuresRemaining)
         self.deepFailure = deepFailure
     }
@@ -1979,7 +2791,15 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
 
     func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
         requestedTurns.append(turn)
-        await Task.yield()
+        if quickFailuresRemaining > 0 {
+            quickFailuresRemaining -= 1
+            throw quickFailure
+        }
+        if slowQuickGenerations.contains(turn.identity.generation) {
+            try await Task.sleep(for: .seconds(30))
+        } else {
+            await Task.yield()
+        }
         try Task.checkCancellation()
         return QuickModelOutput(
             turnID: turn.identity.turnID,
@@ -2013,6 +2833,12 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
             confidence: 0.9,
             basis: []
         )
+    }
+
+    func awaitQuickCleanup(for _: TurnIdentity) async throws {
+        guard quickCleanupFailuresRemaining > 0 else { return }
+        quickCleanupFailuresRemaining -= 1
+        throw MeetingResponseError.cleanupFailed
     }
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) -> Reconciliation {

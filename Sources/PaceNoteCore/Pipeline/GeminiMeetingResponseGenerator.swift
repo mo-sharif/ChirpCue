@@ -76,6 +76,10 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
     private var responseRuntime: MeetingResponseRuntime?
     private var preparedSubscription: GeminiSubscriptionStatus?
     private var activePreparation: ActivePreparation?
+    private var preparationCleanupInProgress = false
+    #if DEBUG
+        private var preparationFailureResumedTestHook: (@Sendable (UUID) async -> Void)?
+    #endif
     private var activeDeep: ActiveDeep?
     private var governor: UsageGovernor
     private var shutdownTask: Task<MeetingResponseCleanupReport, Never>?
@@ -116,6 +120,14 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
         self.governor = UsageGovernor(quickPerMinute: 0, deepPerMinute: configuration.deepPerMinute)
     }
 
+    #if DEBUG
+        func setPreparationFailureResumedTestHook(
+            _ hook: (@Sendable (UUID) async -> Void)?
+        ) {
+            preparationFailureResumedTestHook = hook
+        }
+    #endif
+
     public func prepare() async throws -> MeetingResponseRuntime {
         try requireOpen()
         if let responseRuntime { return responseRuntime }
@@ -134,14 +146,28 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             try requireOpen()
             return prepared
         } catch {
-            if activePreparation?.id == operation.id { activePreparation = nil }
-            isolatedRuntime = nil
-            responseRuntime = nil
-            preparedSubscription = nil
-            try? Self.removeRuntimeRoot(
-                configuration.runtimeRoot,
-                meetingPrivateRoot: configuration.meetingPrivateRoot
-            )
+            if lifecycle == .open,
+                activePreparation?.id == operation.id,
+                !preparationCleanupInProgress
+            {
+                preparationCleanupInProgress = true
+                isolatedRuntime = nil
+                responseRuntime = nil
+                preparedSubscription = nil
+                try? Self.removeRuntimeRoot(
+                    configuration.runtimeRoot,
+                    meetingPrivateRoot: configuration.meetingPrivateRoot
+                )
+                if activePreparation?.id == operation.id {
+                    activePreparation = nil
+                }
+                preparationCleanupInProgress = false
+            }
+            #if DEBUG
+                if let preparationFailureResumedTestHook {
+                    await preparationFailureResumedTestHook(operation.id)
+                }
+            #endif
             if error is CancellationError { throw CancellationError() }
             throw Self.map(error)
         }
@@ -152,7 +178,7 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
         return QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
-            sayNow: "Let me take a second to check the details.",
+            sayNow: ResponseCoordinatorConfiguration.deterministicFallback,
             needsDeep: true,
             confidence: 1,
             reason: "deterministic_safety_bridge"
@@ -162,11 +188,17 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
     public func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
         try requirePrepared(for: turn)
         guard activeDeep == nil else { throw MeetingResponseError.deepAlreadyActive }
-        guard governor.begin(.deep) == .admitted else {
+        let reservation: GovernorReservation
+        switch governor.reserve(.deep) {
+        case .reserved(let admitted):
+            reservation = admitted
+        case .deepAlreadyActive:
+            throw MeetingResponseError.deepAlreadyActive
+        case .quickRateLimited, .deepRateLimited:
             throw MeetingResponseError.deepRateLimited
         }
         let id = UUID()
-        let worker = Task { try await self.performDeep(for: turn) }
+        let worker = Task { try await self.performDeep(for: turn, reservation: reservation) }
         activeDeep = ActiveDeep(id: id, task: worker)
         let result = await withTaskCancellationHandler {
             await worker.result
@@ -175,6 +207,12 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             Task { await self.runner.cancelActive() }
         }
         finishDeep(id: id)
+        switch result {
+        case .success:
+            governor.finish(reservation)
+        case .failure(let error):
+            governor.finish(reservation, refundCommitted: error is CancellationError)
+        }
         return try result.get()
     }
 
@@ -230,8 +268,10 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
         return prepared
     }
 
-    private func performDeep(for turn: ConversationTurn) async throws -> DeepDraft {
-        defer { governor.endDeep() }
+    private func performDeep(
+        for turn: ConversationTurn,
+        reservation: GovernorReservation
+    ) async throws -> DeepDraft {
         do {
             try Task.checkCancellation()
             guard let runtime = isolatedRuntime, responseRuntime != nil else {
@@ -267,6 +307,7 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             try executableRevalidator(runtime)
             try GeminiRuntimeBuilder.writeInput(input, runtime: runtime)
             try Task.checkCancellation()
+            governor.commit(reservation)
             let result = try await runner.run(
                 ClaudeCommandRequest(
                     executableURL: runtime.executableURL,
@@ -332,6 +373,7 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             await runner.cancelActive()
             _ = await activePreparation.task.result
             self.activePreparation = nil
+            preparationCleanupInProgress = false
         }
         if let activeDeep {
             activeDeep.task.cancel()

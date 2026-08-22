@@ -151,8 +151,16 @@ public struct MeetingBrownout: Identifiable, Equatable, Sendable {
             "The selected provider version is not compatible with ChirpCue."
         case .appServerCrashed:
             "The selected provider process stopped unexpectedly."
+        case .providerLimited:
+            "The selected provider's subscription capacity is temporarily unavailable."
         case .quickLimited:
-            "The quick response path is temporarily limited."
+            "ChirpCue's local quick response limit was reached."
+        case .quickTimedOut:
+            "The quick response did not finish before its deadline."
+        case .quickUnavailable:
+            "The quick response provider is unavailable."
+        case .quickRejected:
+            "The quick response did not pass local validation."
         case .deepLimited:
             "The grounded response path is temporarily limited."
         case .deepBusy:
@@ -274,7 +282,7 @@ public enum MeetingSessionFailure: Error, Equatable, LocalizedError, Sendable {
         case .responseProtocolUnsupported:
             "The installed provider version is not compatible with ChirpCue."
         case .responseRateLimited:
-            "The selected provider is temporarily rate limited. Wait for its allowance to reset, then choose Recheck and start again."
+            "The selected provider's subscription capacity is temporarily unavailable. Wait for its allowance to reset, then choose Recheck."
         case .responseUnavailable:
             "The selected provider response runtime could not be prepared."
         case .captureUnavailable(let lane):

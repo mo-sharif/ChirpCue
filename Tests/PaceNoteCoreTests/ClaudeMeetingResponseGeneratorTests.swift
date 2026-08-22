@@ -24,7 +24,10 @@ final class ClaudeMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(runtime.quickRoute, CodexModelRoute(model: "local-deterministic-bridge", effort: "none"))
         XCTAssertEqual(runtime.deepRoute, CodexModelRoute(model: "sonnet", effort: "high"))
         XCTAssertFalse(runtime.usesRealtimeQuick)
-        XCTAssertEqual(quick.sayNow, "Let me think through that carefully for a second.")
+        XCTAssertEqual(
+            quick.sayNow,
+            "I'd start by clarifying the goal and constraints, then walk through the tradeoffs before committing to an approach."
+        )
         XCTAssertTrue(quick.needsDeep)
         let requests = await runner.requests()
         let report = await generator.shutdown()

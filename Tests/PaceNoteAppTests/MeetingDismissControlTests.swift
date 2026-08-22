@@ -40,7 +40,7 @@ final class MeetingDismissControlTests: XCTestCase {
         XCTAssertTrue(meetingWindow.contains("Retry Deep Answer"))
         XCTAssertTrue(
             meetingWindow.contains(
-                "The temporary bridge is complete; no deeper answer arrived."
+                "The quick answer stays available; no detailed answer arrived."
             )
         )
     }

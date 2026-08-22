@@ -6,7 +6,7 @@
 - macOS 26 or newer
 - Xcode 26 with Swift 6.2 or newer
 - Git
-- ChatGPT with Codex access, or a personal Claude.ai Pro/Max subscription with official Claude Code
+- One supported provider: ChatGPT with Codex access; a personal Claude.ai Pro/Max subscription with official Claude Code; or Google sign-in through the official Antigravity CLI
 
 ## One-command source install
 
@@ -44,6 +44,7 @@ Until those gates pass, GitHub source archives are downloads of the source code,
 
 - **Codex sign-in cannot save credentials:** use the latest revision. ChirpCue isolates `CODEX_HOME` while preserving the real macOS `HOME` so Security.framework can resolve the default Keychain.
 - **Claude signed out:** run `claude auth login --claudeai`, confirm the personal subscription, then choose **Recheck**.
+- **Gemini signed out:** choose **Sign in with Google** in ChirpCue, complete the official Antigravity terminal and browser flow, then choose **Recheck Accounts**.
 - **No meeting output:** open the meeting first, route its audio through this Mac, choose **Reload Sources**, and select the meeting app or the explicit all-system-output fallback.
 - **No transcript:** grant Microphone, System Audio Recording, and Speech Recognition permission in System Settings, then quit and reopen ChirpCue.
 - **Deep is rate-limited:** wait for the rolling local limit and choose **Retry Answer**. This does not necessarily mean the provider subscription is exhausted.

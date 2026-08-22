@@ -6,6 +6,132 @@ import XCTest
 
 @MainActor
 final class MeetingViewModelTests: XCTestCase {
+    func testProviderLimitedConnectionRemainsEligibleForMeetingSetup() {
+        let state = InferenceConnectionState.readyLimited(
+            InferenceAccountSummary(
+                accountLabel: "m•••@example.com",
+                planLabel: "ChatGPT Pro",
+                modelCount: 2
+            ),
+            "Model capacity is temporarily exhausted."
+        )
+
+        XCTAssertTrue(state.isReady)
+    }
+
+    func testUnreadCapacityHasNeutralReadyCopy() {
+        let account = InferenceAccountSummary(
+            accountLabel: "m•••@example.com",
+            planLabel: "ChatGPT Pro",
+            modelCount: 2
+        )
+        let state = InferenceConnectionState.readyCapacityUnconfirmed(
+            account,
+            "Model capacity will be checked before use."
+        )
+
+        XCTAssertTrue(state.isReady)
+        XCTAssertEqual(state.shortLabel, "Ready, capacity unconfirmed")
+        XCTAssertTrue(state.detail(for: .codex).contains("checked before use"))
+    }
+
+    func testLocalAndProviderCapacityTitlesAreExplicitlyDistinct() {
+        XCTAssertEqual(
+            BrownoutReason.quickLimited.userTitle(for: .codex),
+            "ChirpCue's local Quick limit was reached"
+        )
+        XCTAssertEqual(
+            BrownoutReason.providerLimited.userTitle(for: .codex),
+            "Codex subscription capacity is limited"
+        )
+    }
+
+    func testActiveProviderCapacityStateTracksOnlyValidatedModelResponses() async throws {
+        let account = InferenceAccountSummary(
+            accountLabel: "active account",
+            planLabel: "Personal plan",
+            modelCount: 2
+        )
+
+        for provider in MeetingInferenceProvider.allCases {
+            let events = EventHarness()
+            let model = MeetingViewModel(
+                actions: Self.actions(
+                    events: events,
+                    codexState: provider == .codex ? .ready(account) : .notChecked,
+                    claudeState: provider == .claude ? .ready(account) : .notChecked,
+                    geminiState: provider == .gemini ? .ready(account) : .notChecked
+                ),
+                hasCompletedFirstRun: true,
+                microphoneEnabled: true,
+                outputEnabled: false,
+                selectedProvider: provider
+            )
+            await model.bootstrap()
+            model.meetingConsent.participantPermission = true
+            model.meetingConsent.captureScopeConfirmed = true
+            model.meetingConsent.openAIProcessingConfirmed = true
+            await model.startMeeting()
+
+            await events.emit(.brownoutActivated(.init(reason: .providerLimited)))
+            try await Self.eventually {
+                if case .readyLimited = model.selectedProviderState { return true }
+                return false
+            }
+
+            let identity = TurnIdentity(meetingID: UUID(), generation: 1)
+            await events.emit(
+                .suggestionUpserted(
+                    SuggestionCard(identity: identity, stage: .bridge, text: "Let me verify that.")
+                )
+            )
+            try await Task.sleep(for: .milliseconds(10))
+            if case .readyLimited = model.selectedProviderState {
+                // Expected: a local bridge proves no provider capacity.
+            } else {
+                XCTFail("The local bridge incorrectly restored \(provider.shortTitle) capacity.")
+            }
+
+            let stage: SuggestionStage = provider == .codex ? .quick : .deep
+            await events.emit(
+                .suggestionUpserted(
+                    SuggestionCard(identity: identity, stage: stage, text: "Here is the verified response.")
+                )
+            )
+            try await Task.sleep(for: .milliseconds(10))
+            if case .readyLimited = model.selectedProviderState {
+                // Expected: same-generation success cannot supersede the capacity failure.
+            } else {
+                XCTFail("Same-generation output incorrectly restored \(provider.shortTitle) capacity.")
+            }
+
+            await events.emit(.brownoutCleared(.init(reason: .providerLimited)))
+            await events.emit(
+                .suggestionUpserted(
+                    SuggestionCard(
+                        identity: .init(meetingID: identity.meetingID, generation: 2),
+                        stage: stage,
+                        text: "Here is the recovered response."
+                    )
+                )
+            )
+            try await Self.eventually { model.selectedProviderState == .ready(account) }
+
+            switch provider {
+            case .codex:
+                XCTAssertEqual(model.claudeState, .notChecked)
+                XCTAssertEqual(model.geminiState, .notChecked)
+            case .claude:
+                XCTAssertEqual(model.codexState, .notChecked)
+                XCTAssertEqual(model.geminiState, .notChecked)
+            case .gemini:
+                XCTAssertEqual(model.codexState, .notChecked)
+                XCTAssertEqual(model.claudeState, .notChecked)
+            }
+            await model.stop()
+        }
+    }
+
     func testUnavailableRuntimeSurfacesItsSafeStartupReason() async {
         let reason = "The dedicated ChirpCue Codex profile is already in use."
         let model = MeetingViewModel(
@@ -627,6 +753,18 @@ final class MeetingViewModelTests: XCTestCase {
             BrownoutReason.deepLimited.recoveryGuidance(for: .codex),
             "Wait up to one minute, then use Retry Answer. This local pause does not mean your Codex subscription is exhausted."
         )
+        XCTAssertEqual(
+            BrownoutReason.quickTimedOut.userTitle(for: .codex),
+            "Quick coaching timed out"
+        )
+        XCTAssertEqual(
+            BrownoutReason.quickUnavailable.userTitle(for: .claude),
+            "Quick coaching is unavailable"
+        )
+        XCTAssertEqual(
+            BrownoutReason.quickRejected.userTitle(for: .gemini),
+            "Quick answer failed validation"
+        )
     }
 
     func testProviderAccountActionsAreBlockedDuringAnActiveMeeting() async {
@@ -826,6 +964,92 @@ final class MeetingViewModelTests: XCTestCase {
 
         model.outputEnabled = true
         XCTAssertTrue(model.canCoachCurrentTurn)
+    }
+
+    func testIntentionalOutputOnlyScopeIsNotPresentedAsLimitedMode() {
+        let model = MeetingViewModel(hasCompletedFirstRun: true, microphoneEnabled: false)
+
+        model.updateBrownouts([.microphoneDisabled])
+
+        XCTAssertEqual(model.brownouts, [.microphoneDisabled])
+        XCTAssertTrue(model.limitedModeBrownouts.isEmpty)
+    }
+
+    func testQuickFailureStateKeepsFallbackStatusAccurate() async throws {
+        let events = EventHarness()
+        let model = MeetingViewModel(
+            actions: Self.actions(events: events),
+            hasCompletedFirstRun: true
+        )
+        await model.bootstrap()
+        model.phase = .listening
+        let card = SuggestionCard(
+            identity: TurnIdentity(meetingID: UUID(), generation: 1),
+            stage: .bridge,
+            text: "Let me verify that."
+        )
+
+        await events.emit(.suggestionUpserted(card))
+        await events.emit(
+            .stateChanged(
+                MeetingSessionState(
+                    phase: .suggesting,
+                    captureMode: .systemOutputOnly,
+                    consentConfirmed: true,
+                    isPrepared: true,
+                    isRunning: true,
+                    runtime: nil,
+                    transcript: [],
+                    suggestions: [card],
+                    brownouts: [.init(reason: .quickTimedOut)]
+                )
+            )
+        )
+
+        try await Self.eventually {
+            model.quickSuggestion == card
+                && model.statusDetail
+                    == "A safe fallback is ready; the Quick response did not finish."
+        }
+        XCTAssertEqual(model.brownouts, [.quickTimedOut])
+    }
+
+    func testRealQuickWithDeepFailureIsNeverDescribedAsABridge() async throws {
+        let events = EventHarness()
+        let model = MeetingViewModel(
+            actions: Self.actions(events: events),
+            hasCompletedFirstRun: true
+        )
+        await model.bootstrap()
+        model.phase = .listening
+        let card = SuggestionCard(
+            identity: TurnIdentity(meetingID: UUID(), generation: 1),
+            stage: .quick,
+            text: "I would start with the failure boundary."
+        )
+
+        await events.emit(.suggestionUpserted(card))
+        await events.emit(
+            .stateChanged(
+                MeetingSessionState(
+                    phase: .suggesting,
+                    captureMode: .systemOutputOnly,
+                    consentConfirmed: true,
+                    isPrepared: true,
+                    isRunning: true,
+                    runtime: nil,
+                    transcript: [],
+                    suggestions: [card],
+                    brownouts: [.init(reason: .deepTimedOut)]
+                )
+            )
+        )
+
+        try await Self.eventually {
+            model.quickSuggestion == card
+                && model.statusDetail == "A quick response is ready, but no deeper answer arrived."
+        }
+        XCTAssertFalse(model.statusDetail.localizedCaseInsensitiveContains("bridge"))
     }
 
     func testDismissForwardsDisplayedIdentityAndClearsOnlySuggestionCards() async throws {

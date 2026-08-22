@@ -68,9 +68,12 @@ final class TurnDetectorTests: XCTestCase {
 
     func testCommonSpokenQuestionWithoutPunctuationTriggersAutomatically() {
         let questions = [
-            "Where's your plan for securing database access",
+            "Where’s your plan for securing database access",
             "Talk me through the retry strategy",
             "Describe how you would isolate the service",
+            "Have you handled a production incident",
+            "Should we isolate this at the network boundary",
+            "Outline the tradeoffs of the migration",
         ]
 
         for (index, question) in questions.enumerated() {
@@ -85,7 +88,99 @@ final class TurnDetectorTests: XCTestCase {
                     confidence: 0.9
                 )
             )
-            XCTAssertEqual(detector.candidate(at: Double(index + 1))?.text, question)
+            let expected = question.replacingOccurrences(of: "’", with: "'")
+            XCTAssertEqual(detector.candidate(at: Double(index + 1))?.text, expected)
         }
+    }
+
+    func testShortDirectPromptTriggersAutomatically() {
+        let prompts = ["Why us?", "Any concerns", "Thoughts?"]
+
+        for prompt in prompts {
+            var detector = TurnDetector()
+            detector.observe(
+                TranscriptSegment(
+                    source: .them,
+                    text: prompt,
+                    startedAt: 1,
+                    endedAt: 2,
+                    isFinal: true,
+                    confidence: 0.9
+                )
+            )
+
+            XCTAssertEqual(detector.candidate(at: 2)?.text, prompt)
+        }
+    }
+
+    func testFinalRevisionOfEmittedSegmentDoesNotTriggerSecondTurn() {
+        var detector = TurnDetector(configuration: .init(minimumSilence: 0.45))
+        let segmentID = UUID()
+        detector.observe(
+            TranscriptSegment(
+                id: segmentID,
+                source: .them,
+                text: "How should we isolate database access",
+                startedAt: 1,
+                endedAt: 2,
+                isFinal: false,
+                confidence: 0.9
+            )
+        )
+
+        XCTAssertNotNil(detector.candidate(at: 2.5))
+
+        detector.observe(
+            TranscriptSegment(
+                id: segmentID,
+                source: .them,
+                text: "How should we isolate database access?",
+                startedAt: 1,
+                endedAt: 2.6,
+                isFinal: true,
+                confidence: 0.95
+            )
+        )
+
+        XCTAssertNil(detector.candidate(at: 2.6))
+    }
+
+    func testMateriallyExpandedFinalRevisionOfEmittedSegmentTriggersCorrectedTurn() {
+        var detector = TurnDetector(configuration: .init(minimumSilence: 0.45))
+        let segmentID = UUID()
+        detector.observe(
+            TranscriptSegment(
+                id: segmentID,
+                source: .them,
+                text: "How should we secure database access",
+                startedAt: 1,
+                endedAt: 2,
+                isFinal: false,
+                confidence: 0.9
+            )
+        )
+
+        XCTAssertEqual(
+            detector.candidate(at: 2.5)?.text,
+            "How should we secure database access"
+        )
+
+        detector.observe(
+            TranscriptSegment(
+                id: segmentID,
+                source: .them,
+                text: "How should we secure database access through our MCP?",
+                startedAt: 1,
+                endedAt: 3,
+                isFinal: true,
+                confidence: 0.95
+            )
+        )
+
+        XCTAssertEqual(
+            detector.candidate(at: 3)?.text,
+            "How should we secure database access through our MCP?"
+        )
+        XCTAssertNil(detector.candidate(at: 3.1))
     }
 }

@@ -53,6 +53,7 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
     case protocolUnsupported
     case runtimeUnavailable
     case notPrepared
+    case providerCapacityUnavailable
     case quickRateLimited
     case deepRateLimited
     case deepAlreadyActive
@@ -76,8 +77,10 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
             "The selected provider's isolated local runtime is unavailable."
         case .notPrepared:
             "ChirpCue's response runtime is not ready."
+        case .providerCapacityUnavailable:
+            "The selected provider's subscription capacity is temporarily unavailable."
         case .quickRateLimited:
-            "Fast suggestions are temporarily rate limited."
+            "ChirpCue's local Quick start limit was reached."
         case .deepRateLimited:
             "ChirpCue's local Deep start limit was reached."
         case .deepAlreadyActive:

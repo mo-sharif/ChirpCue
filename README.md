@@ -30,14 +30,16 @@
 
 All screenshots use synthetic preview data and initiate no capture or provider request.
 
-ChirpCue captures your microphone and selected Mac meeting output into separate local transcript lanes. When it detects a question, it automatically starts a fast low-reasoning AI answer and a high-reasoning answer in parallel. The fast answer gives you natural words to say immediately; the detailed answer follows while you speak. A fixed local bridge appears only if the fast lane misses its deadline or fails.
+ChirpCue captures your microphone and selected Mac meeting output into separate local transcript lanes. With Codex, each detected question automatically starts a fast low-reasoning AI answer and a high-reasoning answer in parallel. The fast answer gives you natural words to say immediately; the detailed answer follows while you speak. Claude and Gemini show the same natural local bridge while their single Deep model turn runs. The bridge also keeps coaching responsive if Codex Quick misses its deadline, fails, or provider capacity is unavailable. Progressive and final updates from the same Speech segment produce at most one automatic response.
 
-You always speak for yourself. ChirpCue never speaks, pastes, sends, clicks, joins a meeting, records secretly, or changes code.
+When microphone speech is clearly attributed to you, ChirpCue keeps Deep working and holds the finished detailed answer until your local speech becomes final. You always speak for yourself. ChirpCue never speaks, pastes, sends, clicks, joins a meeting, records secretly, or changes code.
 
 ## What makes it different
 
 - **Universal Mac audio:** works with Google Meet, Zoom, Teams, or another meeting app by capturing the selected app's output.
-- **Two-stage AI help:** an automatic fast answer, followed by a higher-reasoning response; the local bridge is emergency fallback only.
+- **Two-stage AI help:** Codex provides automatic model Quick then Deep; Claude and Gemini use an immediate local bridge while Deep runs.
+- **Failure-resilient turns:** request-scoped Quick or Deep failures are labeled precisely and clear when the next question starts; provider-capacity warnings remain until a validated model response proves recovery.
+- **Quota-resilient listening:** a provider-capacity warning does not block meeting capture or transcription, and no model launch occurs until a bounded capacity recheck passes.
 - **Natural speaking prompts:** short first-person recommendations and clarifying questions instead of generic AI checklists.
 - **Optional codebase grounding:** one exact read-only sealed snapshot, with local evidence verification before a repository claim is shown.
 - **Subscription sign-in:** ChatGPT-authenticated Codex, a first-party personal Claude.ai Pro/Max login, or Gemini through Google sign-in in the official Antigravity CLI. No API keys.
@@ -66,7 +68,7 @@ Choose a provider in ChirpCue Settings:
 - **Claude via Claude.ai:** install the official Claude Code launcher and run `claude auth login --claudeai`, then choose **Recheck**. ChirpCue accepts only first-party personal Pro or Max authentication. Console, API key, cloud, gateway, Team, Enterprise, and managed-policy paths fail closed.
 - **Gemini via Google AI:** install the [official Antigravity CLI](https://antigravity.google/docs/cli/install), choose **Sign in with Google** in ChirpCue, complete the official terminal/browser flow, then choose **Recheck Accounts**. ChirpCue uses a scrubbed sign-in helper plus a fresh disposable inference home and never asks for a Gemini API key or Google Cloud credentials.
 
-Claude programmatic use can follow separate Agent SDK allowance and extra-usage terms. ChirpCue does not promise that it uses the same allowance as interactive Claude Code.
+Claude programmatic use can follow separate Agent SDK allowance and extra-usage terms. ChirpCue does not promise that it uses the same allowance as interactive Claude Code. Local rolling limits prevent duplicate or excessive launches, but they cannot remove provider-enforced subscription quotas, restore remote capacity, or guarantee that provider-side usage is refunded after cancellation.
 
 ## First meeting
 
@@ -78,7 +80,7 @@ Claude programmatic use can follow separate Agent SDK allowance and extra-usage 
 5. Confirm that participants have been informed and that you have permission to process the conversation.
 6. Start the meeting. ChirpCue automatically coaches likely questions; speak, edit, dismiss, retry, or ignore every suggestion yourself.
 
-Use **Pause** to stop capture temporarily. Use **Dismiss** to clear the current answer while transcription continues. Use **Stop** at the end so ChirpCue can join provider work, scrub memory, delete temporary state, and verify cleanup.
+Use **Pause** to stop capture temporarily. Use **Dismiss** to clear the current answer while transcription continues. Use **Stop** at the end so ChirpCue can join provider work, scrub memory, delete temporary state, and verify cleanup. A validated Quick answer can appear while its private fork cleanup is still tracked; a cleanup failure is shown and blocks further inference instead of being hidden.
 
 ## Safety boundaries
 
@@ -103,6 +105,6 @@ ChirpCue is licensed under the [Apache License 2.0](LICENSE). Community particip
 
 ## Current status
 
-This is an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
+Version 0.3.2 hardens automatic turn deduplication, Quick and Deep continuity, local usage accounting, and fail-closed cleanup. This remains an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
 
 ChirpCue is an independent open-source project and is not affiliated with or endorsed by Apple, Anthropic, Google, Microsoft, OpenAI, or Zoom.

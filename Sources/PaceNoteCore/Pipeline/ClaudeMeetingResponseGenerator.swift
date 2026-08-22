@@ -199,7 +199,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
         return QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
-            sayNow: "Let me think through that carefully for a second.",
+            sayNow: ResponseCoordinatorConfiguration.deterministicFallback,
             needsDeep: true,
             confidence: 1,
             reason: "deterministic_safety_bridge"
@@ -209,9 +209,10 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
     public func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
         try requirePrepared(for: turn)
         guard activeDeep == nil else { throw MeetingResponseError.deepAlreadyActive }
-        switch governor.begin(.deep) {
-        case .admitted:
-            break
+        let reservation: GovernorReservation
+        switch governor.reserve(.deep) {
+        case .reserved(let admitted):
+            reservation = admitted
         case .deepRateLimited:
             throw MeetingResponseError.deepRateLimited
         case .deepAlreadyActive:
@@ -221,7 +222,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
         }
 
         let id = UUID()
-        let worker = Task { try await self.performDeep(for: turn) }
+        let worker = Task { try await self.performDeep(for: turn, reservation: reservation) }
         activeDeep = ActiveDeep(id: id, task: worker)
 
         let result = await withTaskCancellationHandler {
@@ -231,6 +232,12 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
             Task { await self.runner.cancelActive() }
         }
         finishDeep(id: id)
+        switch result {
+        case .success:
+            governor.finish(reservation)
+        case .failure(let error):
+            governor.finish(reservation, refundCommitted: error is CancellationError)
+        }
         return try result.get()
     }
 
@@ -326,8 +333,10 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
         return prepared
     }
 
-    private func performDeep(for turn: ConversationTurn) async throws -> DeepDraft {
-        defer { governor.endDeep() }
+    private func performDeep(
+        for turn: ConversationTurn,
+        reservation: GovernorReservation
+    ) async throws -> DeepDraft {
         do {
             try Task.checkCancellation()
             guard let runtime = isolatedRuntime, responseRuntime != nil else {
@@ -371,6 +380,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
             try Task.checkCancellation()
             try managedPolicyValidator()
             try executableRevalidator(runtime)
+            governor.commit(reservation)
             let result = try await runner.run(
                 ClaudeCommandRequest(
                     executableURL: runtime.executableURL,

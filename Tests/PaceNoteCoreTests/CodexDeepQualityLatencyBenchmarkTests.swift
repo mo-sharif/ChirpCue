@@ -244,7 +244,7 @@ final class CodexDeepQualityLatencyBenchmarkTests: XCTestCase {
                 cue = value
             case .deep(let value):
                 bound = value
-            case .quickUnavailable, .deepUnavailable, .discardedStale:
+            case .quickUnavailable, .quickCleanupUnavailable, .deepUnavailable, .discardedStale:
                 throw DeepBenchmarkError.invalidCard
             }
         }
@@ -675,7 +675,10 @@ private final class DeepBenchmarkFixture: @unchecked Sendable {
         var preserveForRecovery = false
         defer {
             if !initialized, !preserveForRecovery {
-                try? FileManager.default.removeItem(at: allocatedRoot)
+                try? LiveSmokeStorageCleanup.removeOwnedRoot(
+                    allocatedRoot,
+                    applicationRoot: roots.applicationRoot
+                )
             }
         }
 
@@ -1395,21 +1398,11 @@ private final class DeepBenchmarkFixture: @unchecked Sendable {
     }
 
     private func removeOwnedRoot() throws {
-        let expectedParent =
-            applicationRoot
-            .appendingPathComponent("Meetings/SmokeTests", isDirectory: true)
-            .standardizedFileURL
-        guard root.deletingLastPathComponent().standardizedFileURL == expectedParent,
-            root.path.hasPrefix(expectedParent.path + "/")
-        else {
-            throw DeepBenchmarkError.fixtureSetupFailed
-        }
-        if fileManager.fileExists(atPath: root.path) {
-            try fileManager.removeItem(at: root)
-        }
-        guard !fileManager.fileExists(atPath: root.path) else {
-            throw DeepBenchmarkError.cleanupFailed
-        }
+        try LiveSmokeStorageCleanup.removeOwnedRoot(
+            root,
+            applicationRoot: applicationRoot,
+            fileManager: fileManager
+        )
     }
 
     private static func makeCase(

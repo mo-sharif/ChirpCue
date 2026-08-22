@@ -66,12 +66,16 @@ enum InferenceConnectionState: Equatable, Sendable {
     case signedOut
     case authenticationExpired(String)
     case ready(InferenceAccountSummary)
+    case readyLimited(InferenceAccountSummary, String)
+    case readyCapacityUnconfirmed(InferenceAccountSummary, String)
     case limited(String)
     case unavailable(String)
 
     var isReady: Bool {
-        if case .ready = self { return true }
-        return false
+        switch self {
+        case .ready, .readyLimited, .readyCapacityUnconfirmed: true
+        default: false
+        }
     }
 }
 
@@ -107,7 +111,7 @@ private extension MeetingInferenceProvider {
                 "Recheck the Claude subscription before starting."
             case .limited, .unavailable:
                 "Resolve the Claude subscription status shown above, then Recheck."
-            case .ready:
+            case .ready, .readyLimited, .readyCapacityUnconfirmed:
                 ""
             }
         case .gemini:
@@ -120,7 +124,7 @@ private extension MeetingInferenceProvider {
                 "Recheck Google AI access before starting."
             case .authenticationExpired, .limited, .unavailable:
                 "Resolve the Google AI status shown above, then Recheck."
-            case .ready:
+            case .ready, .readyLimited, .readyCapacityUnconfirmed:
                 ""
             }
         }
@@ -627,6 +631,12 @@ final class MeetingViewModel {
         canCoach && outputEnabled
     }
 
+    var limitedModeBrownouts: Set<BrownoutReason> {
+        brownouts.filter { reason in
+            reason != .microphoneDisabled && reason != .outputDisabled
+        }
+    }
+
     var canForgetCodexProfile: Bool {
         guard !hasIncompleteAudioTeardown, !isMeetingActive,
             !isPerformingMeetingAction, !isBootstrapping, pendingMeetingStart == nil
@@ -634,7 +644,8 @@ final class MeetingViewModel {
         switch codexState {
         case .notChecked, .checking, .signedOut:
             return false
-        case .authenticationExpired, .ready, .limited, .unavailable:
+        case .authenticationExpired, .ready, .readyLimited, .readyCapacityUnconfirmed, .limited,
+            .unavailable:
             return true
         }
     }
@@ -1377,6 +1388,9 @@ final class MeetingViewModel {
         switch event {
         case .stateChanged(let state):
             brownouts = Set(state.brownouts.map(\.reason))
+            if brownouts.contains(.providerLimited) {
+                markActiveProviderCapacityLimited()
+            }
             if hasIncompleteAudioTeardown {
                 isCaptureActive = true
                 phase = .brownout
@@ -1402,6 +1416,9 @@ final class MeetingViewModel {
                 deepSuggestion = nil
             }
         case .suggestionUpserted(let card):
+            if card.stage != .bridge {
+                markActiveProviderCapacityAvailable()
+            }
             if card.stage == .deep {
                 receiveVerifiedDeepSuggestion(card)
             } else {
@@ -1409,6 +1426,9 @@ final class MeetingViewModel {
             }
         case .brownoutActivated(let brownout):
             brownouts.insert(brownout.reason)
+            if brownout.reason == .providerLimited {
+                markActiveProviderCapacityLimited()
+            }
         case .brownoutCleared(let brownout):
             brownouts.remove(brownout.reason)
         case .failed(let failure):
@@ -1430,6 +1450,60 @@ final class MeetingViewModel {
         brownouts.removeAll()
     }
 
+    private func markActiveProviderCapacityLimited() {
+        guard let provider = activeStartRequest?.provider else { return }
+        let state = connectionState(for: provider)
+        let account: InferenceAccountSummary
+        switch state {
+        case .ready(let summary), .readyCapacityUnconfirmed(let summary, _):
+            account = summary
+        case .notChecked, .checking, .signedOut, .authenticationExpired, .readyLimited,
+            .limited, .unavailable:
+            return
+        }
+        setConnectionState(
+            .readyLimited(
+                account,
+                "\(provider.shortTitle) model capacity is temporarily limited. ChirpCue will recheck before another model launch."
+            ),
+            for: provider
+        )
+    }
+
+    private func markActiveProviderCapacityAvailable() {
+        guard let provider = activeStartRequest?.provider,
+            !brownouts.contains(.providerLimited)
+        else { return }
+        let account: InferenceAccountSummary
+        switch connectionState(for: provider) {
+        case .readyLimited(let summary, _), .readyCapacityUnconfirmed(let summary, _):
+            account = summary
+        case .notChecked, .checking, .signedOut, .authenticationExpired, .ready, .limited,
+            .unavailable:
+            return
+        }
+        setConnectionState(.ready(account), for: provider)
+    }
+
+    private func connectionState(for provider: MeetingInferenceProvider) -> InferenceConnectionState {
+        switch provider {
+        case .codex: codexState
+        case .claude: claudeState
+        case .gemini: geminiState
+        }
+    }
+
+    private func setConnectionState(
+        _ state: InferenceConnectionState,
+        for provider: MeetingInferenceProvider
+    ) {
+        switch provider {
+        case .codex: codexState = state
+        case .claude: claudeState = state
+        case .gemini: geminiState = state
+        }
+    }
+
     private func updateStatusDetail(for phase: MeetingPhase) {
         switch phase {
         case .idle:
@@ -1447,6 +1521,16 @@ final class MeetingViewModel {
         case .suggesting:
             if let deepSuggestion {
                 statusDetail = Self.deepSuggestionStatus(for: deepSuggestion.deepKind)
+            } else if quickSuggestion?.stage == .bridge,
+                brownouts.contains(where: \.isQuickResponseFailure)
+            {
+                statusDetail = "A safe fallback is ready; the Quick response did not finish."
+            } else if quickSuggestion?.stage == .bridge {
+                statusDetail = "A safe bridge is ready while deeper context is checked."
+            } else if quickSuggestion?.stage == .quick,
+                brownouts.contains(where: \.isDeepResponseFailure)
+            {
+                statusDetail = "A quick response is ready, but no deeper answer arrived."
             } else if brownouts.contains(where: \.isDeepResponseFailure) {
                 statusDetail = "The temporary bridge is ready, but no deeper answer arrived."
             } else {
@@ -1590,7 +1674,7 @@ final class MeetingViewModel {
                 id: UUID(uuidString: "66666666-6666-6666-6666-666666666666") ?? UUID(),
                 identity: identity,
                 stage: .bridge,
-                text: "Let me think through that carefully for a second.",
+                text: ResponseCoordinatorConfiguration.deterministicFallback,
                 confidence: 1
             )
             model.deepSuggestion = SuggestionCard(

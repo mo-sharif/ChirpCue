@@ -4,6 +4,131 @@ import XCTest
 @testable import PaceNoteCore
 
 final class GeminiMeetingResponseGeneratorTests: XCTestCase {
+    func testLateFailedPreparationWaiterCannotDeleteRetryRuntime() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ChirpCueGeminiPrepareRace-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let meetingRoot = root.appendingPathComponent("meeting", isDirectory: true)
+        let runtimeRoot = meetingRoot.appendingPathComponent("gemini-runtime", isDirectory: true)
+        try FileManager.default.createDirectory(at: meetingRoot, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let executable = root.appendingPathComponent("agy", isDirectory: false)
+        XCTAssertTrue(
+            FileManager.default.createFile(
+                atPath: executable.path,
+                contents: Data("test".utf8),
+                attributes: [.posixPermissions: 0o700]
+            )
+        )
+        let trust = try GeminiExecutableTrustSnapshot.capture(executable) { _ in }
+        let staleWaiterGate = GeminiTestGate()
+        let retryVerifierGate = GeminiTestGate()
+        let failureProbe = GeminiPreparationFailureProbe(staleWaiterGate: staleWaiterGate)
+        let versionSequence = GeminiVersionSequence(retryGate: retryVerifierGate)
+        let status = GeminiSubscriptionStatus(
+            planType: "Google AI",
+            redactedLabel: "Google account",
+            modelIDs: ["gemini-3-pro"]
+        )
+        let generator = GeminiMeetingResponseGenerator(
+            configuration: GeminiMeetingResponseConfiguration(
+                meetingID: UUID(),
+                meetingPrivateRoot: meetingRoot,
+                groundingSnapshot: nil
+            ),
+            runner: GeminiGeneratorRunner(
+                inputURL: runtimeRoot.appendingPathComponent("work/input.json"),
+                result: ClaudeCommandResult(
+                    standardOutput: Data(),
+                    standardError: Data(),
+                    terminationStatus: 0
+                )
+            ),
+            subscriptionChecker: FixedGeminiChecker(status: status),
+            runtimePreparer: { _ in
+                let profileRoot = runtimeRoot.appendingPathComponent("home", isDirectory: true)
+                let work = runtimeRoot.appendingPathComponent("work", isDirectory: true)
+                let temporary = runtimeRoot.appendingPathComponent("tmp", isDirectory: true)
+                for directory in [runtimeRoot, profileRoot, work, temporary] {
+                    try FileManager.default.createDirectory(
+                        at: directory,
+                        withIntermediateDirectories: true,
+                        attributes: [.posixPermissions: 0o700]
+                    )
+                }
+                let inputURL = work.appendingPathComponent("input.json", isDirectory: false)
+                if !FileManager.default.fileExists(atPath: inputURL.path) {
+                    guard
+                        FileManager.default.createFile(
+                            atPath: inputURL.path,
+                            contents: Data(),
+                            attributes: [.posixPermissions: 0o600]
+                        )
+                    else {
+                        throw GeminiPreparationTestError.cannotCreateInput
+                    }
+                }
+                return GeminiIsolatedRuntime(
+                    executableURL: executable,
+                    executableTrustSnapshot: trust,
+                    runtimeRoot: runtimeRoot,
+                    isolatedHomeDirectory: profileRoot,
+                    workingDirectory: work,
+                    temporaryDirectory: temporary,
+                    inputURL: inputURL,
+                    processArguments: ["-p", GeminiRuntimeArguments.staticPrompt, "--agent", "chirpcue"],
+                    processEnvironment: ["HOME": profileRoot.path]
+                )
+            },
+            versionVerifier: { _ in try await versionSequence.verify() },
+            executableRevalidator: { _ in }
+        )
+        await generator.setPreparationFailureResumedTestHook { preparationID in
+            await failureProbe.record(preparationID)
+        }
+
+        let first = Task {
+            do {
+                _ = try await generator.prepare()
+                return false
+            } catch {
+                return true
+            }
+        }
+        let second = Task {
+            do {
+                _ = try await generator.prepare()
+                return false
+            } catch {
+                return true
+            }
+        }
+
+        await staleWaiterGate.waitUntilSuspended()
+        let retry = Task { try await generator.prepare() }
+        await retryVerifierGate.waitUntilSuspended()
+        await staleWaiterGate.release()
+
+        let firstFailed = await first.value
+        let secondFailed = await second.value
+        XCTAssertTrue(firstFailed)
+        XCTAssertTrue(secondFailed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeRoot.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: runtimeRoot.appendingPathComponent("work/input.json").path
+            )
+        )
+
+        await retryVerifierGate.release()
+        let prepared = try await retry.value
+        XCTAssertEqual(prepared.planType, "Google AI")
+        let cleanup = await generator.shutdown()
+        XCTAssertTrue(cleanup.failures.isEmpty)
+    }
+
     func testUsesFileOnlyPayloadAndReturnsValidatedGeneralAnswer() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "ChirpCueGeminiTests-\(UUID().uuidString)",
@@ -92,7 +217,12 @@ final class GeminiMeetingResponseGeneratorTests: XCTestCase {
                 )
             ]
         )
+        let quick = try await generator.generateQuick(for: turn)
         let draft = try await generator.generateDeep(for: turn)
+        XCTAssertEqual(
+            quick.sayNow,
+            "I'd start by clarifying the goal and constraints, then walk through the tradeoffs before committing to an approach."
+        )
         XCTAssertEqual(draft.kind, .generalAnswer)
         XCTAssertEqual(
             draft.candidateSayNext,
@@ -129,6 +259,80 @@ final class GeminiMeetingResponseGeneratorTests: XCTestCase {
             standardError: Data(),
             terminationStatus: 0
         )
+    }
+}
+
+private enum GeminiPreparationTestError: Error {
+    case firstAttempt
+    case cannotCreateInput
+}
+
+private actor GeminiVersionSequence {
+    private let retryGate: GeminiTestGate
+    private var calls = 0
+
+    init(retryGate: GeminiTestGate) {
+        self.retryGate = retryGate
+    }
+
+    func verify() async throws {
+        calls += 1
+        if calls == 1 {
+            throw GeminiPreparationTestError.firstAttempt
+        }
+        await retryGate.suspend()
+    }
+}
+
+private actor GeminiPreparationFailureProbe {
+    private let staleWaiterGate: GeminiTestGate
+    private var preparationID: UUID?
+    private var resumes = 0
+
+    init(staleWaiterGate: GeminiTestGate) {
+        self.staleWaiterGate = staleWaiterGate
+    }
+
+    func record(_ preparationID: UUID) async {
+        if let expected = self.preparationID {
+            precondition(expected == preparationID)
+        } else {
+            self.preparationID = preparationID
+        }
+        resumes += 1
+        if resumes == 2 {
+            await staleWaiterGate.suspend()
+        }
+    }
+}
+
+private actor GeminiTestGate {
+    private var suspended = false
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async {
+        suspended = true
+        let waiters = suspensionWaiters
+        suspensionWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilSuspended() async {
+        guard !suspended else { return }
+        await withCheckedContinuation { continuation in
+            suspensionWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        suspended = false
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 }
 

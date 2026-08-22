@@ -106,7 +106,11 @@ public enum BrownoutReason: String, Codable, CaseIterable, Sendable {
     case accountMismatch = "ACCOUNT_MISMATCH"
     case protocolUnsupported = "PROTOCOL_UNSUPPORTED"
     case appServerCrashed = "APP_SERVER_CRASHED"
+    case providerLimited = "PROVIDER_LIMITED"
     case quickLimited = "QUICK_LIMITED"
+    case quickTimedOut = "QUICK_TIMED_OUT"
+    case quickUnavailable = "QUICK_UNAVAILABLE"
+    case quickRejected = "QUICK_REJECTED"
     case deepLimited = "DEEP_LIMITED"
     case deepBusy = "DEEP_BUSY"
     case deepTimedOut = "DEEP_TIMED_OUT"
@@ -119,9 +123,20 @@ public enum BrownoutReason: String, Codable, CaseIterable, Sendable {
     case skillPolicyMismatch = "SKILL_POLICY_MISMATCH"
     case speakerUncertain = "SPEAKER_UNCERTAIN"
 
+    public var isQuickResponseFailure: Bool {
+        switch self {
+        case .providerLimited, .quickLimited, .quickTimedOut, .quickUnavailable,
+            .quickRejected:
+            true
+        default:
+            false
+        }
+    }
+
     public var isDeepResponseFailure: Bool {
         switch self {
-        case .deepLimited, .deepBusy, .deepTimedOut, .deepUnavailable, .deepRejected:
+        case .providerLimited, .deepLimited, .deepBusy, .deepTimedOut, .deepUnavailable,
+            .deepRejected:
             true
         default:
             false
