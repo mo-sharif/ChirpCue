@@ -258,6 +258,25 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testChatGPTLoginCanBeCanceledAndAcceptsAlreadyCompletedSession() async throws {
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "account/login/cancel",
+                params: ["loginId": "login-1"],
+                result: ["status": "notFound"]
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        try await client.cancelChatGPTLogin(loginID: "login-1")
+
+        let exhausted = await transport.isExhausted()
+        XCTAssertTrue(exhausted)
+        await client.shutdown()
+    }
+
     func testInitializeAndReadOnlyDiscoveryCallsMatchFixtures() async throws {
         let transport = FixtureTransport(exchanges: [
             .init(

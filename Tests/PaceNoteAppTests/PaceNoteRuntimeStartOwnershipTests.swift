@@ -5,6 +5,72 @@ import XCTest
 @testable import PaceNoteApp
 
 final class PaceNoteRuntimeStartOwnershipTests: XCTestCase {
+    func testCodexLoginCompletionMatchesCurrentLoginAndIgnoresStaleSessions() async throws {
+        let pair = AsyncStream.makeStream(
+            of: CodexServerNotification.self,
+            bufferingPolicy: .unbounded
+        )
+        pair.continuation.yield(
+            .init(
+                method: "account/login/completed",
+                params: ["loginId": "stale-login", "success": true]
+            )
+        )
+        pair.continuation.yield(
+            .init(
+                method: "account/login/completed",
+                params: ["loginId": "current-login", "success": true]
+            )
+        )
+
+        let completion = try await PaceNoteRuntime.waitForCodexLoginCompletion(
+            notifications: pair.stream,
+            loginID: "current-login",
+            timeout: .seconds(1)
+        )
+
+        XCTAssertEqual(completion, .succeeded)
+        pair.continuation.finish()
+    }
+
+    func testCodexLoginCompletionReportsProviderFailure() async throws {
+        let pair = AsyncStream.makeStream(
+            of: CodexServerNotification.self,
+            bufferingPolicy: .unbounded
+        )
+        pair.continuation.yield(
+            .init(
+                method: "account/login/completed",
+                params: ["loginId": "current-login", "success": false]
+            )
+        )
+
+        let completion = try await PaceNoteRuntime.waitForCodexLoginCompletion(
+            notifications: pair.stream,
+            loginID: "current-login",
+            timeout: .seconds(1)
+        )
+
+        XCTAssertEqual(completion, .failed)
+        pair.continuation.finish()
+    }
+
+    func testCodexLoginCompletionTimesOutWithoutLeavingTheWaiterRunning() async throws {
+        let pair = AsyncStream.makeStream(
+            of: CodexServerNotification.self,
+            bufferingPolicy: .unbounded
+        )
+
+        let completion = try await PaceNoteRuntime.waitForCodexLoginCompletion(
+            notifications: pair.stream,
+            loginID: "current-login",
+            timeout: .milliseconds(20)
+        )
+
+        XCTAssertEqual(completion, .timedOut)
+        pair.continuation.finish()
+    }
+
     func testConcurrentStartIsRejectedWhileFirstAttemptOwnsReservation() async throws {
         let fixture = try RuntimeOwnershipFixture()
         defer { fixture.remove() }
