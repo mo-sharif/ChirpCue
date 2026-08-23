@@ -105,6 +105,6 @@ ChirpCue is licensed under the [Apache License 2.0](LICENSE). Community particip
 
 ## Current status
 
-Version 0.3.4 fixes ChatGPT sign-in by following Codex's login-completion event, avoiding repeated token refreshes, and canceling timed-out login sessions. It retains bounded fresh-process recovery when current Codex app-server builds accept `thread/start` without returning a response. This remains an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
+Version 0.3.5 fixes Codex meeting startup by serializing capability discovery before `thread/start`, avoiding a current app-server failure where concurrent discovery requests can leave the process unable to prepare its first response thread. It retains the 0.3.4 ChatGPT sign-in lifecycle fixes and bounded fresh-process recovery. This remains an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
 
 ChirpCue is an independent open-source project and is not affiliated with or endorsed by Apple, Anthropic, Google, Microsoft, OpenAI, or Zoom.

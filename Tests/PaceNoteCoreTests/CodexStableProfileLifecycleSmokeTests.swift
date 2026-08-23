@@ -29,7 +29,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                 meetingPrivateRoot: fixture.ownedTemporaryRoot,
                 codexProfileRoot: fixture.profileRoot,
                 executableURL: fixture.codexExecutableURL,
-                clientVersion: "0.3.4",
+                clientVersion: "0.3.5",
                 groundingSnapshot: nil,
                 deepComplexity: .hardTechnical
             ),
