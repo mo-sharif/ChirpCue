@@ -346,6 +346,19 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testCapabilityDiscoveryDoesNotOverlapAppServerRequests() async throws {
+        let transport = OverlapDetectingTransport()
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        let capability = try await client.verifyCapabilities(cwd: "/tmp/pacenote-snapshot")
+        let maximumOutstandingRequests = await transport.maximumOutstandingRequestCount()
+
+        XCTAssertEqual(capability.models.map(\.id), ["quick-model"])
+        XCTAssertEqual(maximumOutstandingRequests, 1)
+        await client.shutdown()
+    }
+
     func testSkillConfigWriteUsesOnlyTheExactPathSelector() async throws {
         let skillPath = "/tmp/pacenote-snapshot/.agents/skills/repo-answer/SKILL.md"
         let transport = FixtureTransport(exchanges: [
@@ -898,7 +911,7 @@ final class CodexAppServerClientTests: XCTestCase {
     }
 
     private func makeClient(
-        transport: FixtureTransport,
+        transport: any CodexRPCTransporting,
         runtimeCapabilities: CodexRuntimeCapabilities = .none
     ) -> CodexAppServerClient {
         CodexAppServerClient(
@@ -919,6 +932,46 @@ final class CodexAppServerClientTests: XCTestCase {
             runtimeCapabilities: runtimeCapabilities
         )
     }
+}
+
+private actor OverlapDetectingTransport: CodexRPCTransporting {
+    private var outstandingRequestCount = 0
+    private var maximumOutstandingRequests = 0
+
+    func start() async throws {}
+    func stop() async {}
+
+    func request(method: String, params: JSONValue?) async throws -> JSONValue {
+        _ = params
+        outstandingRequestCount += 1
+        maximumOutstandingRequests = max(maximumOutstandingRequests, outstandingRequestCount)
+        try await Task.sleep(for: .milliseconds(10))
+        outstandingRequestCount -= 1
+
+        switch method {
+        case "initialize":
+            return CodexFixtures.value(CodexFixtures.initializeResult)
+        case "model/list":
+            return CodexFixtures.value(CodexFixtures.modelPage)
+        case "permissionProfile/list":
+            return CodexFixtures.value(CodexFixtures.permissionProfilesResult)
+        case "skills/list":
+            return CodexFixtures.value(CodexFixtures.skillsResult)
+        default:
+            throw CodexClientError.invalidResponse(method: method)
+        }
+    }
+
+    func sendNotification(method: String, params: JSONValue?) async throws {
+        _ = method
+        _ = params
+    }
+
+    func events() async -> AsyncStream<CodexTransportEvent> {
+        AsyncStream { $0.finish() }
+    }
+
+    func maximumOutstandingRequestCount() -> Int { maximumOutstandingRequests }
 }
 
 private struct FixtureExchange: Sendable {

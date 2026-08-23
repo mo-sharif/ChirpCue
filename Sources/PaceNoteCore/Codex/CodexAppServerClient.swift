@@ -355,15 +355,13 @@ public actor CodexAppServerClient {
     }
 
     public func verifyCapabilities(cwd: String) async throws -> CodexCapabilitySnapshot {
-        async let modelsRequest = listModels()
-        async let profilesRequest = listPermissionProfiles(cwd: cwd)
-        async let skillsRequest = listSkills(cwds: [cwd])
-
-        let (models, profiles, skills) = try await (
-            modelsRequest,
-            profilesRequest,
-            skillsRequest
-        )
+        // Keep capability discovery serialized. Some Codex app-server builds accept these
+        // requests concurrently but then stop answering the first thread/start on that process.
+        // Preparation is infrequent, and a deterministic healthy transport matters more than
+        // saving a few milliseconds here.
+        let models = try await listModels()
+        let profiles = try await listPermissionProfiles(cwd: cwd)
+        let skills = try await listSkills(cwds: [cwd])
         guard !models.isEmpty else { throw CodexClientError.missingCapability("model/list") }
         guard
             profiles.contains(where: {
