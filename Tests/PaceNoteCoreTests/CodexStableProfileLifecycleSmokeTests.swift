@@ -29,7 +29,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                 meetingPrivateRoot: fixture.ownedTemporaryRoot,
                 codexProfileRoot: fixture.profileRoot,
                 executableURL: fixture.codexExecutableURL,
-                clientVersion: "0.3.3",
+                clientVersion: "0.3.4",
                 groundingSnapshot: nil,
                 deepComplexity: .hardTechnical
             ),
@@ -295,6 +295,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
             if temporaryRootRemoved {
                 do {
                     try await fixture.journal.remove(meetingID: fixture.meetingID)
+                    try fixture.removeJournalFile()
                 } catch {
                     failures.append(.journalRemoval)
                 }
@@ -353,6 +354,7 @@ private struct StableProfileLifecycleFixture {
     let applicationRoot: URL
     let profileRoot: URL
     let ownedTemporaryRoot: URL
+    let journalURL: URL
     let codexTemporaryRoot: URL
     let workspaceRoot: URL
     let packagedSkillRoot: URL
@@ -386,6 +388,10 @@ private struct StableProfileLifecycleFixture {
                 isDirectory: true
             )
             .standardizedFileURL
+        journalURL = fileManager.temporaryDirectory.appendingPathComponent(
+            "chirpcue-stable-profile-journal-\(UUID().uuidString).json",
+            isDirectory: false
+        )
         codexTemporaryRoot =
             ownedTemporaryRoot
             .appendingPathComponent("codex-tmp", isDirectory: true)
@@ -393,13 +399,6 @@ private struct StableProfileLifecycleFixture {
             ownedTemporaryRoot
             .appendingPathComponent("workspace", isDirectory: true)
         codexExecutableURL = Self.locateCodexExecutable(fileManager: fileManager)
-        journal = try CleanupJournalStore(
-            journalURL:
-                applicationRoot
-                .appendingPathComponent("State/cleanup-journal.json", isDirectory: false),
-            allowedRoot: applicationRoot
-        )
-
         do {
             try fileManager.createDirectory(
                 at: workspaceRoot,
@@ -414,6 +413,10 @@ private struct StableProfileLifecycleFixture {
             packagedSkillRoot = try PackagedMeetingSkillStager.prepare(
                 in: ownedTemporaryRoot,
                 fileManager: fileManager
+            )
+            journal = try CleanupJournalStore(
+                journalURL: journalURL,
+                allowedRoot: ownedTemporaryRoot
             )
         } catch {
             try? fileManager.removeItem(at: ownedTemporaryRoot)
@@ -511,6 +514,12 @@ private struct StableProfileLifecycleFixture {
             applicationRoot: applicationRoot,
             fileManager: fileManager
         )
+    }
+
+    func removeJournalFile(fileManager: FileManager = .default) throws {
+        if fileManager.fileExists(atPath: journalURL.path) {
+            try fileManager.removeItem(at: journalURL)
+        }
     }
 
     private static func locateCodexExecutable(fileManager: FileManager) -> URL {

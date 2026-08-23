@@ -9,6 +9,12 @@ struct RuntimeOutputSourceGroup: Sendable {
 }
 
 actor PaceNoteRuntime {
+    enum CodexLoginCompletion: Equatable, Sendable {
+        case succeeded
+        case failed
+        case timedOut
+    }
+
     private enum Lifecycle: Sendable {
         case open
         case closing
@@ -284,36 +290,96 @@ actor PaceNoteRuntime {
                 return state
             }
 
+            // Subscribe before starting OAuth so even an immediate completion is buffered.
+            let loginNotifications = await client.notifications()
             let login = try await client.startChatGPTLogin(useHostedLoginSuccessPage: true)
             guard let url = URL(string: login.authUrl),
                 CodexChatGPTLoginURLPolicy.permits(url),
                 await MainActor.run(body: { NSWorkspace.shared.open(url) })
             else {
+                try? await client.cancelChatGPTLogin(loginID: login.loginId)
                 await client.shutdown()
                 return .unavailable(
                     "\(AppBrand.displayName) could not open the secure ChatGPT sign-in page."
                 )
             }
 
-            for _ in 0..<120 {
-                try await Task.sleep(for: .seconds(1))
-                let accountResult = try await client.account(refreshToken: true)
-                if let account = accountResult.account {
-                    let state = await validatedSubscriptionState(account: account, client: client)
-                    await client.shutdown()
-                    return state
-                }
+            let completion: CodexLoginCompletion
+            do {
+                completion = try await Self.waitForCodexLoginCompletion(
+                    notifications: loginNotifications,
+                    loginID: login.loginId,
+                    timeout: .seconds(120)
+                )
+            } catch {
+                try? await client.cancelChatGPTLogin(loginID: login.loginId)
+                throw error
             }
+
+            guard completion == .succeeded else {
+                if completion == .timedOut {
+                    try? await client.cancelChatGPTLogin(loginID: login.loginId)
+                }
+                await client.shutdown()
+                return .authenticationExpired(
+                    completion == .timedOut
+                        ? "Sign-in timed out. Use Sign in again when the browser flow is ready."
+                        : "ChatGPT did not complete sign-in. Use Sign in again to retry."
+                )
+            }
+
+            let accountResult = try await client.account(refreshToken: false)
+            guard let account = accountResult.account else {
+                await client.shutdown()
+                return .authenticationExpired(
+                    "ChatGPT completed sign-in, but the account was not available. Use Sign in again to retry."
+                )
+            }
+            let state = await validatedSubscriptionState(account: account, client: client)
             await client.shutdown()
-            return .authenticationExpired(
-                "Sign-in was not completed. Use Sign in again when the browser flow is ready."
-            )
+            return state
         } catch is CancellationError {
             await client.shutdown()
             return .signedOut
         } catch {
             await client.shutdown()
             return .unavailable(Self.safeMessage(for: error))
+        }
+    }
+
+    static func waitForCodexLoginCompletion(
+        notifications: AsyncStream<CodexServerNotification>,
+        loginID: String,
+        timeout: Duration
+    ) async throws -> CodexLoginCompletion {
+        try await withThrowingTaskGroup(of: CodexLoginCompletion.self) { group in
+            group.addTask {
+                for await notification in notifications {
+                    try Task.checkCancellation()
+                    guard notification.method == "account/login/completed",
+                        let params = notification.params?.objectValue
+                    else { continue }
+                    if let completedLoginID = params["loginId"]?.stringValue,
+                        completedLoginID != loginID
+                    {
+                        continue
+                    }
+                    guard let succeeded = params["success"]?.boolValue else { continue }
+                    return succeeded ? .succeeded : .failed
+                }
+                try Task.checkCancellation()
+                return .failed
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                return .timedOut
+            }
+
+            guard let completion = try await group.next() else {
+                throw CancellationError()
+            }
+            group.cancelAll()
+            return completion
         }
     }
 

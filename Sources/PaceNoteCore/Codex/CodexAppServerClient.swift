@@ -204,6 +204,22 @@ public actor CodexAppServerClient {
         return result
     }
 
+    public func cancelChatGPTLogin(loginID: String) async throws {
+        try requireReady()
+        guard !loginID.isEmpty else {
+            throw CodexClientError.invalidResponse(method: "account/login/cancel")
+        }
+        let result = try await transport.request(
+            method: "account/login/cancel",
+            params: ["loginId": .string(loginID)]
+        )
+        guard let status = result["status"]?.stringValue,
+            status == "canceled" || status == "notFound"
+        else {
+            throw CodexClientError.invalidResponse(method: "account/login/cancel")
+        }
+    }
+
     public func logout() async throws {
         try requireReady()
         _ = try await transport.request(method: "account/logout", params: nil)
