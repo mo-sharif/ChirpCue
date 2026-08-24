@@ -101,6 +101,7 @@ public enum BrownoutReason: String, Codable, CaseIterable, Sendable {
     case transcriptUncertain = "TRANSCRIPT_UNCERTAIN"
     case transcriptionUnavailable = "TRANSCRIPTION_UNAVAILABLE"
     case transcriberAssetMissing = "TRANSCRIBER_ASSET_MISSING"
+    case providerPreparing = "PROVIDER_PREPARING"
     case codexOffline = "CODEX_OFFLINE"
     case authenticationExpired = "AUTH_EXPIRED"
     case accountMismatch = "ACCOUNT_MISMATCH"
