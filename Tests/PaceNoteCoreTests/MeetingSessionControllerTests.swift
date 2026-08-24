@@ -768,46 +768,39 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testProviderCapacityLimitIsPreservedForRecoveryUI() async throws {
+    func testProviderCapacityLimitDoesNotPreventMeetingCapture() async throws {
         let response = FakeMeetingResponseGenerator(prepareFailure: .providerCapacityUnavailable)
         let harness = makeHarness(mode: .manualOnly, response: response)
 
-        do {
-            _ = try await harness.controller.preflight(
-                consent: MeetingConsent(participantDisclosureConfirmed: true)
-            )
-            XCTFail("Expected provider rate limit")
-        } catch let failure as MeetingSessionFailure {
-            XCTAssertEqual(failure, .responseRateLimited)
-            XCTAssertEqual(
-                failure.errorDescription,
-                "The selected provider's subscription capacity is temporarily unavailable. Wait for its allowance to reset, then choose Recheck."
-            )
-        }
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        try await harness.controller.start()
 
+        let limitVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.isRunning
+                && state.brownouts.contains { $0.reason == .providerLimited }
+        }
+        XCTAssertTrue(limitVisible)
+        try await harness.controller.submitTypedQuestion("What should I say while we wait?")
         let state = await harness.controller.state()
+        XCTAssertTrue(state.isRunning)
+        XCTAssertTrue(state.suggestions.contains { $0.stage == .bridge })
         XCTAssertTrue(state.brownouts.contains { $0.reason == .providerLimited })
         _ = await harness.controller.stop()
     }
 
-    func testStopInvalidatesAndAwaitsSuspendedPreflight() async throws {
+    func testStopInvalidatesAndAwaitsSuspendedResponsePreparation() async throws {
         let preparationBarrier = AudioOperationBarrier()
         let response = FakeMeetingResponseGenerator(prepareBarrier: preparationBarrier)
         let harness = makeHarness(mode: .manualOnly, response: response)
         await preparationBarrier.arm()
 
-        let preflight = Task { () -> MeetingSessionFailure? in
-            do {
-                _ = try await harness.controller.preflight(
-                    consent: MeetingConsent(participantDisclosureConfirmed: true)
-                )
-                return nil
-            } catch let failure as MeetingSessionFailure {
-                return failure
-            } catch {
-                return .responseUnavailable
-            }
-        }
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        try await harness.controller.start()
         await preparationBarrier.waitUntilEntered()
 
         let stopProbe = StopReportProbe()
@@ -822,16 +815,80 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertFalse(stopReturnedEarly)
 
         await preparationBarrier.release()
-        let preflightFailure = await preflight.value
         let stopReport = await stop.value
         let state = await harness.controller.state()
         let shutdownCount = await response.shutdownCount
 
-        XCTAssertEqual(preflightFailure, .invalidLifecycle)
         XCTAssertTrue(stopReport.cleanupSucceeded)
         XCTAssertEqual(shutdownCount, 1)
         XCTAssertEqual(state.phase, .ended)
         XCTAssertFalse(state.isPrepared)
+    }
+
+    func testCaptureAndTranscriptStartWhileResponseRuntimeIsStillPreparing() async throws {
+        let preparationBarrier = AudioOperationBarrier()
+        await preparationBarrier.arm()
+        let response = FakeMeetingResponseGenerator(prepareBarrier: preparationBarrier)
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        try await harness.controller.start()
+        await preparationBarrier.waitUntilEntered()
+
+        let startingState = await harness.controller.state()
+        let outputStarts = await harness.outputCapture.startCount
+        XCTAssertTrue(startingState.isRunning)
+        XCTAssertNil(startingState.runtime)
+        XCTAssertEqual(outputStarts, 1)
+        XCTAssertTrue(startingState.brownouts.contains { $0.reason == .providerPreparing })
+
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, "How do we secure the database?", stability: .final))
+        )
+        let transcriptAndBridgeVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.transcript.contains { $0.text == "How do we secure the database?" }
+                && state.suggestions.contains { $0.stage == .bridge }
+        }
+        XCTAssertTrue(transcriptAndBridgeVisible)
+
+        await preparationBarrier.release()
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            return state.runtime != nil
+                && state.suggestions.contains { $0.stage == .deep }
+                && !state.brownouts.contains { $0.reason == .providerPreparing }
+        }
+        XCTAssertTrue(recovered)
+        _ = await harness.controller.stop()
+    }
+
+    func testRuntimePreparationRetriesAndRecoversWithoutRestartingMeeting() async throws {
+        let response = FakeMeetingResponseGenerator(
+            prepareFailure: .runtimeUnavailable,
+            prepareFailuresRemaining: 1
+        )
+        let harness = makeHarness(mode: .manualOnly, response: response)
+
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        try await harness.controller.start()
+        try await harness.controller.submitTypedQuestion("Explain the retry boundary")
+
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            let prepareCount = await response.prepareCount
+            return prepareCount >= 2
+                && state.isRunning
+                && state.runtime != nil
+                && state.suggestions.contains { $0.stage == .deep }
+                && !state.brownouts.contains { $0.reason == .providerPreparing }
+        }
+        XCTAssertTrue(recovered)
+        _ = await harness.controller.stop()
     }
 
     func testStopInvalidatesAndAwaitsSuspendedStart() async throws {
@@ -2615,6 +2672,10 @@ final class MeetingSessionControllerTests: XCTestCase {
             consent: MeetingConsent(participantDisclosureConfirmed: true)
         )
         try await harness.controller.start()
+        let runtimeReady = await eventually {
+            await harness.controller.state().runtime != nil
+        }
+        XCTAssertTrue(runtimeReady, "Expected the fake response runtime to prepare")
     }
 
     private func makeHarness(
@@ -2690,7 +2751,8 @@ final class MeetingSessionControllerTests: XCTestCase {
             ),
             resourceCleaner: cleaner,
             time: time,
-            cleanupNeedleCapacity: cleanupNeedleCapacity
+            cleanupNeedleCapacity: cleanupNeedleCapacity,
+            responsePreparationRetryDelay: .milliseconds(5)
         )
         return SessionHarness(
             controller: controller,
@@ -2731,6 +2793,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     let deepBarrier: AudioOperationBarrier?
     let cancelBarrier: AudioOperationBarrier?
     let prepareFailure: MeetingResponseError?
+    private var prepareFailuresRemaining: Int?
     private var quickFailuresRemaining: Int
     private let quickFailure: MeetingResponseError
     private var deepFailuresRemaining: Int
@@ -2751,6 +2814,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         deepBarrier: AudioOperationBarrier? = nil,
         cancelBarrier: AudioOperationBarrier? = nil,
         prepareFailure: MeetingResponseError? = nil,
+        prepareFailuresRemaining: Int? = nil,
         quickFailuresRemaining: Int = 0,
         quickFailure: MeetingResponseError = .runtimeUnavailable,
         quickCleanupFailuresRemaining: Int = 0,
@@ -2765,6 +2829,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         self.deepBarrier = deepBarrier
         self.cancelBarrier = cancelBarrier
         self.prepareFailure = prepareFailure
+        self.prepareFailuresRemaining = prepareFailuresRemaining.map { max(0, $0) }
         self.quickFailuresRemaining = max(0, quickFailuresRemaining)
         self.quickFailure = quickFailure
         self.quickCleanupFailuresRemaining = max(0, quickCleanupFailuresRemaining)
@@ -2775,7 +2840,16 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     func prepare() async throws -> MeetingResponseRuntime {
         prepareCount += 1
         if let prepareBarrier { await prepareBarrier.suspendIfArmed() }
-        if let prepareFailure { throw prepareFailure }
+        if let prepareFailure {
+            if let remaining = prepareFailuresRemaining {
+                if remaining > 0 {
+                    prepareFailuresRemaining = remaining - 1
+                    throw prepareFailure
+                }
+            } else {
+                throw prepareFailure
+            }
+        }
         return runtime
     }
 

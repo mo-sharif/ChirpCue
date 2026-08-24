@@ -37,6 +37,11 @@ public actor MeetingSessionController {
         let response: BoundDeep
     }
 
+    private struct PendingResponseTurn: Sendable {
+        let question: String
+        let stableAt: TimeInterval
+    }
+
     private struct ResponseCancellationOperation: Sendable {
         let id: UUID
         let task: Task<Void, Never>
@@ -140,10 +145,12 @@ public actor MeetingSessionController {
     private let microphonePermission: any MicrophonePermissionProviding
     private let responseGenerator: any MeetingResponseGenerating
     private let responseCoordinator: ResponseCoordinator
+    private let bridgeText: String
     private let sensitiveOutputBuffer: ResponseSensitiveOutputBuffer
     private let resourceCleaner: any MeetingSessionResourceCleaning
     private let time: any MeetingTimeProviding
     private let attributionResolver: TranscriptAttributionResolver
+    private let responsePreparationRetryDelay: Duration
 
     private var lifecycle: Lifecycle = .idle
     private var phase: MeetingPhase = .permissionRequired
@@ -166,6 +173,7 @@ public actor MeetingSessionController {
     private var boundaryTask: Task<Void, Never>?
     private var generationTask: Task<Void, Never>?
     private var responseCancellationOperation: ResponseCancellationOperation?
+    private var pendingResponseTurn: PendingResponseTurn?
     private var pendingMicrophoneObservation: PendingMicrophoneObservation?
     private var latestOutputObservation: TranscriptObservation?
     private var bridgeSpeechHold: BridgeSpeechHold?
@@ -175,6 +183,8 @@ public actor MeetingSessionController {
     private var continuation: AsyncStream<MeetingSessionEvent>.Continuation?
     private var preparationAttempt: UUID?
     private var preparationTask: Task<MeetingSessionState, Error>?
+    private var responsePreparationAttempt: UUID?
+    private var responsePreparationTask: Task<Void, Never>?
     private var audioTransitionAttempt: UUID?
     private var audioTransitionTask: Task<Void, Error>?
     private var stopTask: Task<MeetingSessionStopReport, Never>?
@@ -194,7 +204,8 @@ public actor MeetingSessionController {
         resourceCleaner: any MeetingSessionResourceCleaning,
         time: any MeetingTimeProviding = HostMeetingTimeProvider(),
         attributionResolver: TranscriptAttributionResolver = .init(),
-        cleanupNeedleCapacity: Int = 2_048
+        cleanupNeedleCapacity: Int = 2_048,
+        responsePreparationRetryDelay: Duration = .seconds(2)
     ) {
         self.configuration = configuration
         self.audioServices = audioServices
@@ -210,9 +221,11 @@ public actor MeetingSessionController {
             configuration: responseCoordinatorConfiguration,
             sensitiveOutputBuffer: sensitiveOutputBuffer
         )
+        self.bridgeText = responseCoordinatorConfiguration.bridgeText
         self.resourceCleaner = resourceCleaner
         self.time = time
         self.attributionResolver = attributionResolver
+        self.responsePreparationRetryDelay = responsePreparationRetryDelay
         self.cleanupNeedleLedger = CleanupNeedleLedger(capacity: cleanupNeedleCapacity)
         self.timeline = TranscriptTimeline(retention: configuration.transcriptRetention)
         self.turnDetector = TurnDetector(
@@ -233,6 +246,7 @@ public actor MeetingSessionController {
 
     deinit {
         preparationTask?.cancel()
+        responsePreparationTask?.cancel()
         audioTransitionTask?.cancel()
         stopTask?.cancel()
         microphoneEventTask?.cancel()
@@ -345,59 +359,6 @@ public actor MeetingSessionController {
             try await prepareMicrophonePermission(attempt: attempt)
             try await prepareSpeechAssets(attempt: attempt)
             try requirePreparing(attempt)
-
-            let preparedRuntime: MeetingResponseRuntime
-            do {
-                preparedRuntime = try await responseGenerator.prepare()
-            } catch let error as MeetingResponseError {
-                try requirePreparing(attempt)
-                let failure = Self.sessionFailure(for: error)
-                activateBrownout(Self.brownout(for: error))
-                if case .signInRequired = error {
-                    try requirePreparing(attempt)
-                    lifecycle = .idle
-                    phase = .permissionRequired
-                    emitFailure(failure)
-                    throw failure
-                }
-                if case .credentialStoreUnavailable = error {
-                    lifecycle = .idle
-                    phase = .permissionRequired
-                    emitFailure(failure)
-                    throw failure
-                }
-                _ = await responseGenerator.shutdown()
-                try requirePreparing(attempt)
-                lifecycle = .idle
-                updateOperationalPhase()
-                emitFailure(failure)
-                throw failure
-            } catch {
-                try requirePreparing(attempt)
-                _ = await responseGenerator.shutdown()
-                try requirePreparing(attempt)
-                activateBrownout(.init(reason: .codexOffline))
-                lifecycle = .idle
-                updateOperationalPhase()
-                let failure = MeetingSessionFailure.responseUnavailable
-                emitFailure(failure)
-                throw failure
-            }
-
-            try requirePreparing(attempt)
-            runtime = MeetingSessionRuntimeStatus(
-                planType: preparedRuntime.planType,
-                quickRoute: preparedRuntime.quickRoute,
-                deepRoute: preparedRuntime.deepRoute,
-                usesRealtimeQuick: preparedRuntime.usesRealtimeQuick
-            )
-            deactivateBrownout(reason: .codexOffline)
-            responseCleanupFailureGeneration = nil
-            deactivateBrownout(reason: .providerLimited)
-            responseProviderFailureGeneration = nil
-            deactivateBrownout(reason: .authenticationExpired)
-            deactivateBrownout(reason: .accountMismatch)
-            deactivateBrownout(reason: .protocolUnsupported)
             lifecycle = .prepared
             phase = .ready
             emitState()
@@ -446,6 +407,7 @@ public actor MeetingSessionController {
             lifecycle = .running
             updateOperationalPhase()
             emitState()
+            startResponsePreparationIfNeeded()
         } catch let failure as MeetingSessionFailure {
             guard ownsAudioTransition(attempt) else {
                 throw MeetingSessionFailure.invalidLifecycle
@@ -543,6 +505,11 @@ public actor MeetingSessionController {
             lifecycle = .running
             updateOperationalPhase()
             emitState()
+            if runtime == nil {
+                startResponsePreparationIfNeeded()
+            } else {
+                await resumePendingResponseTurnIfNeeded()
+            }
         } catch let failure as MeetingSessionFailure {
             guard ownsAudioTransition(attempt) else {
                 throw MeetingSessionFailure.invalidLifecycle
@@ -665,23 +632,27 @@ public actor MeetingSessionController {
         registerRetainedCleanupContent()
         clearDelayedAttributionState()
         let preparationTask = self.preparationTask
+        let responsePreparationTask = self.responsePreparationTask
         let audioTransitionTask = self.audioTransitionTask
         lifecycle = .stopping
         boundaryTask?.cancel()
         boundaryTask = nil
         clearVisibleMeetingContentForStop()
         preparationTask?.cancel()
+        responsePreparationTask?.cancel()
         audioTransitionTask?.cancel()
         let task: Task<MeetingSessionStopReport, Never>
         if let lastStopReport {
             task = Task {
                 if let preparationTask { _ = await preparationTask.result }
+                if let responsePreparationTask { _ = await responsePreparationTask.result }
                 if let audioTransitionTask { _ = await audioTransitionTask.result }
                 return await self.retryAudioTeardown(from: lastStopReport)
             }
         } else {
             task = Task {
                 if let preparationTask { _ = await preparationTask.result }
+                if let responsePreparationTask { _ = await responsePreparationTask.result }
                 if let audioTransitionTask { _ = await audioTransitionTask.result }
                 return await self.performStop()
             }
@@ -716,6 +687,7 @@ public actor MeetingSessionController {
 
         currentIdentity = nil
         currentQuestion = nil
+        pendingResponseTurn = nil
         runtime = nil
 
         var failures = resourceReport.failures
@@ -1365,6 +1337,20 @@ public actor MeetingSessionController {
         await cancelResponseWork(joining: previousGenerationTask)
         guard lifecycle == .running, currentIdentity == identity else { return }
 
+        guard runtime != nil else {
+            pendingResponseTurn = PendingResponseTurn(question: question, stableAt: stableAt)
+            startResponsePreparationIfNeeded()
+            cleanupNeedleLedger.register(bridgeText)
+            let bridge = SuggestionCard(identity: identity, stage: .bridge, text: bridgeText)
+            suggestions = [bridge]
+            timingLedger.recordBridgeReady(generation: identity.generation, at: time.now())
+            phase = .suggesting
+            emit(.suggestionUpserted(bridge))
+            emitState()
+            return
+        }
+        pendingResponseTurn = nil
+
         let turn = ConversationTurn(
             identity: identity,
             question: question,
@@ -1393,6 +1379,86 @@ public actor MeetingSessionController {
             }
             await self?.generationFinished(identity: identity)
         }
+    }
+
+    private func startResponsePreparationIfNeeded() {
+        guard runtime == nil, responsePreparationTask == nil else { return }
+        activateBrownout(.init(reason: .providerPreparing))
+        updateOperationalPhase()
+        emitState()
+        let attempt = UUID()
+        responsePreparationAttempt = attempt
+        responsePreparationTask = Task { [weak self] in
+            await self?.prepareResponseRuntime(attempt: attempt)
+        }
+    }
+
+    private func prepareResponseRuntime(attempt: UUID) async {
+        defer { finishResponsePreparation(attempt: attempt) }
+        while !Task.isCancelled, responsePreparationAttempt == attempt {
+            do {
+                let preparedRuntime = try await responseGenerator.prepare()
+                guard !Task.isCancelled, responsePreparationAttempt == attempt else { return }
+                runtime = MeetingSessionRuntimeStatus(
+                    planType: preparedRuntime.planType,
+                    quickRoute: preparedRuntime.quickRoute,
+                    deepRoute: preparedRuntime.deepRoute,
+                    usesRealtimeQuick: preparedRuntime.usesRealtimeQuick
+                )
+                deactivateBrownout(reason: .providerPreparing)
+                deactivateBrownout(reason: .codexOffline)
+                responseCleanupFailureGeneration = nil
+                deactivateBrownout(reason: .providerLimited)
+                responseProviderFailureGeneration = nil
+                deactivateBrownout(reason: .authenticationExpired)
+                deactivateBrownout(reason: .accountMismatch)
+                deactivateBrownout(reason: .protocolUnsupported)
+                updateOperationalPhase()
+                emitState()
+                await resumePendingResponseTurnIfNeeded()
+                return
+            } catch let error as MeetingResponseError {
+                guard !Task.isCancelled, responsePreparationAttempt == attempt else { return }
+                if error == .runtimeUnavailable {
+                    activateBrownout(.init(reason: .providerPreparing))
+                    updateOperationalPhase()
+                    emitState()
+                    do {
+                        try await Task.sleep(for: responsePreparationRetryDelay)
+                    } catch {
+                        return
+                    }
+                    continue
+                }
+                deactivateBrownout(reason: .providerPreparing)
+                activateBrownout(Self.brownout(for: error))
+                updateOperationalPhase()
+                emitState()
+                return
+            } catch {
+                guard !Task.isCancelled, responsePreparationAttempt == attempt else { return }
+                deactivateBrownout(reason: .providerPreparing)
+                activateBrownout(.init(reason: .codexOffline))
+                updateOperationalPhase()
+                emitState()
+                return
+            }
+        }
+    }
+
+    private func resumePendingResponseTurnIfNeeded() async {
+        guard lifecycle == .running, runtime != nil, let pendingResponseTurn else { return }
+        self.pendingResponseTurn = nil
+        await beginTurn(
+            question: pendingResponseTurn.question,
+            stableAt: pendingResponseTurn.stableAt
+        )
+    }
+
+    private func finishResponsePreparation(attempt: UUID) {
+        guard responsePreparationAttempt == attempt else { return }
+        responsePreparationAttempt = nil
+        responsePreparationTask = nil
     }
 
     #if DEBUG
@@ -1830,7 +1896,8 @@ public actor MeetingSessionController {
     private var hasBlockingBrownout: Bool {
         brownouts.contains { brownout in
             switch brownout.reason {
-            case .microphoneDisabled, .outputDisabled, .providerLimited, .quickLimited,
+            case .microphoneDisabled, .outputDisabled, .providerPreparing, .providerLimited,
+                .quickLimited,
                 .quickTimedOut,
                 .quickUnavailable, .quickRejected, .deepLimited, .deepBusy, .deepTimedOut,
                 .deepUnavailable, .deepRejected, .speakerUncertain:
@@ -1936,21 +2003,6 @@ public actor MeetingSessionController {
 
     private static func lostReason(for lane: AudioLane) -> BrownoutReason {
         lane == .microphone ? .microphoneLost : .systemAudioLost
-    }
-
-    private static func sessionFailure(for error: MeetingResponseError) -> MeetingSessionFailure {
-        switch error {
-        case .signInRequired, .credentialStoreUnavailable:
-            .responseSignInRequired
-        case .accountMismatch:
-            .responseAccountMismatch
-        case .protocolUnsupported:
-            .responseProtocolUnsupported
-        case .providerCapacityUnavailable, .quickRateLimited, .deepRateLimited:
-            .responseRateLimited
-        default:
-            .responseUnavailable
-        }
     }
 
     private static func brownout(for error: MeetingResponseError) -> MeetingBrownout {

@@ -1513,7 +1513,10 @@ final class MeetingViewModel {
         case .ready:
             statusDetail = "Ready to start the consented meeting."
         case .listening:
-            statusDetail = "Listening only to the capture sources you approved."
+            statusDetail =
+                brownouts.contains(.providerPreparing)
+                ? "Listening now. AI coaching is connecting and will start automatically."
+                : "Listening only to the capture sources you approved."
         case .candidateQuestion:
             statusDetail = "A possible question was detected."
         case .thinking:
@@ -1526,7 +1529,10 @@ final class MeetingViewModel {
             {
                 statusDetail = "A safe fallback is ready; the Quick response did not finish."
             } else if quickSuggestion?.stage == .bridge {
-                statusDetail = "A safe bridge is ready while deeper context is checked."
+                statusDetail =
+                    brownouts.contains(.providerPreparing)
+                    ? "A safe bridge is ready while AI coaching connects."
+                    : "A safe bridge is ready while deeper context is checked."
             } else if quickSuggestion?.stage == .quick,
                 brownouts.contains(where: \.isDeepResponseFailure)
             {

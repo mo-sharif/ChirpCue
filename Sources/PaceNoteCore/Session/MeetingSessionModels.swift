@@ -141,6 +141,8 @@ public struct MeetingBrownout: Identifiable, Equatable, Sendable {
             "On-device transcription stopped while audio capture remained active."
         case .transcriberAssetMissing:
             "The local transcription language is not ready."
+        case .providerPreparing:
+            "The selected AI provider is connecting. Capture and transcription remain active."
         case .codexOffline:
             "The selected AI provider is unavailable."
         case .authenticationExpired:

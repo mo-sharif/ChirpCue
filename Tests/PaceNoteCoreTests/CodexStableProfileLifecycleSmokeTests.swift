@@ -29,20 +29,30 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                 meetingPrivateRoot: fixture.ownedTemporaryRoot,
                 codexProfileRoot: fixture.profileRoot,
                 executableURL: fixture.codexExecutableURL,
-                clientVersion: "0.3.5",
+                clientVersion: "0.3.6",
                 groundingSnapshot: nil,
                 deepComplexity: .hardTechnical
             ),
             journal: fixture.journal
         )
 
-        do {
-            _ = try await generator.prepare()
-        } catch {
-            _ = await generator.shutdown()
-            try? fixture.removeOwnedTemporaryRoot()
-            throw error
+        var prepared = false
+        for attempt in 1...4 {
+            do {
+                _ = try await generator.prepare()
+                prepared = true
+                break
+            } catch let error as MeetingResponseError
+                where error == .runtimeUnavailable && attempt < 4
+            {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                _ = await generator.shutdown()
+                try? fixture.removeOwnedTemporaryRoot()
+                throw error
+            }
         }
+        XCTAssertTrue(prepared, "The background preparation layer exhausted four attempts.")
         let cleanup = await generator.shutdown()
         XCTAssertTrue(cleanup.failures.isEmpty)
         try fixture.removeOwnedTemporaryRoot()

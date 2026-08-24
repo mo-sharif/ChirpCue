@@ -935,6 +935,7 @@ extension BrownoutReason {
         case .transcriptUncertain: "Transcript confidence is low"
         case .transcriptionUnavailable: "On-device transcription stopped"
         case .transcriberAssetMissing: "Speech model is unavailable"
+        case .providerPreparing: "AI provider is connecting"
         case .codexOffline: "AI provider is offline"
         case .authenticationExpired:
             "\(provider.shortTitle) sign-in expired"
@@ -974,6 +975,8 @@ extension BrownoutReason {
         case .transcriptionUnavailable:
             "Stop and restart this meeting. Audio capture is still connected."
         case .transcriberAssetMissing: "Download the required Apple speech asset, then retry."
+        case .providerPreparing:
+            "Capture and transcription are active. ChirpCue will start coaching automatically when the connection is ready."
         case .codexOffline: "Suggestions are paused until the selected provider connection returns."
         case .authenticationExpired:
             switch provider {
