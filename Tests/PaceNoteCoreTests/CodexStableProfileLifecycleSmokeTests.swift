@@ -43,7 +43,8 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                 prepared = true
                 break
             } catch let error as MeetingResponseError
-            where error == .runtimeUnavailable && attempt < 4 {
+                where error == .runtimeUnavailable && attempt < 4
+            {
                 try await Task.sleep(for: .seconds(2))
             } catch {
                 _ = await generator.shutdown()
