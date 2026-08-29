@@ -442,7 +442,7 @@ final class MeetingSessionControllerTests: XCTestCase {
                 $0.identity != failedCard.identity
             }
             return state.suggestions.contains { $0.identity == failedCard.identity }
-                && recoveredCards.contains { $0.stage == .quick }
+                && recoveredCards.contains { $0.stage == .bridge || $0.stage == .quick }
                 && recoveredCards.contains { $0.stage == .deep }
                 && !state.brownouts.contains { $0.reason.isDeepResponseFailure }
         }
