@@ -190,13 +190,7 @@ final class ResponseCoordinatorTests: XCTestCase {
 
     func testNontechnicalTurnUsesFastAIAnswerAndDeep() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
-        let generator = ScriptedGenerator(
-            quickDelay: .milliseconds(5),
-            deepDelay: .milliseconds(15),
-            quickText: "I would frame the decision around reversibility and the cost of being wrong.",
-            turn: turn,
-            quickNeedsDeep: false
-        )
+        let generator = QuickBeforeDeepGenerator(gate: QuickHandledGate())
         let coordinator = ResponseCoordinator(
             generator: generator,
             configuration: .init(quickDeadline: .milliseconds(100), resultTTL: .seconds(1))
@@ -632,6 +626,67 @@ private struct ScriptedGenerator: ResponseGenerating {
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
         Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+    }
+}
+
+/// Makes the ordering asserted by `testNontechnicalTurnUsesFastAIAnswerAndDeep` explicit.
+/// Deep waits until the coordinator has consumed Quick and begun its cleanup step, avoiding a
+/// scheduler-dependent race between two short sleeps on loaded CI hosts.
+private struct QuickBeforeDeepGenerator: ResponseGenerating {
+    let gate: QuickHandledGate
+
+    func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
+        QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            sayNow: "I would frame the decision around reversibility and the cost of being wrong.",
+            needsDeep: false,
+            confidence: 0.72,
+            reason: "general_question"
+        )
+    }
+
+    func awaitQuickCleanup(for identity: TurnIdentity) async throws {
+        _ = identity
+        await gate.release()
+    }
+
+    func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
+        await gate.wait()
+        return DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext:
+                "I would isolate callers from retries and downstream outages with a queued boundary.",
+            confidence: 0.91,
+            basis: []
+        )
+    }
+
+    func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
+        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+    }
+}
+
+private actor QuickHandledGate {
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !released else { return }
+        released = true
+        let pending = waiters
+        waiters.removeAll(keepingCapacity: false)
+        for waiter in pending { waiter.resume() }
     }
 }
 
