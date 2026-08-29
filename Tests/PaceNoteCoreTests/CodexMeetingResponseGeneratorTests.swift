@@ -55,6 +55,83 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(Set(allDeleted), Set(["base-1", "base-2", "fork-1", "fork-2"]))
     }
 
+    func testTwoDeepAnswersCanRunOnIndependentEphemeralThreads() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let firstTurn = fixture.turn(generation: 1)
+        let secondTurn = fixture.turn(generation: 2)
+        let gate = SuspendedCallGate()
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            turnOutputs: [
+                try Self.json(fixture.deepDraft(for: firstTurn)),
+                try Self.json(fixture.deepDraft(for: secondTurn)),
+            ],
+            startTurnGate: gate
+        )
+        let generator = fixture.generator(client: client)
+        _ = try await generator.prepare()
+
+        let first = Task { try await generator.generateDeep(for: firstTurn) }
+        await gate.waitUntilSuspended()
+        let second = Task { try await generator.generateDeep(for: secondTurn) }
+
+        let bothStarted = await Self.eventually {
+            await client.turnStartCount() == 2
+        }
+        XCTAssertTrue(bothStarted)
+        await gate.release()
+
+        let firstDraft = try await first.value
+        let secondDraft = try await second.value
+        XCTAssertEqual(firstDraft.turnID, firstTurn.identity.turnID)
+        XCTAssertEqual(secondDraft.turnID, secondTurn.identity.turnID)
+        _ = await generator.shutdown()
+    }
+
+    func testPreparationCanSkipUnusedSubscriptionQuickBase() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let client = FakeMeetingCodexClient(realtime: true)
+        let generator = fixture.generator(
+            client: client,
+            subscriptionQuickEnabled: false
+        )
+
+        let runtime = try await generator.prepare()
+        let entries = try await fixture.journal.entries()
+
+        XCTAssertFalse(runtime.usesRealtimeQuick)
+        XCTAssertEqual(entries.first?.threadIDs, ["base-1"])
+        await XCTAssertThrowsMeetingError(.notPrepared) {
+            _ = try await generator.generateQuick(for: fixture.turn(generation: 1))
+        }
+
+        let report = await generator.shutdown()
+        XCTAssertEqual(report.deletedThreadCount, 1)
+        XCTAssertEqual(report.failures, [])
+    }
+
+    func testStableSubscriptionQuickCanDisableExperimentalRealtimeTransport() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let recorder = CodexConfigurationRecorder()
+        let client = FakeMeetingCodexClient(realtime: true)
+        let generator = fixture.generator(
+            client: client,
+            configurationRecorder: recorder,
+            realtimeQuickEnabled: false
+        )
+
+        let runtime = try await generator.prepare()
+        let capturedConfiguration = await recorder.configuration()
+        let recordedConfiguration = try XCTUnwrap(capturedConfiguration)
+
+        XCTAssertFalse(runtime.usesRealtimeQuick)
+        XCTAssertFalse(recordedConfiguration.enableRealtimeQuick)
+        _ = await generator.shutdown()
+    }
+
     func testGroundedCandidateMismatchFallsBackToOneVerifiedBasisClaim() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
@@ -89,7 +166,7 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let output = QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: 3,
-            sayNow: "I can give the shape now, then verify the implementation.",
+            sayNow: "I’d give the general shape now, then verify the implementation.",
             needsDeep: true,
             confidence: 0.61,
             reason: "needs repository evidence"
@@ -109,6 +186,41 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(generated, output)
         XCTAssertEqual(realtimeStopCount, 1)
         XCTAssertEqual(quickTurnCount, 0)
+        _ = await generator.shutdown()
+    }
+
+    func testRealtimeBackendFailureRetriesQuickOnStableTurnPath() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.turn(generation: 3)
+        let output = QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: 3,
+            sayNow: "I’d clarify the constraint, then give the safest reversible default.",
+            needsDeep: true,
+            confidence: 0.68,
+            reason: "realtime fallback"
+        )
+        let client = FakeMeetingCodexClient(
+            realtime: true,
+            turnOutputs: [try Self.json(output)],
+            realtimeStreamErrors: [
+                .requestFailed(method: "thread/realtime", code: -32_000)
+            ]
+        )
+        let generator = fixture.generator(client: client)
+
+        _ = try await generator.prepare()
+        let generated = try await generator.generateQuick(for: turn)
+        try await generator.awaitQuickCleanup(for: turn.identity)
+        let disableCount = await client.realtimeDisableCount()
+        let stopCount = await client.realtimeStopCount()
+        let turnStartCount = await client.turnStartCount()
+
+        XCTAssertEqual(generated, output)
+        XCTAssertEqual(disableCount, 1)
+        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(turnStartCount, 1)
         _ = await generator.shutdown()
     }
 
@@ -218,7 +330,7 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let output = QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
-            sayNow: "I can give the shape now, then verify the implementation.",
+            sayNow: "I’d give the general shape now, then verify the implementation.",
             needsDeep: true,
             confidence: 0.61,
             reason: "needs repository evidence"
@@ -467,25 +579,39 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(shutdownCount, 1)
     }
 
-    func testRealtimeQuickRejectsAdditionalJSONKeys() async throws {
+    func testRealtimeQuickAdditionalKeysFallBackToStrictOrdinaryTurn() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
         let turn = fixture.turn(generation: 1)
+        let fallback = QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: 1,
+            sayNow: "I’d clarify the constraint, then give the safest reversible default.",
+            needsDeep: true,
+            confidence: 0.7,
+            reason: "strict fallback"
+        )
         let client = FakeMeetingCodexClient(
             realtime: true,
             quickOutputs: [
                 """
                 {"turnID":"\(turn.identity.turnID.uuidString)","generation":1,"sayNow":"Let me verify that.","needsDeep":true,"confidence":0.5,"reason":"technical","extra":"unsafe"}
                 """
-            ]
+            ],
+            turnOutputs: [try Self.json(fallback)]
         )
         let generator = fixture.generator(client: client)
         _ = try await generator.prepare()
 
-        await XCTAssertThrowsMeetingError(.invalidOutput) {
-            _ = try await generator.generateQuick(for: turn)
-        }
+        let generated = try await generator.generateQuick(for: turn)
+        try await generator.awaitQuickCleanup(for: turn.identity)
         let deleted = await client.deletedThreadIDs()
+        let disableCount = await client.realtimeDisableCount()
+        let ordinaryTurnCount = await client.turnStartCount()
+
+        XCTAssertEqual(generated, fallback)
+        XCTAssertEqual(disableCount, 1)
+        XCTAssertEqual(ordinaryTurnCount, 1)
         XCTAssertTrue(deleted.contains("fork-1"))
         _ = await generator.shutdown()
     }
@@ -2082,29 +2208,32 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         }
     }
 
-    func testGroundedDeepRejectsGeneralAnswerKind() async throws {
+    func testGroundedDeepAllowsExplicitlyUngroundedGeneralAnswer() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
         let turn = fixture.turn(generation: 1)
-        let invalid = DeepDraft(
+        let general = DeepDraft(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
-            groundingFingerprint: turn.groundingFingerprint,
+            groundingFingerprint: nil,
             kind: .generalAnswer,
-            candidateSayNext: "Broadly, I would separate the immediate path from retries.",
+            candidateSayNext:
+                "I’ve worked with React across production web applications. Lately, I’ve focused on TypeScript products and reusable frontend architecture.",
             confidence: 0.8,
             basis: []
         )
         let client = FakeMeetingCodexClient(
             realtime: false,
-            turnOutputs: [try Self.json(invalid)]
+            turnOutputs: [try Self.json(general)]
         )
         let generator = fixture.generator(client: client)
         _ = try await generator.prepare()
 
-        await XCTAssertThrowsMeetingError(.invalidOutput) {
-            _ = try await generator.generateDeep(for: turn)
-        }
+        let generated = try await generator.generateDeep(for: turn)
+
+        XCTAssertEqual(generated, general)
+        XCTAssertNil(generated.groundingFingerprint)
+        XCTAssertTrue(generated.basis.isEmpty)
         _ = await generator.shutdown()
     }
 
@@ -2115,7 +2244,7 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let output = QuickModelOutput(
             turnID: first.identity.turnID,
             generation: 1,
-            sayNow: "Let me verify the exact path.",
+            sayNow: "I’d verify the exact path before making a specific claim.",
             needsDeep: true,
             confidence: 0.5,
             reason: "technical"
@@ -2685,7 +2814,7 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
 
         let config = try String(contentsOf: runtime.configurationURL, encoding: .utf8)
         XCTAssertTrue(config.contains("cli_auth_credentials_store = \"keyring\""))
-        XCTAssertTrue(config.contains("persistence = \"none\""))
+        XCTAssertTrue(config.contains("persistence = \"save-all\""))
         XCTAssertTrue(config.contains("plugins = false"))
         XCTAssertTrue(config.contains("remote_plugin = false"))
         XCTAssertTrue(config.contains("default_permissions = \"pacenote-readonly\""))
@@ -2818,6 +2947,19 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         )
     }
 
+    private static func eventually(
+        timeout: Duration = .seconds(1),
+        condition: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return await condition()
+    }
+
     private static func json<T: Encodable>(_ value: T) throws -> String {
         let data = try JSONEncoder().encode(value)
         return try XCTUnwrap(String(data: data, encoding: .utf8))
@@ -2938,7 +3080,9 @@ private struct ResponseGeneratorFixture {
         client: FakeMeetingCodexClient,
         verifier: any MeetingEvidenceVerifying = FakeMeetingEvidenceVerifier(),
         configurationRecorder: CodexConfigurationRecorder? = nil,
-        includeGrounding: Bool = true
+        includeGrounding: Bool = true,
+        subscriptionQuickEnabled: Bool = true,
+        realtimeQuickEnabled: Bool = true
     ) -> CodexMeetingResponseGenerator {
         generator(
             clientFactory: { configuration in
@@ -2946,14 +3090,18 @@ private struct ResponseGeneratorFixture {
                 return client
             },
             verifier: verifier,
-            includeGrounding: includeGrounding
+            includeGrounding: includeGrounding,
+            subscriptionQuickEnabled: subscriptionQuickEnabled,
+            realtimeQuickEnabled: realtimeQuickEnabled
         )
     }
 
     func generator(
         clientFactory: @escaping CodexMeetingClientFactory,
         verifier: any MeetingEvidenceVerifying = FakeMeetingEvidenceVerifier(),
-        includeGrounding: Bool = true
+        includeGrounding: Bool = true,
+        subscriptionQuickEnabled: Bool = true,
+        realtimeQuickEnabled: Bool = true
     ) -> CodexMeetingResponseGenerator {
         CodexMeetingResponseGenerator(
             configuration: .init(
@@ -2963,6 +3111,8 @@ private struct ResponseGeneratorFixture {
                 clientVersion: "0.1.0",
                 expectedAccountIdentityHash: expectedAccountIdentityHash,
                 groundingSnapshot: includeGrounding ? snapshot : nil,
+                subscriptionQuickEnabled: subscriptionQuickEnabled,
+                realtimeQuickEnabled: realtimeQuickEnabled,
                 quickPerMinute: quickPerMinute
             ),
             journal: journal,
@@ -3326,6 +3476,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     private var quickTerminalStatuses: [String]
     private var turnTerminalStatuses: [String]
     private var quickErrors: [CodexClientError]
+    private var realtimeStreamErrors: [CodexClientError]
     private var accountErrors: [CodexClientError]
     private var rateLimitErrors: [CodexClientError]
     private var interruptErrors: [CodexClientError]
@@ -3369,6 +3520,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     private var turnStarts = 0
     private var rateLimitReads = 0
     private var realtimeStops = 0
+    private var realtimeDisables = 0
     private var loginStarts = 0
     private var accountReads = 0
     private var deleteAttempts = 0
@@ -3384,6 +3536,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         quickTerminalStatuses: [String] = [],
         turnTerminalStatuses: [String] = [],
         quickErrors: [CodexClientError] = [],
+        realtimeStreamErrors: [CodexClientError] = [],
         accountErrors: [CodexClientError] = [],
         rateLimitErrors: [CodexClientError] = [],
         interruptErrors: [CodexClientError] = [],
@@ -3425,6 +3578,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         self.quickTerminalStatuses = quickTerminalStatuses
         self.turnTerminalStatuses = turnTerminalStatuses
         self.quickErrors = quickErrors
+        self.realtimeStreamErrors = realtimeStreamErrors
         self.accountErrors = accountErrors
         self.rateLimitErrors = rateLimitErrors
         self.interruptErrors = interruptErrors
@@ -3706,8 +3860,12 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         skills: [CodexSkillInvocation]
     ) async throws -> CodexQuickSession {
         if runtimeCapabilities.realtimeTextV3 {
-            let output = quickOutputs.removeFirst()
             let pair = AsyncThrowingStream<CodexRealtimeEvent, any Error>.makeStream()
+            if !realtimeStreamErrors.isEmpty {
+                pair.continuation.finish(throwing: realtimeStreamErrors.removeFirst())
+                return .realtime(.init(threadID: threadID, events: pair.stream))
+            }
+            let output = quickOutputs.removeFirst()
             pair.continuation.yield(.transcriptDone(role: "assistant", text: output))
             return .realtime(.init(threadID: threadID, events: pair.stream))
         }
@@ -3769,6 +3927,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         hangingContinuations.removeValue(forKey: threadID)?.finish(throwing: CancellationError())
     }
 
+    func disableRealtimeQuick() async { realtimeDisables += 1 }
     func stopRealtimeText(threadID: String) async throws { realtimeStops += 1 }
     func shutdown() async {
         if let shutdownGate {
@@ -3785,6 +3944,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
     func turnStartCount() -> Int { turnStarts }
     func rateLimitReadCount() -> Int { rateLimitReads }
     func realtimeStopCount() -> Int { realtimeStops }
+    func realtimeDisableCount() -> Int { realtimeDisables }
     func loginStartCount() -> Int { loginStarts }
     func accountReadCount() -> Int { accountReads }
     func baseCount() -> Int { nextBase - 1 }

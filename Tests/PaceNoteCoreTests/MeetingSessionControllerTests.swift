@@ -151,6 +151,35 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testSpeakerBriefIsBoundIntoEveryAutomaticResponseTurn() async throws {
+        let brief = "Eight years with React; lately building TypeScript AI products."
+        let harness = makeHarness(mode: .systemOutputOnly, speakerBrief: brief)
+        try await prepareAndStart(harness)
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How many years have you used React, and what have you built lately?",
+                    stability: .final
+                )
+            )
+        )
+
+        let responseStarted = await eventually {
+            let quickCount = await harness.response.requestedTurns.count
+            let deepCount = await harness.response.deepRequestedTurns.count
+            return quickCount == 1 && deepCount == 1
+        }
+        let quickTurn = await harness.response.requestedTurns.first
+        let deepTurn = await harness.response.deepRequestedTurns.first
+
+        XCTAssertTrue(responseStarted)
+        XCTAssertEqual(quickTurn?.speakerBrief, brief)
+        XCTAssertEqual(deepTurn?.speakerBrief, brief)
+        _ = await harness.controller.stop()
+    }
+
     func testQuickFailuresUseAccurateTransientBrownouts() async throws {
         let cases: [(MeetingResponseError, BrownoutReason)] = [
             (.quickRateLimited, .quickLimited),
@@ -215,7 +244,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testAutomaticQuestionAfterQuickFailureReplacesCardAndRecovers() async throws {
+    func testAutomaticQuestionAfterQuickFailureKeepsFirstThreadAndRecovers() async throws {
         let response = FakeMeetingResponseGenerator(
             slowDeepGenerations: [1],
             quickFailuresRemaining: 1,
@@ -244,9 +273,12 @@ final class MeetingSessionControllerTests: XCTestCase {
 
         let recovered = await eventually {
             let state = await harness.controller.state()
-            return state.suggestions.contains { $0.stage == .quick }
-                && state.suggestions.contains { $0.stage == .deep }
-                && state.suggestions.allSatisfy { $0.identity != failedCard.identity }
+            let recoveredCards = state.suggestions.filter {
+                $0.identity != failedCard.identity
+            }
+            return state.suggestions.contains { $0.identity == failedCard.identity }
+                && recoveredCards.contains { $0.stage == .quick }
+                && recoveredCards.contains { $0.stage == .deep }
                 && !state.brownouts.contains { $0.reason == .quickLimited }
         }
         let quickTurns = await response.requestedTurns
@@ -377,7 +409,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testAutomaticQuestionAfterDeepFailureReplacesCardAndRecovers() async throws {
+    func testAutomaticQuestionAfterDeepFailureKeepsFirstThreadAndRecovers() async throws {
         let response = FakeMeetingResponseGenerator(
             deepFailuresRemaining: 1,
             deepFailure: .deepRateLimited
@@ -406,9 +438,12 @@ final class MeetingSessionControllerTests: XCTestCase {
 
         let recovered = await eventually {
             let state = await harness.controller.state()
-            return state.suggestions.contains { $0.stage == .quick }
-                && state.suggestions.contains { $0.stage == .deep }
-                && state.suggestions.allSatisfy { $0.identity != failedCard.identity }
+            let recoveredCards = state.suggestions.filter {
+                $0.identity != failedCard.identity
+            }
+            return state.suggestions.contains { $0.identity == failedCard.identity }
+                && recoveredCards.contains { $0.stage == .bridge || $0.stage == .quick }
+                && recoveredCards.contains { $0.stage == .deep }
                 && !state.brownouts.contains { $0.reason.isDeepResponseFailure }
         }
         let quickTurns = await response.requestedTurns
@@ -584,7 +619,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testExpandedFinalRevisionOfAutomaticQuestionStartsCorrectedResponse() async throws {
+    func testExpandedFinalRevisionStartsFollowUpWithoutReplacingOriginalAnswer() async throws {
         let clock = LockedMeetingTime(10)
         let harness = makeHarness(mode: .systemOutputOnly, time: clock)
         try await prepareAndStart(harness)
@@ -622,10 +657,14 @@ final class MeetingSessionControllerTests: XCTestCase {
                 == [partialQuestion, finalQuestion]
         }
         let state = await harness.controller.state()
+        let cancelCount = await harness.response.cancelCount
         XCTAssertTrue(correctedResponseStarted)
         XCTAssertEqual(state.transcript.count, 1)
         XCTAssertEqual(state.transcript.first?.text, finalQuestion)
         XCTAssertEqual(state.transcript.first?.isFinal, true)
+        XCTAssertTrue(state.suggestions.contains { $0.identity.generation == 1 })
+        XCTAssertTrue(state.suggestions.contains { $0.identity.generation == 2 })
+        XCTAssertEqual(cancelCount, 0)
         _ = await harness.controller.stop()
     }
 
@@ -771,6 +810,14 @@ final class MeetingSessionControllerTests: XCTestCase {
     func testProviderCapacityLimitDoesNotPreventMeetingCapture() async throws {
         let response = FakeMeetingResponseGenerator(prepareFailure: .providerCapacityUnavailable)
         let harness = makeHarness(mode: .manualOnly, response: response)
+        let suggestionLifecycle = SuggestionThreadLifecycleProbe()
+        let events = await harness.controller.events()
+        let eventTask = Task {
+            for await event in events {
+                await suggestionLifecycle.record(event)
+            }
+        }
+        defer { eventTask.cancel() }
 
         _ = try await harness.controller.preflight(
             consent: MeetingConsent(participantDisclosureConfirmed: true)
@@ -788,6 +835,10 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(state.isRunning)
         XCTAssertTrue(state.suggestions.contains { $0.stage == .bridge })
         XCTAssertTrue(state.brownouts.contains { $0.reason == .providerLimited })
+        let failureWasScopedToTheThread = await eventually {
+            await suggestionLifecycle.hasCompletedProviderFailure(generation: 1)
+        }
+        XCTAssertTrue(failureWasScopedToTheThread)
         _ = await harness.controller.stop()
     }
 
@@ -862,6 +913,45 @@ final class MeetingSessionControllerTests: XCTestCase {
                 && !state.brownouts.contains { $0.reason == .providerPreparing }
         }
         XCTAssertTrue(recovered)
+        _ = await harness.controller.stop()
+    }
+
+    func testQuestionsDetectedDuringProviderWarmupResumeAsIndependentThreads() async throws {
+        let preparationBarrier = AudioOperationBarrier()
+        await preparationBarrier.arm()
+        let response = FakeMeetingResponseGenerator(prepareBarrier: preparationBarrier)
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        try await harness.controller.start()
+        await preparationBarrier.waitUntilEntered()
+
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, "How do we secure the database?", stability: .final))
+        )
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, "And how does MCP change that plan?", stability: .final))
+        )
+        let bothBridgesVisible = await eventually {
+            let bridges = await harness.controller.state().suggestions.filter { $0.stage == .bridge }
+            return Set(bridges.map { $0.identity.generation }) == [1, 2]
+        }
+        XCTAssertTrue(bothBridgesVisible)
+
+        await preparationBarrier.release()
+        let bothDeepAnswersVisible = await eventually {
+            let deep = await harness.controller.state().suggestions.filter { $0.stage == .deep }
+            return Set(deep.map { $0.identity.generation }) == [1, 2]
+        }
+        let requestedQuestions = await response.deepRequestedTurns.map(\.question)
+
+        XCTAssertTrue(bothDeepAnswersVisible)
+        XCTAssertEqual(
+            Set(requestedQuestions),
+            ["How do we secure the database?", "And how does MCP change that plan?"]
+        )
         _ = await harness.controller.stop()
     }
 
@@ -1046,7 +1136,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testNewTypedCueCancelsStaleDeepAndOnlyLatestCardsRemain() async throws {
+    func testNewTypedCueKeepsEarlierAnswerAndRunsFollowUpInParallel() async throws {
         let clock = LockedMeetingTime(10)
         let response = FakeMeetingResponseGenerator(slowDeepGenerations: [1])
         let harness = makeHarness(mode: .manualOnly, response: response, time: clock)
@@ -1068,13 +1158,13 @@ final class MeetingSessionControllerTests: XCTestCase {
         let cancelCount = await response.cancelCount
         XCTAssertTrue(firstCueArrived)
         XCTAssertTrue(secondDeepArrived)
-        XCTAssertFalse(state.suggestions.contains { $0.identity.generation == 1 })
-        XCTAssertTrue(state.suggestions.allSatisfy { $0.identity.generation == 2 })
-        XCTAssertGreaterThanOrEqual(cancelCount, 2)
+        XCTAssertTrue(state.suggestions.contains { $0.identity.generation == 1 })
+        XCTAssertTrue(state.suggestions.contains { $0.identity.generation == 2 })
+        XCTAssertEqual(cancelCount, 0)
         let timing = await harness.controller.timingSnapshot()
         XCTAssertEqual(timing.samples.count, 2)
         XCTAssertEqual(timing.samples[0].turnStableToBridgeReadySeconds, 0)
-        XCTAssertEqual(timing.samples[0].invalidationOutcome, .newerTurn)
+        XCTAssertNil(timing.samples[0].invalidationOutcome)
         XCTAssertEqual(timing.samples[1].deepOutcome, .ready)
         _ = await harness.controller.stop()
     }
@@ -1122,7 +1212,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testDismissCancelsDeepAndClearsOnlyCurrentSuggestionCards() async throws {
+    func testDismissCancelsOnlySelectedDeepAndClearsItsSuggestionCards() async throws {
         let clock = LockedMeetingTime(10)
         let deepBarrier = AudioOperationBarrier()
         await deepBarrier.arm()
@@ -1145,7 +1235,22 @@ final class MeetingSessionControllerTests: XCTestCase {
         let identity = try XCTUnwrap(beforeDismiss.suggestions.first?.identity)
         let transcriptBeforeDismiss = beforeDismiss.transcript
         let cancelCountBeforeDismiss = await response.cancelCount
-        await harness.controller.dismissSuggestion(identity: identity)
+        let dismissCompletion = AsyncCompletionProbe()
+        let dismissTask = Task {
+            await harness.controller.dismissSuggestion(identity: identity)
+            await dismissCompletion.markCompleted()
+        }
+        let clearedWhileCancellationDrains = await eventually {
+            await harness.controller.state().suggestions.isEmpty
+        }
+        let cancelCountWhileCancellationDrains = await response.cancelCount
+        let dismissFinishedEarly = await dismissCompletion.isCompleted()
+        XCTAssertTrue(clearedWhileCancellationDrains)
+        XCTAssertFalse(dismissFinishedEarly)
+        XCTAssertEqual(cancelCountWhileCancellationDrains, cancelCountBeforeDismiss)
+
+        await deepBarrier.release()
+        await dismissTask.value
 
         let dismissed = await harness.controller.state()
         let timing = await harness.controller.timingSnapshot()
@@ -1158,11 +1263,10 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(dismissed.suggestions.isEmpty)
         XCTAssertEqual(microphoneStopCount, 0)
         XCTAssertEqual(outputStopCount, 0)
-        XCTAssertGreaterThan(cancelCountAfterDismiss, cancelCountBeforeDismiss)
+        XCTAssertEqual(cancelCountAfterDismiss, cancelCountBeforeDismiss)
         XCTAssertEqual(timing.userDismissedCount, 1)
         XCTAssertEqual(timing.samples.first?.invalidationOutcome, .userDismissed)
 
-        await deepBarrier.release()
         try? await Task.sleep(for: .milliseconds(20))
         let stateAfterLateDeep = await harness.controller.state()
         XCTAssertTrue(stateAfterLateDeep.suggestions.isEmpty)
@@ -1194,9 +1298,8 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(auditedNeedles.contains(expectedFragment))
     }
 
-    func testDismissCancellationFinishesBeforeANewerTurnStartsGeneration() async throws {
-        let cancellationBarrier = AudioOperationBarrier()
-        let response = FakeMeetingResponseGenerator(cancelBarrier: cancellationBarrier)
+    func testDismissingOneThreadDoesNotCancelOrDelayParallelFollowUp() async throws {
+        let response = FakeMeetingResponseGenerator(slowDeepGenerations: [1])
         let harness = makeHarness(mode: .manualOnly, response: response)
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is the first path isolated?")
@@ -1207,51 +1310,70 @@ final class MeetingSessionControllerTests: XCTestCase {
         let firstState = await harness.controller.state()
         let firstIdentity = try XCTUnwrap(firstState.suggestions.first?.identity)
 
-        await cancellationBarrier.arm()
-        let dismissTask = Task {
-            await harness.controller.dismissSuggestion(identity: firstIdentity)
-        }
-        await cancellationBarrier.waitUntilEntered()
-        let nextTurnTask = Task {
-            try await harness.controller.submitTypedQuestion("Why is the second path bounded?")
-        }
-        try await Task.sleep(for: .milliseconds(20))
-        let deepRequestCountWhileCancelling = await response.deepRequestedTurns.count
-        XCTAssertEqual(deepRequestCountWhileCancelling, 1)
-
-        await cancellationBarrier.release()
-        await dismissTask.value
-        try await nextTurnTask.value
+        try await harness.controller.submitTypedQuestion("Why is the second path bounded?")
         let newerDeepArrived = await eventually {
             await harness.controller.state().suggestions.contains {
                 $0.identity.generation == 2 && $0.stage == .deep
             }
         }
         XCTAssertTrue(newerDeepArrived)
+        let cancelCountBeforeDismiss = await response.cancelCount
+
+        await harness.controller.dismissSuggestion(identity: firstIdentity)
+
+        let stateAfterDismiss = await harness.controller.state()
+        let requestedGenerations = await response.deepRequestedTurns.map(\.identity.generation)
+        XCTAssertFalse(stateAfterDismiss.suggestions.contains { $0.identity == firstIdentity })
+        XCTAssertTrue(
+            stateAfterDismiss.suggestions.contains {
+                $0.identity.generation == 2 && $0.stage == .deep
+            }
+        )
+        XCTAssertEqual(Set(requestedGenerations), [1, 2])
+        let cancelCountAfterDismiss = await response.cancelCount
+        XCTAssertEqual(cancelCountAfterDismiss, cancelCountBeforeDismiss)
         _ = await harness.controller.stop()
     }
 
-    func testPauseJoinsAnInFlightDismissCancellation() async throws {
-        let cancellationBarrier = AudioOperationBarrier()
-        let response = FakeMeetingResponseGenerator(cancelBarrier: cancellationBarrier)
+    func testPauseJoinsAnInFlightIdentityScopedDismissal() async throws {
+        let responseEventBarrier = AudioOperationBarrier()
+        await responseEventBarrier.arm()
+        let response = FakeMeetingResponseGenerator()
         let harness = makeHarness(mode: .manualOnly, response: response)
+        await harness.controller.setResponseEventTestHook { event in
+            if case .deep = event {
+                await responseEventBarrier.suspendIfArmed()
+            }
+        }
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is this queue bounded?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .quick }
+            let state = await harness.controller.state()
+            return !state.suggestions.isEmpty
         }
         XCTAssertTrue(cueArrived)
         let stateWithCue = await harness.controller.state()
         let identity = try XCTUnwrap(stateWithCue.suggestions.first?.identity)
         let transcriptBeforeDismiss = stateWithCue.transcript
+        await responseEventBarrier.waitUntilEntered()
 
-        await cancellationBarrier.arm()
         let dismissTask = Task {
             await harness.controller.dismissSuggestion(identity: identity)
         }
-        await cancellationBarrier.waitUntilEntered()
-        let pauseTask = Task { try await harness.controller.pause() }
-        await cancellationBarrier.release()
+        let suggestionCleared = await eventually {
+            await harness.controller.state().suggestions.isEmpty
+        }
+        XCTAssertTrue(suggestionCleared)
+        let pauseCompletion = AsyncCompletionProbe()
+        let pauseTask = Task {
+            try await harness.controller.pause()
+            await pauseCompletion.markCompleted()
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        let pauseFinishedBeforeDismissalDrain = await pauseCompletion.isCompleted()
+        XCTAssertFalse(pauseFinishedBeforeDismissalDrain)
+
+        await responseEventBarrier.release()
 
         await dismissTask.value
         try await pauseTask.value
@@ -1263,11 +1385,10 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testStopSupersedesAnInFlightDismissCancellation() async throws {
-        let cancellationBarrier = AudioOperationBarrier()
+    func testStopJoinsAnInFlightIdentityScopedDismissal() async throws {
         let responseEventBarrier = AudioOperationBarrier()
         await responseEventBarrier.arm()
-        let response = FakeMeetingResponseGenerator(cancelBarrier: cancellationBarrier)
+        let response = FakeMeetingResponseGenerator()
         let harness = makeHarness(mode: .manualOnly, response: response)
         await harness.controller.setResponseEventTestHook { event in
             if case .deep = event {
@@ -1277,25 +1398,27 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("Why is this queue bounded?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .quick }
+            let state = await harness.controller.state()
+            return !state.suggestions.isEmpty
         }
         XCTAssertTrue(cueArrived)
         await responseEventBarrier.waitUntilEntered()
         let stateWithCue = await harness.controller.state()
         let identity = try XCTUnwrap(stateWithCue.suggestions.first?.identity)
 
-        await cancellationBarrier.arm()
         let stopCompletion = AsyncCompletionProbe()
         let dismissTask = Task {
             await harness.controller.dismissSuggestion(identity: identity)
         }
-        await cancellationBarrier.waitUntilEntered()
+        let suggestionCleared = await eventually {
+            await harness.controller.state().suggestions.isEmpty
+        }
+        XCTAssertTrue(suggestionCleared)
         let stopTask = Task {
             let report = await harness.controller.stop()
             await stopCompletion.markCompleted()
             return report
         }
-        await cancellationBarrier.release()
         try await Task.sleep(for: .milliseconds(20))
 
         let stopFinishedBeforeGenerationDrain = await stopCompletion.isCompleted()
@@ -1319,7 +1442,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(stoppedState.suggestions.isEmpty)
     }
 
-    func testStaleDismissIdentityCannotClearOrCancelANewerTurn() async throws {
+    func testDismissingEarlierIdentityClearsOnlyThatThread() async throws {
         let response = FakeMeetingResponseGenerator(slowDeepGenerations: [1])
         let harness = makeHarness(mode: .manualOnly, response: response)
         try await prepareAndStart(harness)
@@ -1329,7 +1452,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         }
         XCTAssertTrue(firstCueArrived)
         let firstState = await harness.controller.state()
-        let staleIdentity = try XCTUnwrap(firstState.suggestions.first?.identity)
+        let earlierIdentity = try XCTUnwrap(firstState.suggestions.first?.identity)
 
         try await harness.controller.submitTypedQuestion("Why is the second path isolated?")
         let newerDeepArrived = await eventually {
@@ -1338,17 +1461,20 @@ final class MeetingSessionControllerTests: XCTestCase {
             }
         }
         XCTAssertTrue(newerDeepArrived)
-        let beforeStaleDismiss = await harness.controller.state()
+        let beforeEarlierDismiss = await harness.controller.state()
         let cancelCount = await response.cancelCount
 
-        await harness.controller.dismissSuggestion(identity: staleIdentity)
+        await harness.controller.dismissSuggestion(identity: earlierIdentity)
 
-        let stateAfterStaleDismiss = await harness.controller.state()
-        let cancelCountAfterStaleDismiss = await response.cancelCount
-        let timingAfterStaleDismiss = await harness.controller.timingSnapshot()
-        XCTAssertEqual(stateAfterStaleDismiss.suggestions, beforeStaleDismiss.suggestions)
-        XCTAssertEqual(cancelCountAfterStaleDismiss, cancelCount)
-        XCTAssertEqual(timingAfterStaleDismiss.userDismissedCount, 0)
+        let stateAfterEarlierDismiss = await harness.controller.state()
+        let cancelCountAfterEarlierDismiss = await response.cancelCount
+        let timingAfterEarlierDismiss = await harness.controller.timingSnapshot()
+        let newerSuggestionsBeforeDismiss = beforeEarlierDismiss.suggestions.filter {
+            $0.identity != earlierIdentity
+        }
+        XCTAssertEqual(stateAfterEarlierDismiss.suggestions, newerSuggestionsBeforeDismiss)
+        XCTAssertEqual(cancelCountAfterEarlierDismiss, cancelCount)
+        XCTAssertEqual(timingAfterEarlierDismiss.userDismissedCount, 1)
         _ = await harness.controller.stop()
     }
 
@@ -2687,6 +2813,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         microphoneAttributionDelay: Duration = .milliseconds(5),
         systemOutputScope: MeetingSystemOutputScope = .meetingApplication,
         soleNearbySpeakerConfirmed: Bool = false,
+        speakerBrief: String? = nil,
         outputStartError: AudioCaptureError? = nil,
         outputStartBarrier: AudioOperationBarrier? = nil,
         outputStopBarrier: AudioOperationBarrier? = nil,
@@ -2733,6 +2860,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             configuration: MeetingSessionConfiguration(
                 meetingID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
                 captureMode: mode,
+                speakerBrief: speakerBrief,
                 turnBoundaryDelay: .milliseconds(5),
                 microphoneAttributionDelay: microphoneAttributionDelay,
                 systemOutputScope: systemOutputScope,
@@ -3095,6 +3223,34 @@ private actor AsyncCompletionProbe {
     }
 }
 
+private actor SuggestionThreadLifecycleProbe {
+    private var quickFailures: [UInt64: BrownoutReason] = [:]
+    private var deepFailures: [UInt64: BrownoutReason] = [:]
+    private var completedGenerations: Set<UInt64> = []
+
+    func record(_ event: MeetingSessionEvent) {
+        switch event {
+        case .suggestionStageFailed(let identity, let stage, let reason):
+            switch stage {
+            case .bridge, .quick:
+                quickFailures[identity.generation] = reason
+            case .deep:
+                deepFailures[identity.generation] = reason
+            }
+        case .suggestionThreadCompleted(let identity):
+            completedGenerations.insert(identity.generation)
+        default:
+            break
+        }
+    }
+
+    func hasCompletedProviderFailure(generation: UInt64) -> Bool {
+        quickFailures[generation] == .providerLimited
+            && deepFailures[generation] == .providerLimited
+            && completedGenerations.contains(generation)
+    }
+}
+
 private actor StopReportProbe {
     private var report: MeetingSessionStopReport?
 
@@ -3305,7 +3461,7 @@ private func testRouteDescriptor(lane: AudioLane) -> AudioRouteDescriptor {
 }
 
 private func eventually(
-    timeout: Duration = .seconds(1),
+    timeout: Duration = .seconds(2),
     condition: @escaping @Sendable () async -> Bool
 ) async -> Bool {
     let clock = ContinuousClock()

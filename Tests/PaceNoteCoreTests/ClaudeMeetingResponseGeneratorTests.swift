@@ -40,7 +40,8 @@ final class ClaudeMeetingResponseGeneratorTests: XCTestCase {
         defer { fixture.cleanup() }
         let turn = fixture.generalTurn(
             question: "How should we choose the queue boundary?",
-            transcript: "The current retry behavior is unclear."
+            transcript: "The current retry behavior is unclear.",
+            speakerBrief: "Eight years with React; lately building TypeScript AI products."
         )
         let draft = DeepDraft(
             turnID: turn.identity.turnID,
@@ -73,6 +74,7 @@ final class ClaudeMeetingResponseGeneratorTests: XCTestCase {
         let input = try JSONDecoder().decode(JSONValue.self, from: request.standardInput)
         XCTAssertEqual(input["meetingQuestion"]?.stringValue, turn.question)
         XCTAssertEqual(input["expected"]?["turnID"]?.stringValue, turn.identity.turnID.uuidString)
+        XCTAssertEqual(input["speakerBrief"]?.stringValue, turn.speakerBrief)
         XCTAssertNil(input["sealedEvidence"]?.objectValue)
         let report = await generator.shutdown()
         XCTAssertEqual(report.failures, [])
@@ -406,7 +408,8 @@ private final class ClaudeGeneratorFixture {
 
     func generalTurn(
         question: String = "What should I say?",
-        transcript: String = "Can you explain the tradeoff?"
+        transcript: String = "Can you explain the tradeoff?",
+        speakerBrief: String? = nil
     ) -> ConversationTurn {
         ConversationTurn(
             identity: TurnIdentity(meetingID: configuration.meetingID, generation: 1),
@@ -419,7 +422,8 @@ private final class ClaudeGeneratorFixture {
                     endedAt: 2,
                     isFinal: true
                 )
-            ]
+            ],
+            speakerBrief: speakerBrief
         )
     }
 

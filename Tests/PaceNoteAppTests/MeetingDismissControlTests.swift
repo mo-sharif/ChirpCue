@@ -8,14 +8,14 @@ final class MeetingDismissControlTests: XCTestCase {
         let appCommands = try source("Sources/PaceNoteApp/PaceNoteApp.swift")
 
         XCTAssertTrue(meetingWindow.contains("meeting.dismiss-suggestion"))
-        XCTAssertTrue(meetingWindow.contains("Dismiss Current Suggestion"))
+        XCTAssertTrue(meetingWindow.contains("Dismiss question"))
         XCTAssertTrue(
             meetingWindow.contains(
-                "Stops this answer and clears its cards. Meeting capture and transcript continue."
+                "Clears only this answer thread. Meeting capture and transcript continue."
             )
         )
         XCTAssertTrue(menuBar.contains("menu-bar.dismiss-suggestion"))
-        XCTAssertTrue(appCommands.contains("Button(\"Dismiss Suggestion\")"))
+        XCTAssertTrue(appCommands.contains("Button(\"Dismiss Latest Answer\")"))
         XCTAssertTrue(
             appCommands.contains(
                 ".keyboardShortcut(\"d\", modifiers: [.command, .shift])"

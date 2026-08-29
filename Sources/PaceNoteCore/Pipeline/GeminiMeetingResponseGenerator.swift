@@ -56,6 +56,7 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
         let protocolVersion: String
         let expected: ExpectedEnvelope
         let speakingStyle: String
+        let speakerBrief: String?
         let meetingQuestion: String
         let recentTranscript: [TranscriptLine]
         let generalGuidancePolicy: String
@@ -341,8 +342,8 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             guard result.terminationStatus == 0 else {
                 throw MeetingResponseError.runtimeUnavailable
             }
-            let draft = try GeminiStructuredOutput.decode(output, as: DeepDraft.self)
-            try Self.validate(draft, for: turn)
+            let receivedDraft = try GeminiStructuredOutput.decode(output, as: DeepDraft.self)
+            let draft = try Self.validatedDraft(receivedDraft, for: turn)
             if let snapshot = configuration.groundingSnapshot, let pack {
                 guard draft.basis.allSatisfy(pack.contains) else {
                     throw MeetingResponseError.groundingMismatch
@@ -481,6 +482,9 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
                 repoAlias: turn.repoAlias
             ),
             speakingStyle: boundedText(speakingStyle, maximumBytes: 256),
+            speakerBrief: turn.speakerBrief.map {
+                boundedText($0, maximumBytes: 2_048)
+            },
             meetingQuestion: question,
             recentTranscript: transcript,
             generalGuidancePolicy: GeneralGuidancePolicy.modelInstructions,
@@ -493,36 +497,14 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
         return data
     }
 
-    private static func validate(_ draft: DeepDraft, for turn: ConversationTurn) throws {
-        guard draft.turnID == turn.identity.turnID,
-            draft.generation == turn.identity.generation,
-            draft.groundingFingerprint == turn.groundingFingerprint,
-            !draft.candidateSayNext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            !draft.candidateSayNext.contains("\0"),
-            draft.candidateSayNext.utf8.count <= 320,
-            wordCount(draft.candidateSayNext) <= 33,
-            draft.confidence.isFinite, (0...1).contains(draft.confidence),
-            draft.basis.count <= 6, draft.missingEvidence.count <= 4,
-            (turn.repoAlias != nil) == (turn.groundingFingerprint != nil)
-        else { throw MeetingResponseError.invalidOutput }
-        if turn.groundingFingerprint == nil {
-            guard draft.kind != .answer, draft.basis.isEmpty else {
-                throw MeetingResponseError.invalidOutput
-            }
-            if draft.kind == .generalAnswer,
-                !GeneralGuidancePolicy.accepts(draft.candidateSayNext)
-            {
-                throw MeetingResponseError.invalidOutput
-            }
-        } else {
-            guard draft.kind != .generalAnswer else { throw MeetingResponseError.invalidOutput }
-            guard draft.kind != .answer || !draft.basis.isEmpty else {
-                throw MeetingResponseError.invalidOutput
-            }
-            guard draft.kind == .answer || draft.basis.isEmpty else {
-                throw MeetingResponseError.invalidOutput
-            }
+    private static func validatedDraft(
+        _ draft: DeepDraft,
+        for turn: ConversationTurn
+    ) throws -> DeepDraft {
+        guard let normalized = DeepDraftValidationPolicy.normalized(draft, for: turn) else {
+            throw MeetingResponseError.invalidOutput
         }
+        return normalized
     }
 
     private static func boundedText(_ value: String, maximumBytes: Int) -> String {
@@ -536,10 +518,6 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             count += bytes
         }
         return String(result)
-    }
-
-    private static func wordCount(_ text: String) -> Int {
-        text.split(whereSeparator: { $0.isWhitespace }).count
     }
 
     private static func removeRuntimeRoot(_ runtimeRoot: URL, meetingPrivateRoot: URL) throws {

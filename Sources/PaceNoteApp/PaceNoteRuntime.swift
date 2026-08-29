@@ -929,12 +929,12 @@ actor PaceNoteRuntime {
                     "The selected repository skill is not present in the sealed snapshot."
                 )
             }
-            let responseGenerator: any MeetingResponseGenerating
+            let providerResponseGenerator: any MeetingResponseGenerating
             let temporaryRoots: [URL]
             let stableProfileRoot: URL?
             switch request.provider {
             case .codex:
-                responseGenerator = CodexMeetingResponseGenerator(
+                providerResponseGenerator = CodexMeetingResponseGenerator(
                     configuration: MeetingResponseConfiguration(
                         meetingID: context.meetingID,
                         meetingPrivateRoot: context.privateRoot,
@@ -946,7 +946,9 @@ actor PaceNoteRuntime {
                         speakingStyle: Self.speakingStyle,
                         groundingSnapshot: context.snapshot,
                         selectedDomainSkillName: request.selectedDomainSkillName,
-                        deepComplexity: .hardTechnical
+                        deepComplexity: context.snapshot == nil ? .narrowTechnical : .hardTechnical,
+                        subscriptionQuickEnabled: true,
+                        realtimeQuickEnabled: false
                     ),
                     journal: journal
                 )
@@ -958,7 +960,7 @@ actor PaceNoteRuntime {
                 ]
                 stableProfileRoot = codexProfileRoot
             case .claude:
-                responseGenerator = ClaudeMeetingResponseGenerator(
+                providerResponseGenerator = ClaudeMeetingResponseGenerator(
                     configuration: ClaudeMeetingResponseConfiguration(
                         meetingID: context.meetingID,
                         meetingPrivateRoot: context.privateRoot,
@@ -973,7 +975,7 @@ actor PaceNoteRuntime {
                 ]
                 stableProfileRoot = nil
             case .gemini:
-                responseGenerator = GeminiMeetingResponseGenerator(
+                providerResponseGenerator = GeminiMeetingResponseGenerator(
                     configuration: GeminiMeetingResponseConfiguration(
                         meetingID: context.meetingID,
                         meetingPrivateRoot: context.privateRoot,
@@ -987,6 +989,15 @@ actor PaceNoteRuntime {
                 ]
                 stableProfileRoot = nil
             }
+            let responseGenerator: any MeetingResponseGenerating =
+                LowLatencyMeetingResponseGenerator(
+                    provider: providerResponseGenerator,
+                    quickGenerator: FoundationModelQuickGenerator(
+                        speakingStyle: Self.speakingStyle
+                    ),
+                    planType: verifiedSubscription.planType,
+                    providerName: request.provider.rawValue
+                )
             let cleaner = DefaultMeetingSessionResourceCleaner(
                 privateRoot: context.privateRoot,
                 temporaryRoots: temporaryRoots,
@@ -1001,6 +1012,7 @@ actor PaceNoteRuntime {
                     meetingID: context.meetingID,
                     captureMode: captureMode,
                     grounding: groundingIdentity,
+                    speakerBrief: Self.speakerBrief,
                     microphoneAttributionDelay: .milliseconds(800),
                     systemOutputScope: request.outputScope.sessionScope,
                     soleNearbySpeakerConfirmed: request.microphoneEnabled
@@ -1011,8 +1023,8 @@ actor PaceNoteRuntime {
                 microphonePermission: microphonePermission,
                 responseGenerator: responseGenerator,
                 responseCoordinatorConfiguration: ResponseCoordinatorConfiguration(
-                    quickDeadline: .milliseconds(1_250),
-                    resultTTL: .seconds(30),
+                    quickDeadline: .seconds(15),
+                    resultTTL: .seconds(90),
                     bridgeText: ResponseCoordinatorConfiguration.deterministicFallback
                 ),
                 resourceCleaner: cleaner
@@ -2044,6 +2056,12 @@ actor PaceNoteRuntime {
         case "Technical": "precise, technical, and conversational, like a pragmatic staff engineer"
         default: "direct, concise, and conversational, like a pragmatic staff engineer"
         }
+    }
+
+    private static var speakerBrief: String? {
+        SpeakerBriefPolicy.normalized(
+            UserDefaults.standard.string(forKey: "paceNote.speakerBrief")
+        )
     }
 
     private static let accountIdentityKey = "paceNote.codexAccountIdentityHash"

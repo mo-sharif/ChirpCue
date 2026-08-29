@@ -51,7 +51,7 @@ test -f "$skill_root/agents/openai.yaml"
 
 skill_hash=$(shasum -a 256 "$skill_root/SKILL.md" | awk '{print $1}')
 metadata_hash=$(shasum -a 256 "$skill_root/agents/openai.yaml" | awk '{print $1}')
-test "$skill_hash" = "35e178c19a45e56deb60fc560672975703235e8acbf4b595e81b853ac255dd65"
+test "$skill_hash" = "88b01a2f2ce2acdd1e08fb9a079b42f169e6e748fa37df147e99f0fca0d34f46"
 test "$metadata_hash" = "66b0d0648153cfcaf53ee8c6088e0cec1c50599f91cdf0118233630f19ecf94f"
 
 codesign --verify --strict --verbose=2 "$app_bundle"

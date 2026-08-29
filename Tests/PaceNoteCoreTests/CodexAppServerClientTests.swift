@@ -77,6 +77,25 @@ final class CodexAppServerClientTests: XCTestCase {
         )
     }
 
+    func testRealtimeFeatureIsEnabledOnlyWhenTheInstalledSchemaSupportsIt() {
+        let base = ["app-server", "--strict-config", "--stdio"]
+
+        XCTAssertEqual(
+            CodexAppServerClient.processArguments(
+                base,
+                for: .init(realtimeTextV3: true)
+            ),
+            base + ["--enable", "realtime_conversation"]
+        )
+        XCTAssertEqual(
+            CodexAppServerClient.processArguments(
+                base,
+                for: .none
+            ),
+            base
+        )
+    }
+
     func testBoundedProcessRunnerDrainsBothPipesWithoutDeadlock() async throws {
         let result = try await BoundedProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
@@ -492,6 +511,159 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testEphemeralForkFallsBackToUnsubscribeWhenDeleteIsRejected() async throws {
+        let base = CodexBaseThread(
+            id: "base-thread",
+            model: "deep-model",
+            permissionProfileID: ":read-only",
+            cwd: "/tmp/pacenote-snapshot",
+            runtimeWorkspaceRoots: ["/tmp/pacenote-snapshot"],
+            instructionSources: []
+        )
+        let forkParams: JSONValue = [
+            "threadId": "base-thread",
+            "ephemeral": true,
+            "excludeTurns": true,
+            "approvalPolicy": "never",
+            "permissions": ":read-only",
+            "runtimeWorkspaceRoots": ["/tmp/pacenote-snapshot"],
+            "model": "quick-model",
+        ]
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "thread/fork",
+                params: forkParams,
+                result: CodexFixtures.value(CodexFixtures.forkThreadResult)
+            ),
+            .init(
+                method: "thread/delete",
+                params: ["threadId": "fork-thread"],
+                error: .requestFailed(method: "thread/delete", code: -32_600)
+            ),
+            .init(
+                method: "thread/unsubscribe",
+                params: ["threadId": "fork-thread"],
+                result: CodexFixtures.value(CodexFixtures.emptyResult)
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        let fork = try await client.forkEphemeral(from: base, model: "quick-model")
+        try await client.deleteThread(id: fork.id)
+
+        let cleanupExhausted = await transport.isExhausted()
+        XCTAssertTrue(cleanupExhausted)
+        await client.shutdown()
+    }
+
+    func testDirectResponseTemplateStartsOnlyOneEphemeralThreadAndUnsubscribesIt() async throws {
+        let startParams: JSONValue = [
+            "model": "quick-model",
+            "cwd": "/tmp/pacenote-snapshot",
+            "approvalPolicy": "never",
+            "ephemeral": true,
+            "serviceName": "pacenote",
+        ]
+        let directResult = #"""
+            {
+              "thread":{"id":"fork-thread","sessionId":"fork-thread","forkedFromId":null,"ephemeral":true},
+              "model":"quick-model",
+              "modelProvider":"openai",
+              "serviceTier":null,
+              "cwd":"/tmp/pacenote-snapshot",
+              "instructionSources":[],
+              "approvalPolicy":"never",
+              "sandbox":{"type":"readOnly","networkAccess":false},
+              "reasoningEffort":"low"
+            }
+            """#
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "thread/start",
+                params: startParams,
+                result: CodexFixtures.value(directResult)
+            ),
+            .init(
+                method: "thread/delete",
+                params: ["threadId": "fork-thread"],
+                error: .requestFailed(method: "thread/delete", code: -32_600)
+            ),
+            .init(
+                method: "thread/unsubscribe",
+                params: ["threadId": "fork-thread"],
+                result: CodexFixtures.value(CodexFixtures.emptyResult)
+            ),
+        ])
+        let templateRecorder = CreatedThreadIDRecorder()
+        let recorder = CreatedThreadIDRecorder()
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        XCTAssertTrue(client.usesDirectEphemeralResponses)
+        let template = try await client.prepareResponseTemplate(
+            cwd: "/tmp/pacenote-snapshot",
+            runtimeWorkspaceRoots: ["/tmp/pacenote-snapshot"],
+            model: "quick-model",
+            baseInstructions: "Quick policy",
+            expectedInstructionSources: [],
+            onCreated: { await templateRecorder.record($0) }
+        )
+        let response = try await client.createEphemeralResponseThread(
+            from: template,
+            model: "quick-model",
+            baseInstructions: "Quick policy",
+            onCreated: { await recorder.record($0) }
+        )
+        try await client.deleteThread(id: response.id)
+
+        XCTAssertEqual(template.id, "fork-thread")
+        XCTAssertEqual(response.id, "fork-thread")
+        XCTAssertEqual(response.baseThreadID, template.id)
+        let templateIdentifiers = await templateRecorder.identifiers()
+        let identifiers = await recorder.identifiers()
+        let exhausted = await transport.isExhausted()
+        XCTAssertEqual(templateIdentifiers, ["fork-thread"])
+        XCTAssertTrue(identifiers.isEmpty)
+        XCTAssertTrue(exhausted)
+        await client.shutdown()
+    }
+
+    func testFastServiceTierIsScopedToTheQuickTurn() async throws {
+        let turnParams: JSONValue = [
+            "threadId": "fork-thread",
+            "input": [["type": "text", "text": "Answer briefly.", "text_elements": []]],
+            "approvalPolicy": "never",
+            "model": "gpt-5.6-sol",
+            "effort": "low",
+            "serviceTierForTurn": "priority",
+        ]
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "turn/start",
+                params: turnParams,
+                result: CodexFixtures.value(CodexFixtures.turnStartResult)
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+
+        _ = try await client.startTurn(
+            threadID: "fork-thread",
+            text: "Answer briefly.",
+            model: "gpt-5.6-sol",
+            effort: "low",
+            serviceTier: "priority"
+        )
+
+        let fastTurnExhausted = await transport.isExhausted()
+        XCTAssertTrue(fastTurnExhausted)
+        await client.shutdown()
+    }
+
     func testBaseCreationPublishesOpaqueIDBeforeMetadataValidation() async throws {
         let startParams: JSONValue = [
             "model": "deep-model",
@@ -652,7 +824,6 @@ final class CodexAppServerClientTests: XCTestCase {
                 ]
             ],
             "approvalPolicy": "never",
-            "permissions": ":read-only",
             "model": "quick-model",
             "effort": "low",
             "outputSchema": outputSchema,
@@ -700,6 +871,152 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testTerminalTurnErrorFinishesStreamWithoutWaitingForTurnCompleted() async throws {
+        let turnParams: JSONValue = [
+            "threadId": "fork-thread",
+            "input": [["type": "text", "text": "Answer briefly.", "text_elements": []]],
+            "approvalPolicy": "never",
+        ]
+        let terminalError = CodexServerNotification(
+            method: "error",
+            params: [
+                "threadId": "fork-thread",
+                "turnId": "turn-1",
+                "willRetry": false,
+                "error": [
+                    "message": "sensitive provider detail",
+                    "codexErrorInfo": "serverOverloaded",
+                ],
+            ]
+        )
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "turn/start",
+                params: turnParams,
+                result: CodexFixtures.value(CodexFixtures.turnStartResult),
+                eventsBeforeResult: [.notification(terminalError)]
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+        let session = try await client.startTurn(
+            threadID: "fork-thread",
+            text: "Answer briefly."
+        )
+
+        do {
+            for try await _ in session.events {}
+            XCTFail("A terminal provider error must finish the turn stream with an error.")
+        } catch let error as CodexClientError {
+            XCTAssertEqual(error, .turnFailed(reason: "serverOverloaded"))
+            XCTAssertFalse(error.localizedDescription.contains("sensitive provider detail"))
+        }
+        let terminalExhausted = await transport.isExhausted()
+        XCTAssertTrue(terminalExhausted)
+        await client.shutdown()
+    }
+
+    func testTurnCompletionRecoversFinalItemWhenItemCompletedWasNotEmitted() async throws {
+        let turnParams: JSONValue = [
+            "threadId": "fork-thread",
+            "input": [["type": "text", "text": "Answer briefly.", "text_elements": []]],
+            "approvalPolicy": "never",
+        ]
+        let completion = CodexServerNotification(
+            method: "turn/completed",
+            params: [
+                "threadId": "fork-thread",
+                "turn": [
+                    "id": "turn-1",
+                    "status": "completed",
+                    "items": [
+                        [
+                            "type": "agentMessage",
+                            "id": "final-item",
+                            "text": "A recovered final answer",
+                            "phase": "final_answer",
+                        ]
+                    ],
+                    "error": .null,
+                ],
+            ]
+        )
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "turn/start",
+                params: turnParams,
+                result: CodexFixtures.value(CodexFixtures.turnStartResult),
+                eventsBeforeResult: [.notification(completion)]
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+        let session = try await client.startTurn(
+            threadID: "fork-thread",
+            text: "Answer briefly."
+        )
+
+        var events: [CodexTurnEvent] = []
+        for try await event in session.events { events.append(event) }
+        XCTAssertEqual(
+            events.first,
+            .itemCompleted([
+                "type": "agentMessage",
+                "id": "final-item",
+                "text": "A recovered final answer",
+                "phase": "final_answer",
+            ])
+        )
+        XCTAssertEqual(events.last, .completed(status: "completed"))
+        await client.shutdown()
+    }
+
+    func testRetryableTurnErrorKeepsStreamOpenForSuccessfulCompletion() async throws {
+        let turnParams: JSONValue = [
+            "threadId": "fork-thread",
+            "input": [["type": "text", "text": "Answer briefly.", "text_elements": []]],
+            "approvalPolicy": "never",
+        ]
+        let retryableError = CodexServerNotification(
+            method: "error",
+            params: [
+                "threadId": "fork-thread",
+                "turnId": "turn-1",
+                "willRetry": true,
+                "error": ["message": "temporary provider failure"],
+            ]
+        )
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "turn/start",
+                params: turnParams,
+                result: CodexFixtures.value(CodexFixtures.turnStartResult),
+                eventsBeforeResult: [
+                    .notification(retryableError),
+                    .notification(CodexFixtures.inbound(CodexFixtures.itemCompletedNotification)),
+                    .notification(CodexFixtures.inbound(CodexFixtures.turnCompletedNotification)),
+                ]
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+        let session = try await client.startTurn(
+            threadID: "fork-thread",
+            text: "Answer briefly."
+        )
+
+        var events: [CodexTurnEvent] = []
+        for try await event in session.events { events.append(event) }
+        XCTAssertTrue(events.contains(.notification(method: "error", params: retryableError.params)))
+        XCTAssertEqual(events.last, .completed(status: "completed"))
+        let retryExhausted = await transport.isExhausted()
+        XCTAssertTrue(retryExhausted)
+        await client.shutdown()
+    }
+
     func testRealtimeQuickUsesTextOnlyV3AndCollectsTypedEvents() async throws {
         let startParams: JSONValue = [
             "threadId": "fork-thread",
@@ -707,7 +1024,6 @@ final class CodexAppServerClientTests: XCTestCase {
             "outputModality": "text",
             "prompt": "Return one short speakable answer.",
             "version": "v3",
-            "model": "quick-model",
         ]
         let transport = FixtureTransport(exchanges: [
             initializeExchange,
@@ -770,6 +1086,137 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testRejectedAdvertisedRealtimeQuickFallsBackToOrdinaryTurn() async throws {
+        let outputSchema: JSONValue = [
+            "type": "object",
+            "properties": ["sayNow": ["type": "string"]],
+            "required": ["sayNow"],
+            "additionalProperties": false,
+        ]
+        let realtimeParams: JSONValue = [
+            "threadId": "fork-thread",
+            "clientManagedHandoffs": true,
+            "outputModality": "text",
+            "prompt": "Return one short speakable answer.",
+            "version": "v3",
+        ]
+        let turnParams: JSONValue = [
+            "threadId": "fork-thread",
+            "input": [
+                [
+                    "type": "text",
+                    "text": "What should I say?",
+                    "text_elements": [],
+                ]
+            ],
+            "approvalPolicy": "never",
+            "model": "quick-model",
+            "effort": "low",
+            "outputSchema": outputSchema,
+        ]
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "thread/realtime/start",
+                params: realtimeParams,
+                error: .requestFailed(method: "thread/realtime/start", code: -32_600)
+            ),
+            .init(
+                method: "turn/start",
+                params: turnParams,
+                result: CodexFixtures.value(CodexFixtures.turnStartResult),
+                eventsBeforeResult: [
+                    .notification(CodexFixtures.inbound(CodexFixtures.itemCompletedNotification)),
+                    .notification(CodexFixtures.inbound(CodexFixtures.turnCompletedNotification)),
+                ]
+            ),
+        ])
+        let client = makeClient(
+            transport: transport,
+            runtimeCapabilities: .init(realtimeTextV3: true)
+        )
+        try await client.initialize()
+
+        let quickSession = try await client.startQuick(
+            threadID: "fork-thread",
+            text: "What should I say?",
+            realtimePrompt: "Return one short speakable answer.",
+            model: "quick-model",
+            outputSchema: outputSchema
+        )
+
+        guard case .turn(let session) = quickSession else {
+            return XCTFail("A rejected realtime endpoint must use the stable turn path.")
+        }
+        var events: [CodexTurnEvent] = []
+        for try await event in session.events { events.append(event) }
+        XCTAssertEqual(events.last, .completed(status: "completed"))
+        let exhausted = await transport.isExhausted()
+        XCTAssertTrue(exhausted)
+        await client.shutdown()
+    }
+
+    func testCompletedRealtimeAnswerTreatsRejectedStopAsAlreadyStopped() async throws {
+        let startParams: JSONValue = [
+            "threadId": "fork-thread",
+            "clientManagedHandoffs": true,
+            "outputModality": "text",
+            "prompt": "Return one short speakable answer.",
+            "version": "v3",
+        ]
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "thread/realtime/start",
+                params: startParams,
+                result: CodexFixtures.value(CodexFixtures.emptyResult),
+                eventsBeforeResult: [
+                    .notification(CodexFixtures.inbound(CodexFixtures.realtimeStartedNotification))
+                ]
+            ),
+            .init(
+                method: "thread/realtime/appendText",
+                params: [
+                    "threadId": "fork-thread",
+                    "text": "What should I say?",
+                    "role": "user",
+                ],
+                result: CodexFixtures.value(CodexFixtures.emptyResult),
+                eventsBeforeResult: [
+                    .notification(CodexFixtures.inbound(CodexFixtures.realtimeDoneNotification))
+                ]
+            ),
+            .init(
+                method: "thread/realtime/stop",
+                params: ["threadId": "fork-thread"],
+                error: .requestFailed(method: "thread/realtime/stop", code: -32_600)
+            ),
+        ])
+        let client = makeClient(
+            transport: transport,
+            runtimeCapabilities: .init(realtimeTextV3: true)
+        )
+        try await client.initialize()
+
+        let quickSession = try await client.startQuick(
+            threadID: "fork-thread",
+            text: "What should I say?",
+            realtimePrompt: "Return one short speakable answer.",
+            model: "quick-model"
+        )
+        guard case .realtime(let session) = quickSession else {
+            return XCTFail("The proven V3 surface should use realtime text.")
+        }
+        let answer = try await CodexStructuredOutput.firstRealtimeAnswer(from: session)
+        XCTAssertEqual(answer, "Say this now.")
+        try await client.stopRealtimeText(threadID: session.threadID)
+        try await client.stopRealtimeText(threadID: session.threadID)
+
+        let exhausted = await transport.isExhausted()
+        XCTAssertTrue(exhausted)
+        await client.shutdown()
+    }
+
     func testUnexpectedServerRequestFailsActiveTurnClosed() async throws {
         let transport = FixtureTransport(exchanges: [
             initializeExchange,
@@ -785,7 +1232,6 @@ final class CodexAppServerClientTests: XCTestCase {
                         ]
                     ],
                     "approvalPolicy": "never",
-                    "permissions": ":read-only",
                 ],
                 result: CodexFixtures.value(CodexFixtures.turnStartResult)
             ),
@@ -857,27 +1303,40 @@ final class CodexAppServerClientTests: XCTestCase {
         )
         do {
             let account = try await client.account()
+            guard account.account?.type == "chatgpt" else {
+                await client.shutdown()
+                throw XCTSkip("The temporary smoke profile is not signed in to ChatGPT.")
+            }
             let models = try await client.listModels()
             let profiles = try await client.listPermissionProfiles(
                 cwd: temporaryDirectory.path
             )
-            _ = try await client.rateLimits()
+            // Some forward-compatible app-server builds do not expose the optional legacy
+            // rate-limit method. Generation performs its own capacity check at turn start.
+            _ = try? await client.rateLimits()
             _ = try await client.listSkills(cwds: [temporaryDirectory.path])
 
-            XCTAssertEqual(account.account?.type, "chatgpt")
             XCTAssertFalse(models.isEmpty)
             XCTAssertTrue(profiles.contains { $0.id == ":read-only" && $0.allowed })
-            XCTAssertTrue(client.runtimeCapabilities.realtimeTextV3)
+            XCTAssertFalse(client.runtimeCapabilities.realtimeTextV3)
 
-            let base = try await client.createPersistentBase(
+            let base = try await client.prepareResponseTemplate(
                 cwd: temporaryDirectory.path,
                 runtimeWorkspaceRoots: [temporaryDirectory.path],
-                model: try XCTUnwrap(models.first?.id)
+                model: try XCTUnwrap(models.first?.id),
+                baseInstructions: nil,
+                expectedInstructionSources: [],
+                onCreated: { _ in }
             )
             do {
-                let fork = try await client.forkEphemeral(from: base)
-                XCTAssertTrue(fork.id != base.id)
-                try await client.deleteThread(id: base.id)
+                let response = try await client.createEphemeralResponseThread(
+                    from: base,
+                    model: base.model,
+                    baseInstructions: nil,
+                    onCreated: { _ in }
+                )
+                XCTAssertEqual(response.id, base.id)
+                try await client.deleteThread(id: response.id)
             } catch {
                 try? await client.deleteThread(id: base.id)
                 throw error
@@ -979,6 +1438,7 @@ private struct FixtureExchange: Sendable {
     let params: JSONValue?
     let result: JSONValue
     let eventsBeforeResult: [CodexTransportEvent]
+    let error: CodexClientError?
 
     init(
         method: String,
@@ -990,6 +1450,20 @@ private struct FixtureExchange: Sendable {
         self.params = params
         self.result = result
         self.eventsBeforeResult = eventsBeforeResult
+        self.error = nil
+    }
+
+    init(
+        method: String,
+        params: JSONValue?,
+        error: CodexClientError,
+        eventsBeforeResult: [CodexTransportEvent] = []
+    ) {
+        self.method = method
+        self.params = params
+        self.result = .object([:])
+        self.eventsBeforeResult = eventsBeforeResult
+        self.error = error
     }
 }
 
@@ -1030,6 +1504,7 @@ private actor FixtureTransport: CodexRPCTransporting {
             throw CodexClientError.invalidResponse(method: method)
         }
         for event in exchange.eventsBeforeResult { emit(event) }
+        if let error = exchange.error { throw error }
         return exchange.result
     }
 

@@ -9,6 +9,9 @@ final class GeneralGuidancePolicyTests: XCTestCase {
             "Could you clarify whether you care more about throughput or response time?",
             "I’d first clarify which data the MCP needs and whether access is strictly read-only; my default is a dedicated least-privilege identity with short-lived credentials and full audit logging.",
             "Which datasets does the MCP actually need, and is access strictly read-only? My default is a dedicated least-privilege identity, short-lived credentials, network controls, query limits, and full audit logs.",
+            "A mutex grants one owner exclusive access, while a semaphore tracks permits and allows bounded concurrency.",
+            "I’ve worked with React for eight years across production web applications. Lately, I’ve focused on TypeScript AI products, internal platforms, and reusable frontend architecture.",
+            "I’ll start with the timeline, then walk through the most relevant recent application and the part I owned.",
         ]
 
         for candidate in accepted {

@@ -69,6 +69,7 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
     case permissionProfileMismatch
     case threadInvariantFailed
     case turnAlreadyStarting
+    case turnFailed(reason: String)
     case serverRequestRejected(
         method: String,
         threadID: String?,
@@ -112,6 +113,8 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
             "Codex returned a thread that failed local safety checks."
         case .turnAlreadyStarting:
             "A Codex turn is already starting for this thread."
+        case .turnFailed(let reason):
+            "Codex could not complete the turn (\(CodexSafeLabel.capability(reason)))."
         case .serverRequestRejected(let method, _, _, _):
             "ChirpCue rejected an unexpected Codex server request: \(CodexSafeLabel.method(method))."
         }
@@ -405,6 +408,32 @@ struct CodexThreadConfigurationResult: Codable, Sendable {
     let approvalPolicy: JSONValue
     let activePermissionProfile: CodexActivePermissionProfile?
     let reasoningEffort: String?
+    let sandbox: JSONValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case thread, model, modelProvider, serviceTier, cwd, runtimeWorkspaceRoots
+        case instructionSources, approvalPolicy, activePermissionProfile, reasoningEffort, sandbox
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        thread = try container.decode(CodexThread.self, forKey: .thread)
+        model = try container.decode(String.self, forKey: .model)
+        modelProvider = try container.decode(String.self, forKey: .modelProvider)
+        serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        runtimeWorkspaceRoots =
+            try container.decodeIfPresent([String].self, forKey: .runtimeWorkspaceRoots) ?? [cwd]
+        instructionSources =
+            try container.decodeIfPresent([String].self, forKey: .instructionSources) ?? []
+        approvalPolicy = try container.decode(JSONValue.self, forKey: .approvalPolicy)
+        activePermissionProfile = try container.decodeIfPresent(
+            CodexActivePermissionProfile.self,
+            forKey: .activePermissionProfile
+        )
+        reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+        sandbox = try container.decodeIfPresent(JSONValue.self, forKey: .sandbox)
+    }
 }
 
 public struct CodexBaseThread: Equatable, Sendable {

@@ -1,4 +1,5 @@
 import AppKit
+import PaceNoteCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -212,6 +213,7 @@ struct MeetingSetupView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     CaptureSetupSection(model: model)
                     ProviderSetupSection(model: model)
+                    SpeakerBriefSetupSection(model: model)
                     RepositorySetupSection(
                         model: model,
                         chooseRepository: { isChoosingRepository = true }
@@ -307,6 +309,41 @@ struct MeetingSetupView: View {
             }
         }
         .interactiveDismissDisabled(model.isPerformingMeetingAction || model.repositoryState.isPending)
+    }
+}
+
+private struct SpeakerBriefSetupSection: View {
+    @Bindable var model: MeetingViewModel
+    @AppStorage("paceNote.speakerBrief") private var speakerBrief = ""
+
+    var body: some View {
+        GroupBox("About you (optional)") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextEditor(text: $speakerBrief)
+                    .frame(minHeight: 82)
+                    .accessibilityLabel("About You")
+                    .accessibilityIdentifier("meeting-setup.speaker-brief")
+                    .onChange(of: speakerBrief) { _, newValue in
+                        if newValue.count > SpeakerBriefPolicy.maximumCharacters {
+                            speakerBrief = String(
+                                newValue.prefix(SpeakerBriefPolicy.maximumCharacters)
+                            )
+                        }
+                        model.meetingConsent.openAIProcessingConfirmed = false
+                    }
+                HStack(alignment: .firstTextBaseline) {
+                    Text(
+                        "Add only facts you want the coach to use, such as years with React, recent applications, and your role. This is stored locally until you clear it."
+                    )
+                    Spacer()
+                    Text("\(speakerBrief.count)/\(SpeakerBriefPolicy.maximumCharacters)")
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(4)
+        }
     }
 }
 

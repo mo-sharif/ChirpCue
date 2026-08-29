@@ -124,6 +124,8 @@ public struct MeetingResponseConfiguration: Sendable {
     public let selectedDomainSkillName: String?
     public let deepComplexity: CodexResponseComplexity
     public let routingPolicy: CodexRoutingPolicy
+    public let subscriptionQuickEnabled: Bool
+    public let realtimeQuickEnabled: Bool
     public let quickPerMinute: Int
     public let deepPerMinute: Int
 
@@ -142,6 +144,8 @@ public struct MeetingResponseConfiguration: Sendable {
         selectedDomainSkillName: String? = nil,
         deepComplexity: CodexResponseComplexity = .narrowTechnical,
         routingPolicy: CodexRoutingPolicy = .codex_0_147,
+        subscriptionQuickEnabled: Bool = true,
+        realtimeQuickEnabled: Bool = true,
         quickPerMinute: Int = 8,
         deepPerMinute: Int = 6
     ) {
@@ -157,6 +161,8 @@ public struct MeetingResponseConfiguration: Sendable {
         self.selectedDomainSkillName = selectedDomainSkillName
         self.deepComplexity = deepComplexity
         self.routingPolicy = routingPolicy
+        self.subscriptionQuickEnabled = subscriptionQuickEnabled
+        self.realtimeQuickEnabled = realtimeQuickEnabled
         self.quickPerMinute = max(0, quickPerMinute)
         self.deepPerMinute = max(0, deepPerMinute)
     }

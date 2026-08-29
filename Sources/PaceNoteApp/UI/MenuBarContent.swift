@@ -74,25 +74,25 @@ struct MenuBarContent: View {
                 action: openMeetingWindow
             )
 
-            Button("Coach Current Turn") {
+            Button("Retry Latest Answer") {
                 Task { await model.coachCurrentTurn() }
             }
             .disabled(!model.canCoachCurrentTurn)
-            .accessibilityLabel("Coach Current Turn")
+            .accessibilityLabel("Retry Latest Answer")
             .accessibilityIdentifier("menu-bar.coach-current-turn")
             .paceNoteAssistiveControl(
-                label: "Coach Current Turn",
+                label: "Retry Latest Answer",
                 identifier: "menu-bar.coach-current-turn",
                 isEnabled: model.canCoachCurrentTurn
             ) {
                 Task { await model.coachCurrentTurn() }
             }
 
-            Button("Dismiss Suggestion") {
+            Button("Dismiss Latest Answer") {
                 Task { await model.dismissSuggestion() }
             }
             .disabled(!model.canDismissSuggestion)
-            .accessibilityLabel("Dismiss Current Suggestion")
+            .accessibilityLabel("Dismiss Latest Answer")
             .accessibilityHint(
                 "Stops this answer and clears its cards. Meeting capture and transcript continue."
             )

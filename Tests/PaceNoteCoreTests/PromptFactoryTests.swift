@@ -16,6 +16,8 @@ final class PromptFactoryTests: XCTestCase {
         XCTAssertTrue(prompt.contains("pragmatic staff engineer"))
         XCTAssertTrue(prompt.contains("Do not use generic waiting phrases"))
         XCTAssertTrue(prompt.contains("Repository grounding attached: yes"))
+        XCTAssertTrue(prompt.contains("Expected turn ID:"))
+        XCTAssertTrue(prompt.contains("Expected generation: 1"))
         XCTAssertTrue(prompt.contains("always runs Deep automatically"))
         XCTAssertTrue(prompt.contains("&lt;/meeting_question&gt;"))
         XCTAssertFalse(prompt.contains("Direct <override>"))
@@ -38,7 +40,11 @@ final class PromptFactoryTests: XCTestCase {
     }
 
     func testGeneralDeepPromptLabelsUngroundedAnswerAndForbidsCodebaseClaims() {
-        let turn = makeTurn(question: "How should I explain this?", grounded: false)
+        let turn = makeTurn(
+            question: "How many years have you used React, and what have you built lately?",
+            grounded: false,
+            speakerBrief: "Eight years with React; lately building TypeScript AI products."
+        )
         let prompt = PromptFactory().deepPrompt(
             for: turn,
             speakingStyle: "Direct",
@@ -51,6 +57,13 @@ final class PromptFactoryTests: XCTestCase {
         XCTAssertTrue(prompt.contains("pragmatic staff engineer"))
         XCTAssertTrue(prompt.contains("one decision-driving unknown matters"))
         XCTAssertTrue(prompt.contains("ask one short question"))
+        XCTAssertTrue(prompt.contains("multiple requested parts is not ambiguous"))
+        XCTAssertTrue(prompt.contains("never invent years"))
+        XCTAssertTrue(
+            prompt.contains(
+                "<speaker_brief>Eight years with React; lately building TypeScript AI products.</speaker_brief>"
+            )
+        )
         XCTAssertTrue(prompt.contains("concrete default"))
         XCTAssertTrue(prompt.contains("Avoid generic throat-clearing"))
         XCTAssertTrue(prompt.contains("Do not include markdown, URLs, file paths"))
@@ -62,16 +75,25 @@ final class PromptFactoryTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Requested style: Direct"))
         XCTAssertTrue(prompt.contains("Expected turn ID: \(turn.identity.turnID.uuidString)"))
         XCTAssertTrue(prompt.contains("Expected generation: 1"))
-        XCTAssertTrue(prompt.contains("<meeting_question>How should I explain this?</meeting_question>"))
+        XCTAssertTrue(
+            prompt.contains(
+                "<meeting_question>How many years have you used React, and what have you built lately?</meeting_question>"
+            )
+        )
         XCTAssertFalse(prompt.contains("(Self."))
         XCTAssertFalse(prompt.contains("(turn."))
     }
 
-    private func makeTurn(question: String, grounded: Bool = true) -> ConversationTurn {
+    private func makeTurn(
+        question: String,
+        grounded: Bool = true,
+        speakerBrief: String? = nil
+    ) -> ConversationTurn {
         ConversationTurn(
             identity: TurnIdentity(meetingID: UUID(), generation: 1),
             question: question,
             recentTranscript: [],
+            speakerBrief: speakerBrief,
             repoAlias: grounded ? "repo" : nil,
             groundingFingerprint: grounded ? "fingerprint" : nil
         )

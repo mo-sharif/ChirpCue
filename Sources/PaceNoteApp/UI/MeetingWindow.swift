@@ -32,15 +32,11 @@ struct MeetingWindow: View {
                 TranscriptPane(segments: model.transcript)
                     .frame(minWidth: 390)
                 SuggestionsPane(
-                    phase: model.phase,
-                    quick: model.quickSuggestion,
-                    deep: model.deepSuggestion,
-                    deepFailure: model.brownouts.sorted(by: { $0.rawValue < $1.rawValue })
-                        .first(where: \.isDeepResponseFailure),
+                    threads: model.suggestionThreads,
                     canDismiss: model.canDismissSuggestion,
                     canRetry: model.canCoachCurrentTurn && !model.isPerformingMeetingAction,
-                    dismiss: {
-                        Task { await model.dismissSuggestion() }
+                    dismiss: { identity in
+                        Task { await model.dismissSuggestion(identity) }
                     },
                     retry: {
                         Task { await model.coachCurrentTurn() }
@@ -173,16 +169,16 @@ private struct MeetingActionControls: View {
                 Button {
                     Task { await model.coachCurrentTurn() }
                 } label: {
-                    Label("Coach Now", systemImage: "sparkles")
+                    Label("Retry Latest", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.glass)
                 .disabled(!model.canCoachCurrentTurn)
-                .help("Generate a response for the current turn (Command-Shift-Return)")
+                .help("Manual fallback: start another answer for the latest question")
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
-                .accessibilityLabel("Coach Now")
+                .accessibilityLabel("Retry Latest Question")
                 .accessibilityIdentifier("meeting.coach-now")
                 .paceNoteAssistiveControl(
-                    label: "Coach Now",
+                    label: "Retry Latest Question",
                     identifier: "meeting.coach-now",
                     isEnabled: model.canCoachCurrentTurn
                 ) {
@@ -469,131 +465,190 @@ private struct TranscriptRow: View {
 }
 
 private struct SuggestionsPane: View {
-    let phase: MeetingPhase
-    let quick: SuggestionCard?
-    let deep: SuggestionCard?
-    let deepFailure: BrownoutReason?
+    let threads: [MeetingSuggestionThread]
+    let canDismiss: Bool
+    let canRetry: Bool
+    let dismiss: (TurnIdentity) -> Void
+    let retry: () -> Void
+
+    private static let bottomAnchor = "suggestion-thread-bottom"
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        Text("Conversation coach")
+                            .font(.title3.weight(.semibold))
+                        Spacer()
+                        Label("Auto coach on", systemImage: "waveform.badge.magnifyingglass")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if threads.isEmpty {
+                        ContentUnavailableView {
+                            Label("Listening for a question", systemImage: "text.bubble")
+                        } description: {
+                            Text(
+                                "ChirpCue starts a new answer automatically whenever the other person finishes a question."
+                            )
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 230)
+                    }
+
+                    ForEach(threads) { thread in
+                        SuggestionThreadView(
+                            thread: thread,
+                            canDismiss: canDismiss,
+                            canRetry: canRetry && thread.id == threads.last?.id,
+                            dismiss: { dismiss(thread.identity) },
+                            retry: retry
+                        )
+                        .id(thread.id)
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchor)
+                }
+                .padding(16)
+            }
+            .onChange(of: threads.map(\.id)) { _, identities in
+                guard !identities.isEmpty else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                }
+            }
+        }
+        .background(.thinMaterial)
+    }
+}
+
+private struct SuggestionThreadView: View {
+    let thread: MeetingSuggestionThread
     let canDismiss: Bool
     let canRetry: Bool
     let dismiss: () -> Void
     let retry: () -> Void
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text("What to say")
-                        .font(.title3.weight(.semibold))
-                    Spacer()
-                    if quick != nil || deep != nil {
-                        Button(action: dismiss) {
-                            Label("Dismiss", systemImage: "xmark.circle")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("QUESTION \(thread.identity.generation)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                threadStatus
+                Spacer()
+                Button(action: dismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(!canDismiss)
+                .help("Dismiss only this answer thread")
+                .accessibilityLabel("Dismiss question \(thread.identity.generation)")
+                .accessibilityHint(
+                    "Clears only this answer thread. Meeting capture and transcript continue."
+                )
+                .accessibilityIdentifier(
+                    "meeting.dismiss-suggestion.\(thread.identity.generation)"
+                )
+            }
+
+            Text(thread.question)
+                .font(.headline)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let quick = thread.quick {
+                SuggestionCardView(
+                    title: quick.stage == .bridge ? "Say now" : "Quick answer",
+                    subtitle: quick.stage == .bridge
+                        ? "Instant opener • smarter answer is running"
+                        : (thread.deep == nil && thread.deepFailure == nil
+                            ? "Fast AI • detailed answer is running" : "Fast AI"),
+                    card: quick,
+                    tint: .blue,
+                    systemImage: "bolt.fill",
+                    symbolAccessibilityLabel: "Fast speaking suggestion"
+                )
+                .accessibilitySortPriority(2)
+            } else {
+                progressRow("Building the quick answer…")
+            }
+
+            if let deep = thread.deep {
+                let presentation = deepPresentation(for: deep)
+                SuggestionCardView(
+                    title: "Detailed answer",
+                    subtitle: presentation.subtitle,
+                    card: deep,
+                    tint: presentation.tint,
+                    systemImage: presentation.systemImage,
+                    symbolAccessibilityLabel: presentation.accessibilityLabel
+                )
+                .accessibilitySortPriority(1)
+            } else if let failure = thread.deepFailure {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(failure.suggestionFailureTitle, systemImage: "exclamationmark.circle")
+                        .font(.caption.weight(.semibold))
+                    Text("The quick answer stays available; no detailed answer arrived.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if canRetry {
+                        Button(action: retry) {
+                            Label("Retry Deep Answer", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.glass)
                         .controlSize(.small)
-                        .keyboardShortcut("d", modifiers: [.command, .shift])
-                        .disabled(!canDismiss)
-                        .help("Stop this answer and clear its cards (Command-Shift-D)")
-                        .accessibilityLabel("Dismiss Current Suggestion")
-                        .accessibilityHint(
-                            "Stops this answer and clears its cards. Meeting capture and transcript continue."
-                        )
-                        .accessibilityIdentifier("meeting.dismiss-suggestion")
-                        .paceNoteAssistiveControl(
-                            label: "Dismiss Current Suggestion",
-                            identifier: "meeting.dismiss-suggestion",
-                            isEnabled: canDismiss,
-                            action: dismiss
+                        .accessibilityIdentifier(
+                            "meeting.retry-deep.\(thread.identity.generation)"
                         )
                     }
-                    Label("You stay in control", systemImage: "person.wave.2")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
-
-                if quick == nil && deep == nil {
-                    if phase == .candidateQuestion || phase == .thinking {
-                        VStack(spacing: 14) {
-                            ProgressView()
-                                .controlSize(.regular)
-                            Text("Generating a quick answer…")
-                                .font(.headline)
-                            Text("A higher-reasoning answer is already running in parallel.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 230)
-                        .accessibilityElement(children: .combine)
-                    } else {
-                        ContentUnavailableView {
-                            Label("Listening for a question", systemImage: "text.bubble")
-                        } description: {
-                            Text(
-                                "ChirpCue automatically starts a fast AI answer when the other person finishes a question."
-                            )
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 230)
-                    }
-                }
-
-                if let quick {
-                    SuggestionCardView(
-                        title: quick.stage == .bridge ? "Say now" : "Quick answer",
-                        subtitle: quick.stage == .bridge
-                            ? "Emergency fallback"
-                            : (deepFailure == nil ? "Fast AI • deeper answer running" : "Fast AI"),
-                        card: quick,
-                        tint: .blue,
-                        systemImage: "lock.fill",
-                        symbolAccessibilityLabel: "Suggestion locked"
-                    )
-                    .id(quick.id)
-                    .accessibilitySortPriority(2)
-                }
-                if let deep {
-                    let presentation = deepPresentation(for: deep)
-                    SuggestionCardView(
-                        title: "Detailed answer",
-                        subtitle: presentation.subtitle,
-                        card: deep,
-                        tint: presentation.tint,
-                        systemImage: presentation.systemImage,
-                        symbolAccessibilityLabel: presentation.accessibilityLabel
-                    )
-                    .id(deep.id)
-                    .accessibilitySortPriority(1)
-                } else if let deepFailure, quick != nil {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label(
-                            deepFailure.suggestionFailureTitle,
-                            systemImage: "exclamationmark.arrow.triangle.2.circlepath"
-                        )
-                        .font(.caption.weight(.semibold))
-                        Text("The quick answer stays available; no detailed answer arrived.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("Retry Answer", action: retry)
-                            .buttonStyle(.glass)
-                            .controlSize(.small)
-                            .disabled(!canRetry)
-                            .accessibilityLabel("Retry Deep Answer")
-                            .accessibilityIdentifier("meeting.retry-deep")
-                    }
-                    .accessibilityElement(children: .contain)
-                } else if quick != nil {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Checking deeper context automatically…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
+            } else {
+                progressRow("Building the detailed answer in parallel…")
             }
-            .padding(16)
+
+            if let failure = thread.quickFailure, thread.quick?.stage == .bridge {
+                Text("Fast AI did not finish: \(failure.suggestionFailureTitle.lowercased()).")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .background(.thinMaterial)
+        .padding(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(.white.opacity(0.1), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var threadStatus: some View {
+        if thread.deep != nil {
+            Label("Ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        } else if thread.deepFailure != nil || thread.isComplete {
+            Label("Quick only", systemImage: "bolt.fill")
+                .foregroundStyle(.orange)
+        } else {
+            Label("Thinking", systemImage: "ellipsis")
+                .foregroundStyle(.blue)
+        }
+    }
+
+    private func progressRow(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func deepPresentation(for card: SuggestionCard) -> DeepSuggestionPresentation {
@@ -759,14 +814,14 @@ private struct ManualQuestionBar: View {
                             action: coachQuestion
                         )
 
-                    Button("Coach Current Turn", action: coachCurrentTurn)
+                    Button("Retry Latest", action: coachCurrentTurn)
                         .buttonStyle(.glass)
                         .disabled(!isCurrentTurnEnabled || isBusy)
-                        .help("Use the recent transcript without adding a manual question")
-                        .accessibilityLabel("Coach Current Turn")
+                        .help("Manual fallback: start another answer for the latest question")
+                        .accessibilityLabel("Retry Latest Question")
                         .accessibilityIdentifier("meeting.coach-current-turn")
                         .paceNoteAssistiveControl(
-                            label: "Coach Current Turn",
+                            label: "Retry Latest Question",
                             identifier: "meeting.coach-current-turn",
                             isEnabled: isCurrentTurnEnabled && !isBusy,
                             action: coachCurrentTurn
@@ -916,6 +971,10 @@ extension TranscriptSource {
 extension BrownoutReason {
     var suggestionFailureTitle: String {
         switch self {
+        case .authenticationExpired: "Provider sign-in is required"
+        case .accountMismatch: "The provider account changed"
+        case .protocolUnsupported: "The provider version is unsupported"
+        case .codexOffline, .appServerCrashed: "The AI provider is unavailable"
         case .providerLimited: "Provider subscription capacity is limited"
         case .deepLimited: "ChirpCue's local Deep limit was reached"
         case .deepBusy: "Deep answer is still busy"
@@ -945,7 +1004,7 @@ extension BrownoutReason {
             "\(provider.shortTitle) version is unsupported"
         case .appServerCrashed: "\(provider.shortTitle) process stopped"
         case .providerLimited: "\(provider.shortTitle) subscription capacity is limited"
-        case .quickLimited: "ChirpCue's local Quick limit was reached"
+        case .quickLimited: "ChirpCue's Quick limit was reached"
         case .quickTimedOut: "Quick coaching timed out"
         case .quickUnavailable: "Quick coaching is unavailable"
         case .quickRejected: "Quick answer failed validation"
@@ -976,7 +1035,7 @@ extension BrownoutReason {
             "Stop and restart this meeting. Audio capture is still connected."
         case .transcriberAssetMissing: "Download the required Apple speech asset, then retry."
         case .providerPreparing:
-            "Capture and transcription are active. ChirpCue will start coaching automatically when the connection is ready."
+            "Capture, transcription, and instant local coaching are active while the provider connects."
         case .codexOffline: "Suggestions are paused until the selected provider connection returns."
         case .authenticationExpired:
             switch provider {

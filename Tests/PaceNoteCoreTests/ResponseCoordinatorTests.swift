@@ -4,6 +4,36 @@ import XCTest
 @testable import PaceNoteCore
 
 final class ResponseCoordinatorTests: XCTestCase {
+    func testQuestionAwareBridgeIsTheFirstEventWithoutWaitingForEitherModel() async throws {
+        let turn = makeTurn(
+            generation: 1,
+            grounded: false,
+            technical: false,
+            question: "How do we secure database access through MCP?"
+        )
+        let coordinator = ResponseCoordinator(
+            generator: ScriptedGenerator(
+                quickDelay: .seconds(10),
+                deepDelay: .seconds(10),
+                quickText: "This answer should still be pending.",
+                turn: turn
+            ),
+            configuration: .init(quickDeadline: .seconds(1), resultTTL: .seconds(2))
+        )
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let stream = await coordinator.suggestions(for: turn)
+        var iterator = stream.makeAsyncIterator()
+
+        let firstEvent = await iterator.next()
+        let first = try XCTUnwrap(firstEvent?.cue)
+
+        XCTAssertTrue(first.isDeterministicBridge)
+        XCTAssertTrue(first.text.contains("least-privilege"))
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
+        await coordinator.invalidate()
+    }
+
     func testFastAIAnswerAppearsBeforeDeepAndBindsReconciliation() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
         let generator = ScriptedGenerator(
@@ -18,9 +48,12 @@ final class ResponseCoordinatorTests: XCTestCase {
         )
 
         let events = await Self.collect(coordinator.suggestions(for: turn))
-        let cue = try XCTUnwrap(events.compactMap(\.cue).first)
+        let cues = events.compactMap(\.cue)
+        let bridge = try XCTUnwrap(cues.first)
+        let cue = try XCTUnwrap(cues.first(where: { !$0.isDeterministicBridge }))
         let deep = try XCTUnwrap(events.compactMap(\.deep).first)
 
+        XCTAssertTrue(bridge.isDeterministicBridge)
         XCTAssertFalse(cue.isDeterministicBridge)
         XCTAssertEqual(
             cue.text,
@@ -47,13 +80,18 @@ final class ResponseCoordinatorTests: XCTestCase {
         var iterator = stream.makeAsyncIterator()
         let firstEvent = await iterator.next()
         let first = try XCTUnwrap(firstEvent)
-        let cue = try XCTUnwrap(first.cue)
+        let bridge = try XCTUnwrap(first.cue)
+        XCTAssertTrue(bridge.isDeterministicBridge)
+
+        let secondEvent = await iterator.next()
+        let second = try XCTUnwrap(secondEvent)
+        let cue = try XCTUnwrap(second.cue)
         XCTAssertFalse(cue.isDeterministicBridge)
 
         await cleanupGate.waitUntilSuspended()
-        let secondEvent = await iterator.next()
-        let second = try XCTUnwrap(secondEvent)
-        XCTAssertNotNil(second.deep)
+        let thirdEvent = await iterator.next()
+        let third = try XCTUnwrap(thirdEvent)
+        XCTAssertNotNil(third.deep)
 
         await cleanupGate.release()
         while await iterator.next() != nil {}
@@ -71,7 +109,7 @@ final class ResponseCoordinatorTests: XCTestCase {
 
         let events = await Self.collect(coordinator.suggestions(for: turn))
 
-        XCTAssertEqual(events.compactMap(\.cue).count, 1)
+        XCTAssertEqual(events.compactMap(\.cue).count, 2)
         XCTAssertEqual(events.compactMap(\.deep).count, 1)
         XCTAssertEqual(events.compactMap(\.quickCleanupUnavailable), [.cleanupUnavailable])
     }
@@ -96,7 +134,7 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertTrue(cue.isDeterministicBridge)
         XCTAssertEqual(
             cue.text,
-            "I'd start by clarifying the goal and constraints, then walk through the tradeoffs before committing to an approach."
+            LocalResponseBridge.response(for: turn.question)
         )
         XCTAssertLessThanOrEqual(cue.text.split(whereSeparator: { $0.isWhitespace }).count, 24)
         XCTAssertEqual(deep.cueHash, cue.textHash)
@@ -152,13 +190,7 @@ final class ResponseCoordinatorTests: XCTestCase {
 
     func testNontechnicalTurnUsesFastAIAnswerAndDeep() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
-        let generator = ScriptedGenerator(
-            quickDelay: .milliseconds(5),
-            deepDelay: .milliseconds(15),
-            quickText: "I would frame the decision around reversibility and the cost of being wrong.",
-            turn: turn,
-            quickNeedsDeep: false
-        )
+        let generator = QuickBeforeDeepGenerator(gate: QuickHandledGate())
         let coordinator = ResponseCoordinator(
             generator: generator,
             configuration: .init(quickDeadline: .milliseconds(100), resultTTL: .seconds(1))
@@ -168,7 +200,9 @@ final class ResponseCoordinatorTests: XCTestCase {
 
         let events = await Self.collect(coordinator.suggestions(for: turn))
 
-        XCTAssertFalse(try XCTUnwrap(events.compactMap(\.cue).first).isDeterministicBridge)
+        XCTAssertTrue(
+            events.compactMap(\.cue).contains(where: { !$0.isDeterministicBridge })
+        )
         XCTAssertEqual(events.compactMap(\.deep).count, 1)
         XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(250))
     }
@@ -195,21 +229,25 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertFalse(deep.composedText.contains("retries three times"))
     }
 
-    func testGroundedTurnRejectsGeneralAnswerKind() async {
+    func testGroundedTurnCanDisplayExplicitlyUngroundedGeneralAnswer() async throws {
         let turn = makeTurn(generation: 1)
         let generator = ScriptedGenerator(
             quickDelay: .milliseconds(1),
             deepDelay: .milliseconds(1),
-            quickText: "Let me verify that.",
+            quickText: "I would start with the direct answer.",
             turn: turn,
-            deepKind: .generalAnswer
+            deepKind: .generalAnswer,
+            deepText:
+                "I’ve worked with React across production web applications. Lately, I’ve focused on TypeScript products and reusable frontend architecture."
         )
         let coordinator = ResponseCoordinator(generator: generator)
 
         let events = await Self.collect(coordinator.suggestions(for: turn))
 
-        XCTAssertTrue(events.compactMap(\.deep).isEmpty)
-        XCTAssertEqual(events.compactMap(\.deepUnavailable).count, 1)
+        let deep = try XCTUnwrap(events.compactMap(\.deep).first)
+        XCTAssertNil(deep.groundingFingerprint)
+        XCTAssertEqual(deep.kind, .generalAnswer)
+        XCTAssertTrue(events.compactMap(\.deepUnavailable).isEmpty)
     }
 
     func testUngroundedTurnRejectsEvidenceAnswerKind() async {
@@ -247,7 +285,7 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertEqual(events.compactMap(\.deepUnavailable).count, 1)
     }
 
-    func testNewerTurnCancelsAndInvalidatesOlderResult() async throws {
+    func testNewerTurnRunsInParallelWithoutInvalidatingOlderResult() async throws {
         let oldTurn = makeTurn(generation: 1)
         let newTurn = makeTurn(generation: 2)
         let generator = ScriptedGenerator(
@@ -275,7 +313,7 @@ final class ResponseCoordinatorTests: XCTestCase {
         }
         let newEvents = await Self.collect(newStream)
 
-        XCTAssertTrue(oldEvents.compactMap(\.deep).isEmpty)
+        XCTAssertEqual(oldEvents.compactMap(\.deep).count, 1)
         XCTAssertEqual(newEvents.compactMap(\.deep).count, 1)
     }
 
@@ -296,6 +334,30 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertTrue(cue.isDeterministicBridge)
         XCTAssertLessThan(result.elapsed, .milliseconds(200))
         XCTAssertEqual(result.events.compactMap(\.deep).count, 1)
+    }
+
+    func testDeepCanUpgradeTheBridgeBeforeTheQuickDeadline() async throws {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let coordinator = ResponseCoordinator(
+            generator: ScriptedGenerator(
+                quickDelay: .seconds(30),
+                deepDelay: .zero,
+                quickText: "This answer should still be pending.",
+                turn: turn
+            ),
+            configuration: .init(quickDeadline: .seconds(1), resultTTL: .seconds(2))
+        )
+        let stream = await coordinator.suggestions(for: turn)
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next()
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        let next = await iterator.next()
+
+        XCTAssertNotNil(next?.deep)
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
+        await coordinator.invalidate()
     }
 
     func testNeverFinishingDeepExpiresAtResultTTLWithoutJoiningCancelledTask() async throws {
@@ -567,6 +629,67 @@ private struct ScriptedGenerator: ResponseGenerating {
     }
 }
 
+/// Makes the ordering asserted by `testNontechnicalTurnUsesFastAIAnswerAndDeep` explicit.
+/// Deep waits until the coordinator has consumed Quick and begun its cleanup step, avoiding a
+/// scheduler-dependent race between two short sleeps on loaded CI hosts.
+private struct QuickBeforeDeepGenerator: ResponseGenerating {
+    let gate: QuickHandledGate
+
+    func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
+        QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            sayNow: "I would frame the decision around reversibility and the cost of being wrong.",
+            needsDeep: false,
+            confidence: 0.72,
+            reason: "general_question"
+        )
+    }
+
+    func awaitQuickCleanup(for identity: TurnIdentity) async throws {
+        _ = identity
+        await gate.release()
+    }
+
+    func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
+        await gate.wait()
+        return DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext:
+                "I would isolate callers from retries and downstream outages with a queued boundary.",
+            confidence: 0.91,
+            basis: []
+        )
+    }
+
+    func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
+        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+    }
+}
+
+private actor QuickHandledGate {
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !released else { return }
+        released = true
+        let pending = waiters
+        waiters.removeAll(keepingCapacity: false)
+        for waiter in pending { waiter.resume() }
+    }
+}
+
 private struct HangingGenerator: ResponseGenerating {
     enum Stage: Sendable {
         case quick
@@ -701,7 +824,8 @@ private struct QuickCleanupControlledGenerator: ResponseGenerating {
     }
 
     func generateDeep(for requestedTurn: ConversationTurn) async throws -> DeepDraft {
-        DeepDraft(
+        try await Task.sleep(for: .milliseconds(5))
+        return DeepDraft(
             turnID: requestedTurn.identity.turnID,
             generation: requestedTurn.identity.generation,
             groundingFingerprint: nil,

@@ -10,6 +10,7 @@ public struct CodexAppServerConfiguration: Sendable {
     public let clientVersion: String
     public let serviceName: String
     public let permissionProfileID: String
+    public let enableRealtimeQuick: Bool
     public let processArguments: [String]
     public let processEnvironment: [String: String]?
 
@@ -25,6 +26,7 @@ public struct CodexAppServerConfiguration: Sendable {
         clientVersion: String,
         serviceName: String = "pacenote",
         permissionProfileID: String = ":read-only",
+        enableRealtimeQuick: Bool = false,
         processArguments: [String] = ["app-server", "--stdio"],
         processEnvironment: [String: String]? = nil
     ) {
@@ -37,12 +39,15 @@ public struct CodexAppServerConfiguration: Sendable {
         self.clientVersion = clientVersion
         self.serviceName = serviceName
         self.permissionProfileID = permissionProfileID
+        self.enableRealtimeQuick = enableRealtimeQuick
         self.processArguments = processArguments
         self.processEnvironment = processEnvironment
     }
 }
 
 public actor CodexAppServerClient {
+    public nonisolated var usesDirectEphemeralResponses: Bool { true }
+
     private enum State: Equatable {
         case new
         case initializing
@@ -68,7 +73,13 @@ public actor CodexAppServerClient {
     private var pendingTurnThreads: Set<String> = []
     private var bufferedTurnNotifications: [String: [CodexServerNotification]] = [:]
     private var turnContinuations: [TurnKey: AsyncThrowingStream<CodexTurnEvent, any Error>.Continuation] = [:]
+    private var completedTurnItemIDs: [TurnKey: Set<String>] = [:]
     private var realtimeContinuations: [String: AsyncThrowingStream<CodexRealtimeEvent, any Error>.Continuation] = [:]
+    private var activeRealtimeThreads: Set<String> = []
+    private var completedRealtimeAnswerThreads: Set<String> = []
+    private var realtimeQuickDisabled = false
+    private var ephemeralThreadIDs: Set<String> = []
+    private var prewarmedResponseThreadIDs: Set<String> = []
 
     init(
         transport: any CodexRPCTransporting,
@@ -91,16 +102,24 @@ public actor CodexAppServerClient {
             environment: configuration.processEnvironment
         )
         try configuration.versionPolicy.validate(version)
-        let runtimeCapabilities = await CodexRuntimeCapabilityInspector.probe(
+        let discoveredCapabilities = await CodexRuntimeCapabilityInspector.probe(
             executableURL: configuration.executableURL,
             environment: configuration.processEnvironment
+        )
+        let runtimeCapabilities =
+            configuration.enableRealtimeQuick
+            ? discoveredCapabilities
+            : .none
+        let processArguments = Self.processArguments(
+            configuration.processArguments,
+            for: runtimeCapabilities
         )
 
         let transport = CodexProcessTransport(
             configuration: .init(
                 executableURL: configuration.executableURL,
                 requestTimeout: configuration.requestTimeout,
-                arguments: configuration.processArguments,
+                arguments: processArguments,
                 environment: configuration.processEnvironment,
                 postLaunchValidator: { processID, executableURL in
                     try SpawnedProcessAttestation.validateCodex(
@@ -118,6 +137,14 @@ public actor CodexAppServerClient {
         )
         try await client.initialize()
         return client
+    }
+
+    static func processArguments(
+        _ base: [String],
+        for capabilities: CodexRuntimeCapabilities
+    ) -> [String] {
+        guard capabilities.realtimeTextV3 else { return base }
+        return base + ["--enable", "realtime_conversation"]
     }
 
     func initialize() async throws {
@@ -487,6 +514,75 @@ public actor CodexAppServerClient {
         )
     }
 
+    public func prepareResponseTemplate(
+        cwd: String,
+        runtimeWorkspaceRoots: [String],
+        model: String,
+        baseInstructions: String?,
+        expectedInstructionSources: [String],
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexBaseThread {
+        try requireReady()
+        try Self.requireAbsolutePath(cwd)
+        guard !runtimeWorkspaceRoots.isEmpty, !model.isEmpty else {
+            throw CodexClientError.threadInvariantFailed
+        }
+        for root in runtimeWorkspaceRoots { try Self.requireAbsolutePath(root) }
+        for source in expectedInstructionSources { try Self.requireAbsolutePath(source) }
+        _ = baseInstructions
+
+        // Prewarm one transcript-free ephemeral thread while the provider prepares in the
+        // background. The first answer can then start its turn immediately instead of paying a
+        // sometimes-variable thread/start cost after a question is detected.
+        let params: JSONValue = [
+            "model": .string(model),
+            "cwd": .string(cwd),
+            "approvalPolicy": "never",
+            "ephemeral": true,
+            "serviceName": .string(configuration.serviceName),
+        ]
+        let result: CodexThreadConfigurationResult = try await call(
+            method: "thread/start",
+            params: params
+        )
+        ephemeralThreadIDs.insert(result.thread.id)
+        prewarmedResponseThreadIDs.insert(result.thread.id)
+        do {
+            try await onCreated(result.thread.id)
+        } catch {
+            _ = try? await transport.request(
+                method: "thread/unsubscribe",
+                params: ["threadId": .string(result.thread.id)]
+            )
+            ephemeralThreadIDs.remove(result.thread.id)
+            prewarmedResponseThreadIDs.remove(result.thread.id)
+            throw error
+        }
+        do {
+            try validateThreadResult(
+                result,
+                expectedEphemeral: true,
+                expectedParent: nil,
+                expectedCwd: cwd,
+                expectedWorkspaceRoots: [cwd]
+            )
+        } catch {
+            throw CodexCreatedThreadFailure(
+                threadID: result.thread.id,
+                cause: Self.createdThreadFailureCause(for: error)
+            )
+        }
+
+        return CodexBaseThread(
+            id: result.thread.id,
+            model: result.model,
+            permissionProfileID: configuration.permissionProfileID,
+            cwd: result.cwd,
+            runtimeWorkspaceRoots: result.runtimeWorkspaceRoots,
+            instructionSources: result.instructionSources
+        )
+    }
+
     public func forkEphemeral(
         from base: CodexBaseThread,
         model: String? = nil
@@ -559,6 +655,86 @@ public actor CodexAppServerClient {
                 cause: Self.createdThreadFailureCause(for: error)
             )
         }
+        ephemeralThreadIDs.insert(result.thread.id)
+        return CodexEphemeralThread(
+            id: result.thread.id,
+            baseThreadID: base.id,
+            model: result.model,
+            permissionProfileID: configuration.permissionProfileID,
+            cwd: result.cwd,
+            runtimeWorkspaceRoots: result.runtimeWorkspaceRoots,
+            instructionSources: result.instructionSources
+        )
+    }
+
+    public func createEphemeralResponseThread(
+        from base: CodexBaseThread,
+        model: String?,
+        baseInstructions: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexEphemeralThread {
+        try requireReady()
+        guard base.permissionProfileID == configuration.permissionProfileID else {
+            throw CodexClientError.permissionProfileMismatch
+        }
+
+        if prewarmedResponseThreadIDs.remove(base.id) != nil {
+            guard model == nil || model == base.model else {
+                throw CodexClientError.threadInvariantFailed
+            }
+            _ = baseInstructions
+            return CodexEphemeralThread(
+                id: base.id,
+                baseThreadID: base.id,
+                model: base.model,
+                permissionProfileID: base.permissionProfileID,
+                cwd: base.cwd,
+                runtimeWorkspaceRoots: base.runtimeWorkspaceRoots,
+                instructionSources: base.instructionSources
+            )
+        }
+
+        let params: [String: JSONValue] = [
+            "model": .string(model ?? base.model),
+            "cwd": .string(base.cwd),
+            "approvalPolicy": "never",
+            "ephemeral": true,
+            "serviceName": .string(configuration.serviceName),
+        ]
+        // Current subscription app-server builds can stall while materializing replacement
+        // thread-level instructions. Both lanes carry the same policy in the turn prompt, and
+        // Quick has no tools or repository root, so keep thread creation minimal.
+        _ = baseInstructions
+
+        let result: CodexThreadConfigurationResult = try await call(
+            method: "thread/start",
+            params: .object(params)
+        )
+        ephemeralThreadIDs.insert(result.thread.id)
+        do {
+            try await onCreated(result.thread.id)
+        } catch {
+            _ = try? await transport.request(
+                method: "thread/unsubscribe",
+                params: ["threadId": .string(result.thread.id)]
+            )
+            ephemeralThreadIDs.remove(result.thread.id)
+            throw error
+        }
+        do {
+            try validateThreadResult(
+                result,
+                expectedEphemeral: true,
+                expectedParent: nil,
+                expectedCwd: base.cwd,
+                expectedWorkspaceRoots: base.runtimeWorkspaceRoots
+            )
+        } catch {
+            throw CodexCreatedThreadFailure(
+                threadID: result.thread.id,
+                cause: Self.createdThreadFailureCause(for: error)
+            )
+        }
         return CodexEphemeralThread(
             id: result.thread.id,
             baseThreadID: base.id,
@@ -573,9 +749,48 @@ public actor CodexAppServerClient {
     public func deleteThread(id: String) async throws {
         try requireReady()
         guard !id.isEmpty else { throw CodexClientError.threadInvariantFailed }
-        _ = try await transport.request(
-            method: "thread/delete",
-            params: ["threadId": .string(id)]
+        do {
+            _ = try await transport.request(
+                method: "thread/delete",
+                params: ["threadId": .string(id)]
+            )
+            ephemeralThreadIDs.remove(id)
+            prewarmedResponseThreadIDs.remove(id)
+        } catch let error as CodexClientError {
+            guard case .requestFailed(let method, let code) = error,
+                method == "thread/delete",
+                code == -32_600,
+                ephemeralThreadIDs.contains(id)
+            else { throw error }
+
+            // Current app-server builds reject thread/delete for ephemeral forks. They are never
+            // written to history, so unsubscribe them now and let process shutdown zeroize their
+            // remaining in-memory state. Durable base threads still require a successful delete.
+            _ = try await transport.request(
+                method: "thread/unsubscribe",
+                params: ["threadId": .string(id)]
+            )
+            ephemeralThreadIDs.remove(id)
+            prewarmedResponseThreadIDs.remove(id)
+        }
+    }
+
+    public func startTurn(
+        threadID: String,
+        text: String,
+        model: String? = nil,
+        effort: String? = nil,
+        outputSchema: JSONValue? = nil,
+        skills: [CodexSkillInvocation] = []
+    ) async throws -> CodexTurnSession {
+        try await startTurn(
+            threadID: threadID,
+            text: text,
+            model: model,
+            effort: effort,
+            serviceTier: nil,
+            outputSchema: outputSchema,
+            skills: skills
         )
     }
 
@@ -584,6 +799,7 @@ public actor CodexAppServerClient {
         text: String,
         model: String? = nil,
         effort: String? = nil,
+        serviceTier: String? = nil,
         outputSchema: JSONValue? = nil,
         skills: [CodexSkillInvocation] = []
     ) async throws -> CodexTurnSession {
@@ -621,10 +837,10 @@ public actor CodexAppServerClient {
             "threadId": .string(threadID),
             "input": .array(input),
             "approvalPolicy": "never",
-            "permissions": .string(configuration.permissionProfileID),
         ]
         if let model { params["model"] = .string(model) }
         if let effort { params["effort"] = .string(effort) }
+        if let serviceTier { params["serviceTierForTurn"] = .string(serviceTier) }
         if let outputSchema { params["outputSchema"] = outputSchema }
 
         let result: CodexTurnStartResult
@@ -680,30 +896,57 @@ public actor CodexAppServerClient {
         outputSchema: JSONValue? = nil,
         skills: [CodexSkillInvocation] = []
     ) async throws -> CodexQuickSession {
-        if runtimeCapabilities.realtimeTextV3 {
-            let session = try await startRealtimeText(
-                threadID: threadID,
-                prompt: realtimePrompt,
-                model: model
-            )
+        try await startQuick(
+            threadID: threadID,
+            text: text,
+            realtimePrompt: realtimePrompt,
+            model: model,
+            serviceTier: nil,
+            outputSchema: outputSchema,
+            skills: skills
+        )
+    }
+
+    public func startQuick(
+        threadID: String,
+        text: String,
+        realtimePrompt: String,
+        model: String? = nil,
+        serviceTier: String? = nil,
+        outputSchema: JSONValue? = nil,
+        skills: [CodexSkillInvocation] = []
+    ) async throws -> CodexQuickSession {
+        if runtimeCapabilities.realtimeTextV3, !realtimeQuickDisabled {
             do {
-                try await appendRealtimeText(
+                let session = try await startRealtimeText(
                     threadID: threadID,
-                    text: text,
-                    role: .user
+                    prompt: realtimePrompt,
+                    // Realtime has its own subscription-backed model route. A Codex reasoning
+                    // model ID can be accepted at startup but never produce a realtime answer.
+                    model: nil
                 )
+                do {
+                    try await appendRealtimeText(
+                        threadID: threadID,
+                        text: text,
+                        role: .user
+                    )
+                } catch {
+                    _ = try? await transport.request(
+                        method: "thread/realtime/stop",
+                        params: ["threadId": .string(threadID)]
+                    )
+                    finishRealtime(
+                        threadID: threadID,
+                        error: Self.safe(error)
+                    )
+                    throw Self.safe(error)
+                }
+                return .realtime(session)
             } catch {
-                _ = try? await transport.request(
-                    method: "thread/realtime/stop",
-                    params: ["threadId": .string(threadID)]
-                )
-                finishRealtime(
-                    threadID: threadID,
-                    error: Self.safe(error)
-                )
-                throw Self.safe(error)
+                guard Self.isRejectedRealtimeStart(error) else { throw Self.safe(error) }
+                realtimeQuickDisabled = true
             }
-            return .realtime(session)
         }
 
         return .turn(
@@ -712,6 +955,7 @@ public actor CodexAppServerClient {
                 text: text,
                 model: model,
                 effort: "low",
+                serviceTier: serviceTier,
                 outputSchema: outputSchema,
                 skills: skills
             )
@@ -729,7 +973,7 @@ public actor CodexAppServerClient {
         }
         guard !threadID.isEmpty,
             !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            realtimeContinuations[threadID] == nil
+            !activeRealtimeThreads.contains(threadID)
         else {
             throw CodexClientError.threadInvariantFailed
         }
@@ -741,6 +985,7 @@ public actor CodexAppServerClient {
             Task { await self?.removeRealtimeContinuation(threadID: threadID) }
         }
         realtimeContinuations[threadID] = pair.continuation
+        activeRealtimeThreads.insert(threadID)
 
         var params: [String: JSONValue] = [
             "threadId": .string(threadID),
@@ -767,6 +1012,23 @@ public actor CodexAppServerClient {
         return CodexRealtimeSession(threadID: threadID, events: pair.stream)
     }
 
+    private static func isRejectedRealtimeStart(_ error: any Error) -> Bool {
+        guard let clientError = error as? CodexClientError else { return false }
+        switch clientError {
+        case .requestFailed(let method, let code):
+            return method == "thread/realtime/start"
+                && [-32_600, -32_601, -32_602].contains(code)
+        case .missingCapability(let capability):
+            return capability == "thread/realtime/text-v3"
+        default:
+            return false
+        }
+    }
+
+    public func disableRealtimeQuick() {
+        realtimeQuickDisabled = true
+    }
+
     public func appendRealtimeText(
         threadID: String,
         text: String,
@@ -790,13 +1052,20 @@ public actor CodexAppServerClient {
 
     public func stopRealtimeText(threadID: String) async throws {
         try requireReady()
-        guard realtimeContinuations[threadID] != nil else {
-            throw CodexClientError.threadInvariantFailed
+        guard activeRealtimeThreads.contains(threadID) else { return }
+        do {
+            _ = try await transport.request(
+                method: "thread/realtime/stop",
+                params: ["threadId": .string(threadID)]
+            )
+        } catch {
+            guard completedRealtimeAnswerThreads.contains(threadID),
+                Self.isRejectedRealtimeStop(error)
+            else {
+                throw Self.safe(error)
+            }
+            completeRealtimeStop(threadID: threadID)
         }
-        _ = try await transport.request(
-            method: "thread/realtime/stop",
-            params: ["threadId": .string(threadID)]
-        )
     }
 
     public func notifications() -> AsyncStream<CodexServerNotification> {
@@ -817,6 +1086,8 @@ public actor CodexAppServerClient {
         finishAllRealtime(error: CancellationError())
         for continuation in notificationContinuations.values { continuation.finish() }
         notificationContinuations.removeAll()
+        ephemeralThreadIDs.removeAll()
+        prewarmedResponseThreadIDs.removeAll()
         await transport.stop()
         state = .stopped
     }
@@ -846,9 +1117,12 @@ public actor CodexAppServerClient {
         expectedCwd: String,
         expectedWorkspaceRoots: [String]
     ) throws {
+        let permissionBoundaryMatches =
+            result.activePermissionProfile?.id == configuration.permissionProfileID
+            || (result.activePermissionProfile == nil && Self.isReadOnlySandbox(result.sandbox))
         guard result.thread.ephemeral == expectedEphemeral,
             result.approvalPolicy.stringValue == "never",
-            result.activePermissionProfile?.id == configuration.permissionProfileID,
+            permissionBoundaryMatches,
             Self.canonicalPath(result.cwd) == Self.canonicalPath(expectedCwd),
             result.runtimeWorkspaceRoots.map(Self.canonicalPath)
                 == expectedWorkspaceRoots.map(Self.canonicalPath),
@@ -863,6 +1137,15 @@ public actor CodexAppServerClient {
         {
             throw CodexClientError.threadInvariantFailed
         }
+    }
+
+    private static func isReadOnlySandbox(_ value: JSONValue?) -> Bool {
+        if value?.stringValue == "read-only" { return true }
+        guard let object = value?.objectValue,
+            object["type"]?.stringValue == "readOnly",
+            object["networkAccess"]?.boolValue != true
+        else { return false }
+        return true
     }
 
     private func handleTransportEvent(_ event: CodexTransportEvent) async {
@@ -897,11 +1180,11 @@ public actor CodexAppServerClient {
 
     private func routeRealtimeNotification(_ notification: CodexServerNotification) {
         guard notification.method.hasPrefix("thread/realtime/"),
-            let threadID = Self.threadID(in: notification),
-            let continuation = realtimeContinuations[threadID]
+            let threadID = Self.threadID(in: notification)
         else {
             return
         }
+        let continuation = realtimeContinuations[threadID]
 
         switch notification.method {
         case "thread/realtime/started":
@@ -914,7 +1197,7 @@ public actor CodexAppServerClient {
                 )
                 return
             }
-            continuation.yield(
+            continuation?.yield(
                 .started(
                     sessionID: notification.params?["realtimeSessionId"]?.stringValue,
                     version: version
@@ -931,7 +1214,7 @@ public actor CodexAppServerClient {
                 )
                 return
             }
-            continuation.yield(.transcriptDelta(role: role, delta: delta))
+            continuation?.yield(.transcriptDelta(role: role, delta: delta))
 
         case "thread/realtime/transcript/done":
             guard let role = notification.params?["role"]?.stringValue,
@@ -943,7 +1226,12 @@ public actor CodexAppServerClient {
                 )
                 return
             }
-            continuation.yield(.transcriptDone(role: role, text: text))
+            if Self.isAssistantRealtimeRole(role),
+                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                completedRealtimeAnswerThreads.insert(threadID)
+            }
+            continuation?.yield(.transcriptDone(role: role, text: text))
 
         case "thread/realtime/itemAdded":
             guard let item = notification.params?["item"] else {
@@ -953,7 +1241,7 @@ public actor CodexAppServerClient {
                 )
                 return
             }
-            continuation.yield(.itemAdded(item))
+            continuation?.yield(.itemAdded(item))
 
         case "thread/realtime/error":
             // The backend message can contain transcript or path material. Never surface it.
@@ -966,9 +1254,11 @@ public actor CodexAppServerClient {
             )
 
         case "thread/realtime/closed":
-            continuation.yield(.closed)
-            continuation.finish()
+            continuation?.yield(.closed)
+            continuation?.finish()
             realtimeContinuations.removeValue(forKey: threadID)
+            activeRealtimeThreads.remove(threadID)
+            completedRealtimeAnswerThreads.remove(threadID)
 
         default:
             break
@@ -1020,19 +1310,53 @@ public actor CodexAppServerClient {
             guard let item = params?["item"] else {
                 continuation.finish(throwing: CodexClientError.malformedMessage)
                 turnContinuations.removeValue(forKey: key)
+                completedTurnItemIDs.removeValue(forKey: key)
                 return
+            }
+            if let itemID = item["id"]?.stringValue {
+                completedTurnItemIDs[key, default: []].insert(itemID)
             }
             continuation.yield(.itemCompleted(item))
 
         case "turn/completed":
-            guard let status = params?["turn"]?["status"]?.stringValue else {
+            guard let turn = params?["turn"],
+                let status = turn["status"]?.stringValue
+            else {
                 continuation.finish(throwing: CodexClientError.malformedMessage)
                 turnContinuations.removeValue(forKey: key)
+                completedTurnItemIDs.removeValue(forKey: key)
                 return
+            }
+            let seenItemIDs = completedTurnItemIDs[key] ?? []
+            for item in turn["items"]?.arrayValue ?? [] {
+                guard let itemID = item["id"]?.stringValue,
+                    !seenItemIDs.contains(itemID)
+                else { continue }
+                continuation.yield(.itemCompleted(item))
             }
             continuation.yield(.completed(status: status))
             continuation.finish()
             turnContinuations.removeValue(forKey: key)
+            completedTurnItemIDs.removeValue(forKey: key)
+
+        case "error":
+            guard let willRetry = params?["willRetry"]?.boolValue else {
+                continuation.finish(throwing: CodexClientError.malformedMessage)
+                turnContinuations.removeValue(forKey: key)
+                completedTurnItemIDs.removeValue(forKey: key)
+                return
+            }
+            if willRetry {
+                continuation.yield(.notification(method: notification.method, params: params))
+                return
+            }
+            continuation.finish(
+                throwing: CodexClientError.turnFailed(
+                    reason: Self.safeTurnFailureReason(in: params)
+                )
+            )
+            turnContinuations.removeValue(forKey: key)
+            completedTurnItemIDs.removeValue(forKey: key)
 
         default:
             continuation.yield(.notification(method: notification.method, params: params))
@@ -1044,15 +1368,15 @@ public actor CodexAppServerClient {
             continuation.finish(throwing: error)
         }
         turnContinuations.removeAll()
+        completedTurnItemIDs.removeAll()
         pendingTurnThreads.removeAll()
         bufferedTurnNotifications.removeAll()
     }
 
     private func finishRealtime(threadID: String, error: any Error) {
-        guard let continuation = realtimeContinuations.removeValue(forKey: threadID) else {
-            return
-        }
-        continuation.finish(throwing: error)
+        realtimeContinuations.removeValue(forKey: threadID)?.finish(throwing: error)
+        activeRealtimeThreads.remove(threadID)
+        completedRealtimeAnswerThreads.remove(threadID)
     }
 
     private func finishAllRealtime(error: any Error) {
@@ -1060,10 +1384,13 @@ public actor CodexAppServerClient {
             continuation.finish(throwing: error)
         }
         realtimeContinuations.removeAll()
+        activeRealtimeThreads.removeAll()
+        completedRealtimeAnswerThreads.removeAll()
     }
 
     private func removeTurnContinuation(key: TurnKey) {
         turnContinuations.removeValue(forKey: key)
+        completedTurnItemIDs.removeValue(forKey: key)
     }
 
     private func removeNotificationContinuation(id: UUID) {
@@ -1074,8 +1401,36 @@ public actor CodexAppServerClient {
         realtimeContinuations.removeValue(forKey: threadID)
     }
 
+    private func completeRealtimeStop(threadID: String) {
+        realtimeContinuations.removeValue(forKey: threadID)?.finish()
+        activeRealtimeThreads.remove(threadID)
+        completedRealtimeAnswerThreads.remove(threadID)
+    }
+
+    private static func isRejectedRealtimeStop(_ error: any Error) -> Bool {
+        guard let clientError = error as? CodexClientError else { return false }
+        guard case .requestFailed(let method, let code) = clientError else { return false }
+        return method == "thread/realtime/stop"
+            && [-32_600, -32_601, -32_602].contains(code)
+    }
+
+    private static func isAssistantRealtimeRole(_ role: String) -> Bool {
+        role == "assistant" || role == "model"
+    }
+
     private static func isTurnNotification(_ method: String) -> Bool {
-        method.hasPrefix("turn/") || method.hasPrefix("item/")
+        method == "error" || method.hasPrefix("turn/") || method.hasPrefix("item/")
+    }
+
+    private static func safeTurnFailureReason(in params: JSONValue?) -> String {
+        let errorInfo = params?["error"]?["codexErrorInfo"]
+        if let reason = errorInfo?.stringValue {
+            return CodexSafeLabel.capability(reason)
+        }
+        if let reason = errorInfo?.objectValue?.keys.sorted().first {
+            return CodexSafeLabel.capability(reason)
+        }
+        return "provider_error"
     }
 
     private static func threadID(in notification: CodexServerNotification) -> String? {

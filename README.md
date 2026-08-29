@@ -30,17 +30,20 @@
 
 All screenshots use synthetic preview data and initiate no capture or provider request.
 
-ChirpCue captures your microphone and selected Mac meeting output into separate local transcript lanes. With Codex, each detected question automatically starts a fast low-reasoning AI answer and a high-reasoning answer in parallel. The fast answer gives you natural words to say immediately; the detailed answer follows while you speak. Claude and Gemini show the same natural local bridge while their single Deep model turn runs. The bridge also keeps coaching responsive if Codex Quick misses its deadline, fails, or provider capacity is unavailable. Progressive and final updates from the same Speech segment produce at most one automatic response.
+ChirpCue captures your microphone and selected Mac meeting output into separate local transcript lanes. Every detected question immediately creates its own answer thread with a short, question-aware sentence you can say while two independent lanes continue. Follow-up questions start in parallel without canceling or replacing earlier answers. Apple's on-device model can upgrade each opener without a network round trip. When it is unavailable and Codex is selected, ChirpCue routes Quick to GPT-5.6 Sol at low reasoning effort and uses the subscription Fast tier when the signed-in catalog advertises it. The generated Quick lane has 15 seconds, while Deep continues independently for up to 90 seconds. Provider startup, rate limits, or network latency can never leave a response thread empty. Punctuation-only revisions update the transcript without duplicating work; a meaningfully expanded final question creates a follow-up thread.
 
 When microphone speech is clearly attributed to you, ChirpCue keeps Deep working and holds the finished detailed answer until your local speech becomes final. You always speak for yourself. ChirpCue never speaks, pastes, sends, clicks, joins a meeting, records secretly, or changes code.
 
 ## What makes it different
 
 - **Universal Mac audio:** works with Google Meet, Zoom, Teams, or another meeting app by capturing the selected app's output.
-- **Two-stage AI help:** Codex provides automatic model Quick then Deep; Claude and Gemini use an immediate local bridge while Deep runs.
+- **Three-stage help:** a question-aware opener is immediate, an Apple on-device or Codex Sol Low Quick answer can replace it within 15 seconds, and Codex, Claude, or Gemini continues the higher-reasoning Deep answer independently for up to 90 seconds.
+- **Automatic threaded follow-ups:** no coaching click is required. Each detected question stays visible as its own Quick-and-Deep thread while later questions run alongside it. The Retry Latest control is only a manual fallback for a missed boundary.
+- **Quick-first scheduling:** Codex Quick uses a compact one-field, tool-free response on a prewarmed ephemeral thread when the Apple model is unavailable. Deep starts one second later so Quick can claim the provider queue first, and the experimental realtime endpoint remains disabled.
 - **Failure-resilient turns:** request-scoped Quick or Deep failures are labeled precisely and clear when the next question starts; provider-capacity warnings remain until a validated model response proves recovery.
 - **Quota-resilient listening:** a provider-capacity warning does not block meeting capture or transcription, and no model launch occurs until a bounded capacity recheck passes.
 - **Natural speaking prompts:** short first-person recommendations and clarifying questions instead of generic AI checklists.
+- **Factual personal answers:** an optional local **About you** brief gives Quick and Deep the exact years, recent work, and role details they need instead of guessing.
 - **Optional codebase grounding:** one exact read-only sealed snapshot, with local evidence verification before a repository claim is shown.
 - **Subscription sign-in:** ChatGPT-authenticated Codex, a first-party personal Claude.ai Pro/Max login, or Gemini through Google sign-in in the official Antigravity CLI. No API keys.
 - **Ephemeral by default:** bounded in-memory audio and transcript state, verified teardown, deletion, and residual auditing.
@@ -75,10 +78,11 @@ Claude programmatic use can follow separate Agent SDK allowance and extra-usage 
 1. Read the in-app privacy disclosure.
 2. Grant microphone, system-audio, and on-device speech permissions.
 3. Select the meeting app output, such as Google Chrome for Google Meet.
-4. Optionally inspect and seal one repository. Codex may use one reviewed read-only skill; Claude and Gemini remain tool-restricted and receive only bounded host-selected lines.
+4. Optionally add factual background under **Settings → Response → About you**. This is stored locally on the Mac and sent only with meeting inference so experience questions can use your real details.
+5. Optionally inspect and seal one repository. Codex may use one reviewed read-only skill; Claude and Gemini remain tool-restricted and receive only bounded host-selected lines.
    ChirpCue shows the grounding ceilings during review, accepts files up to 8 MiB, and visibly excludes larger files instead of rejecting the whole repository.
-5. Confirm that participants have been informed and that you have permission to process the conversation.
-6. Start the meeting. ChirpCue automatically coaches likely questions; speak, edit, dismiss, retry, or ignore every suggestion yourself.
+6. Confirm that participants have been informed and that you have permission to process the conversation.
+7. Start the meeting. ChirpCue automatically coaches likely questions; speak, edit, dismiss, retry, or ignore every suggestion yourself.
 
 Use **Pause** to stop capture temporarily. Use **Dismiss** to clear the current answer while transcription continues. Use **Stop** at the end so ChirpCue can join provider work, scrub memory, delete temporary state, and verify cleanup. A validated Quick answer can appear while its private fork cleanup is still tracked; a cleanup failure is shown and blocks further inference instead of being hidden.
 
@@ -105,6 +109,6 @@ ChirpCue is licensed under the [Apache License 2.0](LICENSE). Community particip
 
 ## Current status
 
-Version 0.3.6 decouples consented capture and on-device transcription from provider startup. Meetings now begin while the selected provider connects, show an immediate safe bridge for questions heard during warmup, retry transient Codex runtime preparation failures in the background, and automatically replace the bridge with Quick and Deep coaching once the provider is ready. It retains the serialized capability discovery and bounded fresh-process recovery from 0.3.5. This remains an early personal release candidate. Automated Swift, packaging, accessibility, Google Meet transcription, and bounded Codex smoke coverage exist, but paid Claude and Gemini generation, broader device testing, real-meeting latency dogfood, and Apple-notarized binary distribution remain explicit gates.
+Version 0.3.8 adds a three-stage response path. A question-aware local opener is displayed with no model wait. Apple's on-device model is available to every provider and can replace it within a 15-second Quick window; on this development Mac the measured cold and warm responses were 10.6 and 4.5 seconds. When the Apple model is unavailable, Codex Quick uses GPT-5.6 Sol at low effort, requests the advertised subscription Fast tier, and returns only the spoken sentence instead of model-generated bookkeeping. Deep starts one second later and remains eligible for 90 seconds. Codex provider requests recover after a 10-second app-server request stall instead of consuming the whole Deep window. Every response thread is ephemeral and unsubscribed after use; the profile history store is enabled only because current app-server builds require it for reliable thread initialization, and ephemeral threads are not materialized there. The experimental Codex realtime endpoint stays disabled. The installed Codex 0.150 subscription runtime has still shown intermittent startup and turn stalls in opt-in live probes, so the local opener is the hard real-time guarantee and subscription generation remains an explicit release gate. This remains an early personal release candidate.
 
 ChirpCue is an independent open-source project and is not affiliated with or endorsed by Apple, Anthropic, Google, Microsoft, OpenAI, or Zoom.
