@@ -552,6 +552,56 @@ final class CleanupJournalTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: state.path))
     }
 
+    func testStableProfileSanitizerAcceptsCurrentAndFutureVersionedSQLiteSidecars() throws {
+        let fixture = try Fixture()
+        let profile = fixture.root.appendingPathComponent("profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        let transientNames = [
+            "thread_history_1.sqlite",
+            "thread_history_1.sqlite-shm",
+            "thread_history_1.sqlite-wal",
+            "turn_index_7.sqlite-journal",
+        ]
+        for name in transientNames {
+            try Data("transient".utf8).write(to: profile.appendingPathComponent(name))
+        }
+
+        let report = try CodexStableProfileSanitizer().cleanTransientState(
+            profileRoot: profile
+        )
+
+        XCTAssertEqual(report.deletedEntryCount, transientNames.count)
+        for name in transientNames {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: profile.appendingPathComponent(name).path)
+            )
+        }
+    }
+
+    func testStableProfileSanitizerRejectsCredentialLikeVersionedSQLiteStores() throws {
+        for name in ["auth_1.sqlite", "credentials_2.sqlite-wal", "token_cache_3.sqlite-shm"] {
+            let fixture = try Fixture()
+            let profile = fixture.root.appendingPathComponent("profile", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: profile,
+                withIntermediateDirectories: true
+            )
+            try Data("credential-canary".utf8).write(to: profile.appendingPathComponent(name))
+
+            XCTAssertThrowsError(
+                try CodexStableProfileSanitizer().cleanTransientState(profileRoot: profile)
+            ) { error in
+                XCTAssertEqual(
+                    error as? CodexStableProfileCleanupError,
+                    .credentialMaterialPresent(name)
+                )
+            }
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: profile.appendingPathComponent(name).path)
+            )
+        }
+    }
+
     func testStableProfileSanitizerDeletesTransientSymlinksButRejectsPersistentHardlinks() throws {
         let fixture = try Fixture()
         let profile = fixture.root.appendingPathComponent("profile", isDirectory: true)

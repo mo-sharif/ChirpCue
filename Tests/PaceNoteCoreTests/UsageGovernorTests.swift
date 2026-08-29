@@ -15,7 +15,11 @@ final class UsageGovernorTests: XCTestCase {
     }
 
     func testOnlyOneDeepCanRunAtOnce() {
-        var governor = UsageGovernor(quickPerMinute: 8, deepPerMinute: 2)
+        var governor = UsageGovernor(
+            quickPerMinute: 8,
+            deepPerMinute: 2,
+            maximumConcurrentDeep: 1
+        )
         let now = Date(timeIntervalSince1970: 1_000)
 
         XCTAssertEqual(governor.begin(.deep, at: now), .admitted)
@@ -24,6 +28,19 @@ final class UsageGovernorTests: XCTestCase {
         XCTAssertEqual(governor.begin(.deep, at: now), .admitted)
         governor.endDeep()
         XCTAssertEqual(governor.begin(.deep, at: now), .deepRateLimited)
+    }
+
+    func testPersonalDefaultAllowsTwoDeepAnswersToRunInParallel() throws {
+        var governor = UsageGovernor()
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        let first = try XCTUnwrap(governor.reserve(.deep, at: now).reservation)
+        let second = try XCTUnwrap(governor.reserve(.deep, at: now).reservation)
+        XCTAssertEqual(governor.reserve(.deep, at: now), .deepAlreadyActive)
+
+        governor.finish(first)
+        XCTAssertNotNil(governor.reserve(.deep, at: now).reservation)
+        governor.finish(second)
     }
 
     func testPersonalDefaultAllowsSixSequentialDeepStartsPerMinute() {
@@ -72,7 +89,11 @@ final class UsageGovernorTests: XCTestCase {
     }
 
     func testRollingWindowExpirationDoesNotReleaseActiveDeepExclusivity() throws {
-        var governor = UsageGovernor(quickPerMinute: 1, deepPerMinute: 1)
+        var governor = UsageGovernor(
+            quickPerMinute: 1,
+            deepPerMinute: 1,
+            maximumConcurrentDeep: 1
+        )
         let now = Date(timeIntervalSince1970: 1_000)
         let active = try XCTUnwrap(governor.reserve(.deep, at: now).reservation)
         governor.commit(active)

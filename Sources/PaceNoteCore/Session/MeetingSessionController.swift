@@ -38,8 +38,10 @@ public actor MeetingSessionController {
     }
 
     private struct PendingResponseTurn: Sendable {
+        let identity: TurnIdentity
         let question: String
         let stableAt: TimeInterval
+        let recentTranscript: [TranscriptSegment]
     }
 
     private struct ResponseCancellationOperation: Sendable {
@@ -145,7 +147,7 @@ public actor MeetingSessionController {
     private let microphonePermission: any MicrophonePermissionProviding
     private let responseGenerator: any MeetingResponseGenerating
     private let responseCoordinator: ResponseCoordinator
-    private let bridgeText: String
+    private let responseCoordinatorConfiguration: ResponseCoordinatorConfiguration
     private let sensitiveOutputBuffer: ResponseSensitiveOutputBuffer
     private let resourceCleaner: any MeetingSessionResourceCleaning
     private let time: any MeetingTimeProviding
@@ -165,15 +167,17 @@ public actor MeetingSessionController {
     private var cleanupNeedleLedger: CleanupNeedleLedger
     private var currentIdentity: TurnIdentity?
     private var currentQuestion: String?
+    private var questionsByIdentity: [TurnIdentity: String] = [:]
     private var microphonePartialID: UUID?
     private var outputPartialID: UUID?
     private var microphoneEventTask: Task<Void, Never>?
     private var outputEventTask: Task<Void, Never>?
     private var microphoneAttributionTask: Task<Void, Never>?
     private var boundaryTask: Task<Void, Never>?
-    private var generationTask: Task<Void, Never>?
+    private var generationTasks: [TurnIdentity: Task<Void, Never>] = [:]
+    private var responseIdentityCancellationTasks: [UUID: Task<Void, Never>] = [:]
     private var responseCancellationOperation: ResponseCancellationOperation?
-    private var pendingResponseTurn: PendingResponseTurn?
+    private var pendingResponseTurns: [TurnIdentity: PendingResponseTurn] = [:]
     private var pendingMicrophoneObservation: PendingMicrophoneObservation?
     private var latestOutputObservation: TranscriptObservation?
     private var bridgeSpeechHold: BridgeSpeechHold?
@@ -221,7 +225,7 @@ public actor MeetingSessionController {
             configuration: responseCoordinatorConfiguration,
             sensitiveOutputBuffer: sensitiveOutputBuffer
         )
-        self.bridgeText = responseCoordinatorConfiguration.bridgeText
+        self.responseCoordinatorConfiguration = responseCoordinatorConfiguration
         self.resourceCleaner = resourceCleaner
         self.time = time
         self.attributionResolver = attributionResolver
@@ -253,7 +257,12 @@ public actor MeetingSessionController {
         outputEventTask?.cancel()
         microphoneAttributionTask?.cancel()
         boundaryTask?.cancel()
-        generationTask?.cancel()
+        for task in generationTasks.values {
+            task.cancel()
+        }
+        for task in responseIdentityCancellationTasks.values {
+            task.cancel()
+        }
         responseCancellationOperation?.task.cancel()
         cleanupNeedleLedger.clear()
         continuation?.finish()
@@ -591,19 +600,28 @@ public actor MeetingSessionController {
             at: dismissedAt
         )
 
-        let ownsActiveGeneration = currentIdentity == expectedIdentity
-        var dismissedGenerationTask: Task<Void, Never>?
-        if ownsActiveGeneration {
+        let dismissedGenerationTask = generationTasks.removeValue(forKey: expectedIdentity)
+        let dismissedPendingTurn = pendingResponseTurns.removeValue(forKey: expectedIdentity)
+        let ownsHeldResponse =
+            bridgeSpeechHold?.identity == expectedIdentity
+            || queuedDeepResponse?.identity == expectedIdentity
+        let shouldCancelWork =
+            dismissedGenerationTask != nil
+            || dismissedPendingTurn != nil
+            || ownsHeldResponse
+        if questionsByIdentity[expectedIdentity] != nil {
             timingLedger.invalidate(
                 generation: expectedIdentity.generation,
                 outcome: .userDismissed,
                 at: dismissedAt
             )
-            dismissedGenerationTask = generationTask
             dismissedGenerationTask?.cancel()
-            generationTask = nil
-            currentIdentity = nil
-            currentQuestion = nil
+        }
+        questionsByIdentity.removeValue(forKey: expectedIdentity)
+        if currentIdentity == expectedIdentity {
+            let latest = questionsByIdentity.keys.max { $0.generation < $1.generation }
+            currentIdentity = latest
+            currentQuestion = latest.flatMap { questionsByIdentity[$0] }
         }
         if bridgeSpeechHold?.identity == expectedIdentity {
             bridgeSpeechHold = nil
@@ -616,8 +634,16 @@ public actor MeetingSessionController {
         updateOperationalPhase()
         emitState()
 
-        guard ownsActiveGeneration else { return }
-        await cancelResponseWork(joining: dismissedGenerationTask)
+        guard shouldCancelWork else { return }
+        let cancellationID = UUID()
+        let responseCoordinator = self.responseCoordinator
+        let cancellationTask = Task {
+            await responseCoordinator.invalidate(expectedIdentity)
+            await dismissedGenerationTask?.value
+        }
+        responseIdentityCancellationTasks[cancellationID] = cancellationTask
+        await cancellationTask.value
+        responseIdentityCancellationTasks.removeValue(forKey: cancellationID)
     }
 
     @discardableResult
@@ -687,7 +713,8 @@ public actor MeetingSessionController {
 
         currentIdentity = nil
         currentQuestion = nil
-        pendingResponseTurn = nil
+        questionsByIdentity.removeAll(keepingCapacity: false)
+        pendingResponseTurns.removeAll(keepingCapacity: false)
         runtime = nil
 
         var failures = resourceReport.failures
@@ -1309,67 +1336,72 @@ public actor MeetingSessionController {
     private func beginTurn(question: String, stableAt: TimeInterval) async {
         guard lifecycle == .running else { return }
         clearTransientResponseBrownouts()
-        currentQuestion = question
         generation &+= 1
         let identity = TurnIdentity(
             meetingID: configuration.meetingID,
             generation: generation
         )
-        let previousIdentity = currentIdentity
-        if let previousIdentity {
-            timingLedger.invalidate(
-                generation: previousIdentity.generation,
-                outcome: .newerTurn,
-                at: stableAt
-            )
-        }
         timingLedger.beginTurn(generation: identity.generation, at: stableAt)
-        clearBridgeSpeechState()
         currentIdentity = identity
-        let previousGenerationTask = generationTask
-        previousGenerationTask?.cancel()
-        generationTask = nil
-        suggestions.removeAll(keepingCapacity: true)
-        emit(.suggestionsCleared(previousIdentity))
+        currentQuestion = question
+        questionsByIdentity[identity] = question
+        let pending = PendingResponseTurn(
+            identity: identity,
+            question: question,
+            stableAt: stableAt,
+            recentTranscript: timeline.recent(
+                endingAt: stableAt,
+                seconds: configuration.transcriptContextSeconds
+            )
+        )
+        emit(.suggestionThreadStarted(identity: identity, question: question))
         phase = .candidateQuestion
         emitState()
 
-        await cancelResponseWork(joining: previousGenerationTask)
-        guard lifecycle == .running, currentIdentity == identity else { return }
-
         guard runtime != nil else {
-            pendingResponseTurn = PendingResponseTurn(question: question, stableAt: stableAt)
+            pendingResponseTurns[identity] = pending
             startResponsePreparationIfNeeded()
+            let bridgeText = responseCoordinatorConfiguration.bridgeText(for: question)
             cleanupNeedleLedger.register(bridgeText)
             let bridge = SuggestionCard(identity: identity, stage: .bridge, text: bridgeText)
-            suggestions = [bridge]
+            suggestions.removeAll { $0.identity == identity && $0.stage != .deep }
+            suggestions.append(bridge)
             timingLedger.recordBridgeReady(generation: identity.generation, at: time.now())
             phase = .suggesting
             emit(.suggestionUpserted(bridge))
             emitState()
             return
         }
-        pendingResponseTurn = nil
+        await startResponse(for: pending)
+    }
 
+    private func startResponse(for pending: PendingResponseTurn) async {
+        let identity = pending.identity
+        guard lifecycle == .running,
+            runtime != nil,
+            questionsByIdentity[identity] != nil,
+            generationTasks[identity] == nil
+        else {
+            return
+        }
+        pendingResponseTurns.removeValue(forKey: identity)
         let turn = ConversationTurn(
             identity: identity,
-            question: question,
-            recentTranscript: timeline.recent(
-                endingAt: stableAt,
-                seconds: configuration.transcriptContextSeconds
-            ),
+            question: pending.question,
+            recentTranscript: pending.recentTranscript,
+            speakerBrief: configuration.speakerBrief,
             repoAlias: configuration.grounding?.repoAlias,
             groundingFingerprint: configuration.grounding?.fingerprint
         )
         phase = .thinking
         emitState()
         let responseEvents = await responseCoordinator.suggestions(for: turn)
-        guard lifecycle == .running, currentIdentity == identity else {
-            await responseCoordinator.invalidate()
+        guard lifecycle == .running, questionsByIdentity[identity] != nil else {
+            await responseCoordinator.invalidate(identity)
             return
         }
 
-        generationTask = Task { [weak self] in
+        generationTasks[identity] = Task { [weak self] in
             for await event in responseEvents {
                 guard !Task.isCancelled else { return }
                 #if DEBUG
@@ -1431,14 +1463,18 @@ public actor MeetingSessionController {
                     continue
                 }
                 deactivateBrownout(reason: .providerPreparing)
-                activateBrownout(Self.brownout(for: error))
+                let brownout = Self.brownout(for: error)
+                activateBrownout(brownout)
+                failPendingResponseTurns(reason: brownout.reason)
                 updateOperationalPhase()
                 emitState()
                 return
             } catch {
                 guard !Task.isCancelled, responsePreparationAttempt == attempt else { return }
                 deactivateBrownout(reason: .providerPreparing)
-                activateBrownout(.init(reason: .codexOffline))
+                let reason = BrownoutReason.codexOffline
+                activateBrownout(.init(reason: reason))
+                failPendingResponseTurns(reason: reason)
                 updateOperationalPhase()
                 emitState()
                 return
@@ -1447,12 +1483,42 @@ public actor MeetingSessionController {
     }
 
     private func resumePendingResponseTurnIfNeeded() async {
-        guard lifecycle == .running, runtime != nil, let pendingResponseTurn else { return }
-        self.pendingResponseTurn = nil
-        await beginTurn(
-            question: pendingResponseTurn.question,
-            stableAt: pendingResponseTurn.stableAt
-        )
+        guard lifecycle == .running, runtime != nil else { return }
+        let pending = pendingResponseTurns.values.sorted {
+            $0.identity.generation < $1.identity.generation
+        }
+        for turn in pending {
+            guard lifecycle == .running, runtime != nil else { return }
+            await startResponse(for: turn)
+        }
+    }
+
+    private func failPendingResponseTurns(reason: BrownoutReason) {
+        let pending = pendingResponseTurns.values.sorted {
+            $0.identity.generation < $1.identity.generation
+        }
+        pendingResponseTurns.removeAll(keepingCapacity: false)
+        for turn in pending {
+            timingLedger.recordDeepUnavailable(
+                generation: turn.identity.generation,
+                at: time.now()
+            )
+            emit(
+                .suggestionStageFailed(
+                    identity: turn.identity,
+                    stage: .quick,
+                    reason: reason
+                )
+            )
+            emit(
+                .suggestionStageFailed(
+                    identity: turn.identity,
+                    stage: .deep,
+                    reason: reason
+                )
+            )
+            emit(.suggestionThreadCompleted(turn.identity))
+        }
     }
 
     private func finishResponsePreparation(attempt: UUID) {
@@ -1490,7 +1556,7 @@ public actor MeetingSessionController {
             emitState()
             return
         }
-        guard lifecycle == .running, currentIdentity == identity else {
+        guard lifecycle == .running, generationTasks[identity] != nil else {
             timingLedger.recordStaleDiscard(
                 generation: identity.generation,
                 at: time.now()
@@ -1560,6 +1626,7 @@ public actor MeetingSessionController {
                 case .responseRejected: .quickRejected
                 case .busy, .providerUnavailable, .groundingUnavailable: .quickUnavailable
                 }
+            emit(.suggestionStageFailed(identity: identity, stage: .quick, reason: reason))
             activateBrownout(.init(reason: reason))
             if failure == .providerCapacityUnavailable {
                 responseProviderFailureGeneration = max(
@@ -1591,6 +1658,7 @@ public actor MeetingSessionController {
                 case .providerUnavailable: .deepUnavailable
                 case .responseRejected, .groundingUnavailable: .deepRejected
                 }
+            emit(.suggestionStageFailed(identity: identity, stage: .deep, reason: reason))
             activateBrownout(.init(reason: reason))
             if failure == .providerCapacityUnavailable {
                 responseProviderFailureGeneration = max(
@@ -1620,8 +1688,8 @@ public actor MeetingSessionController {
 
     private func holdDeepDuringLocalSpeech(_ segment: TranscriptSegment) {
         guard bridgeSpeechHold == nil,
-            generationTask != nil,
-            let currentIdentity
+            let currentIdentity,
+            generationTasks[currentIdentity] != nil
         else {
             return
         }
@@ -1643,17 +1711,21 @@ public actor MeetingSessionController {
         guard let queuedDeepResponse else { return }
         self.queuedDeepResponse = nil
         guard lifecycle == .running,
-            currentIdentity == completedIdentity,
+            questionsByIdentity[completedIdentity] != nil,
             queuedDeepResponse.identity == completedIdentity
         else {
             return
         }
+        let generationAlreadyFinished = generationTasks[completedIdentity] == nil
         displayDeep(queuedDeepResponse.response, identity: queuedDeepResponse.identity)
+        if generationAlreadyFinished {
+            emit(.suggestionThreadCompleted(completedIdentity))
+        }
     }
 
     private func displayDeep(_ deep: BoundDeep, identity: TurnIdentity) {
         registerCleanupContent(deep)
-        guard lifecycle == .running, currentIdentity == identity else {
+        guard lifecycle == .running, questionsByIdentity[identity] != nil else {
             timingLedger.recordStaleDiscard(
                 generation: identity.generation,
                 at: time.now()
@@ -1684,8 +1756,12 @@ public actor MeetingSessionController {
     }
 
     private func generationFinished(identity: TurnIdentity) {
-        guard lifecycle == .running, currentIdentity == identity else { return }
-        generationTask = nil
+        guard lifecycle == .running,
+            generationTasks.removeValue(forKey: identity) != nil
+        else { return }
+        if queuedDeepResponse?.identity != identity {
+            emit(.suggestionThreadCompleted(identity))
+        }
         updateOperationalPhase()
         emitState()
     }
@@ -1696,34 +1772,46 @@ public actor MeetingSessionController {
     ) async {
         boundaryTask?.cancel()
         boundaryTask = nil
-        let cancelledGenerationTask = generationTask
-        cancelledGenerationTask?.cancel()
-        generationTask = nil
+        let cancelledGenerationTasks = Array(generationTasks.values)
+        let activeIdentities = Set(generationTasks.keys)
+            .union(pendingResponseTurns.keys)
+            .union(questionsByIdentity.keys)
+        for task in cancelledGenerationTasks {
+            task.cancel()
+        }
+        generationTasks.removeAll(keepingCapacity: false)
+        pendingResponseTurns.removeAll(keepingCapacity: false)
         clearBridgeSpeechState()
-        let previousIdentity = currentIdentity
-        if let previousIdentity {
+        for identity in activeIdentities {
             timingLedger.invalidate(
-                generation: previousIdentity.generation,
+                generation: identity.generation,
                 outcome: invalidation,
                 at: time.now()
             )
         }
         currentIdentity = nil
         currentQuestion = nil
-        await cancelResponseWork(joining: cancelledGenerationTask)
+        await cancelResponseWork(joining: cancelledGenerationTasks)
         if clearSuggestions {
             suggestions.removeAll(keepingCapacity: false)
-            emit(.suggestionsCleared(previousIdentity))
+            questionsByIdentity.removeAll(keepingCapacity: false)
+            emit(.suggestionsCleared(nil))
         }
     }
 
-    private func cancelResponseWork(joining generationConsumer: Task<Void, Never>?) async {
+    private func cancelResponseWork(joining generationConsumers: [Task<Void, Never>]) async {
+        let identityCancellations = Array(responseIdentityCancellationTasks.values)
         if let operation = responseCancellationOperation {
-            if let generationConsumer {
+            if !generationConsumers.isEmpty || !identityCancellations.isEmpty {
                 let operationID = UUID()
                 let task = Task {
                     await operation.task.value
-                    await generationConsumer.value
+                    for cancellation in identityCancellations {
+                        await cancellation.value
+                    }
+                    for consumer in generationConsumers {
+                        await consumer.value
+                    }
                 }
                 responseCancellationOperation = ResponseCancellationOperation(
                     id: operationID,
@@ -1748,7 +1836,12 @@ public actor MeetingSessionController {
         let task = Task {
             await responseCoordinator.invalidate()
             await responseGenerator.cancelActiveWork()
-            await generationConsumer?.value
+            for cancellation in identityCancellations {
+                await cancellation.value
+            }
+            for consumer in generationConsumers {
+                await consumer.value
+            }
         }
         responseCancellationOperation = ResponseCancellationOperation(
             id: operationID,
@@ -1957,7 +2050,7 @@ public actor MeetingSessionController {
         responseCleanupFailureGeneration = nil
         responseProviderFailureGeneration = nil
         emit(.transcriptsCleared)
-        emit(.suggestionsCleared(currentIdentity))
+        emit(.suggestionsCleared(nil))
     }
 
     private func clearDelayedAttributionState() {

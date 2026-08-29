@@ -160,7 +160,10 @@ public enum CodexIsolatedRuntimeBuilder {
         enabled = false
 
         [history]
-        persistence = "none"
+        # Current app-server builds require the history store to initialize thread/start
+        # reliably. ChirpCue still marks every response thread ephemeral, so meeting turns are
+        # never materialized into this store.
+        persistence = "save-all"
 
         [agents]
         enabled = false

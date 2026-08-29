@@ -34,13 +34,19 @@ public struct UsageGovernor: Sendable {
 
     public let quickPerMinute: Int
     public let deepPerMinute: Int
+    public let maximumConcurrentDeep: Int
     private var quickStarts: [Start] = []
     private var deepStarts: [Start] = []
-    private var activeDeepReservationID: UUID?
+    private var activeDeepReservationIDs: Set<UUID> = []
 
-    public init(quickPerMinute: Int = 8, deepPerMinute: Int = 6) {
+    public init(
+        quickPerMinute: Int = 8,
+        deepPerMinute: Int = 6,
+        maximumConcurrentDeep: Int = 2
+    ) {
         self.quickPerMinute = quickPerMinute
         self.deepPerMinute = deepPerMinute
+        self.maximumConcurrentDeep = max(1, maximumConcurrentDeep)
     }
 
     public mutating func begin(_ operation: GovernedOperation, at date: Date = Date()) -> GovernorDecision {
@@ -69,10 +75,12 @@ public struct UsageGovernor: Sendable {
             quickStarts.append(Start(reservation: reservation, date: date, committed: false))
             return .reserved(reservation)
         case .deep:
-            guard activeDeepReservationID == nil else { return .deepAlreadyActive }
+            guard activeDeepReservationIDs.count < maximumConcurrentDeep else {
+                return .deepAlreadyActive
+            }
             guard deepStarts.count < deepPerMinute else { return .deepRateLimited }
             deepStarts.append(Start(reservation: reservation, date: date, committed: false))
-            activeDeepReservationID = reservation.id
+            activeDeepReservationIDs.insert(reservation.id)
             return .reserved(reservation)
         }
     }
@@ -125,27 +133,23 @@ public struct UsageGovernor: Sendable {
                     $0.reservation.id == reservation.id
                 })
             else {
-                if activeDeepReservationID == reservation.id {
-                    activeDeepReservationID = nil
-                }
+                activeDeepReservationIDs.remove(reservation.id)
                 return
             }
             if !start.committed || refundCommitted {
                 deepStarts.removeAll { $0.reservation.id == reservation.id }
             }
-            if activeDeepReservationID == reservation.id {
-                activeDeepReservationID = nil
-            }
+            activeDeepReservationIDs.remove(reservation.id)
         }
     }
 
     public mutating func endDeep() {
-        guard let activeDeepReservationID,
+        guard
             let start = deepStarts.first(where: {
-                $0.reservation.id == activeDeepReservationID
+                activeDeepReservationIDs.contains($0.reservation.id)
             })
         else {
-            activeDeepReservationID = nil
+            activeDeepReservationIDs.removeAll()
             return
         }
         finish(start.reservation)
@@ -155,7 +159,7 @@ public struct UsageGovernor: Sendable {
         let cutoff = date.addingTimeInterval(-60)
         quickStarts.removeAll { $0.date <= cutoff }
         deepStarts.removeAll { start in
-            start.date <= cutoff && start.reservation.id != activeDeepReservationID
+            start.date <= cutoff && !activeDeepReservationIDs.contains(start.reservation.id)
         }
     }
 }

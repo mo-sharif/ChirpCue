@@ -197,13 +197,13 @@ private struct PaceNoteCommands: Commands {
 
             Divider()
 
-            Button("Coach Current Turn") {
+            Button("Retry Latest Answer") {
                 Task { await model.coachCurrentTurn() }
             }
             .keyboardShortcut(.return, modifiers: [.command, .shift])
             .disabled(!model.canCoachCurrentTurn)
 
-            Button("Dismiss Suggestion") {
+            Button("Dismiss Latest Answer") {
                 Task { await model.dismissSuggestion() }
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])

@@ -95,11 +95,18 @@ final class CodexOutputTests: XCTestCase {
             model(id: "unknown-fast", efforts: ["low"], isDefault: true),
             model(id: "gpt-5.6-luna", efforts: ["low", "medium"]),
             model(id: "gpt-5.6-terra", efforts: ["low", "medium", "high"]),
-            model(id: "gpt-5.6-sol", efforts: ["low", "high"]),
+            model(
+                id: "gpt-5.6-sol",
+                efforts: ["low", "high"],
+                serviceTiers: ["priority"]
+            ),
         ]
         let router = CodexModelRouter(models: models, policy: .codex_0_147)
 
-        XCTAssertEqual(try router.route(for: .quick), .init(model: "gpt-5.6-luna", effort: "low"))
+        XCTAssertEqual(
+            try router.route(for: .quick),
+            .init(model: "gpt-5.6-sol", effort: "low", serviceTier: "priority")
+        )
         XCTAssertEqual(try router.route(for: .narrowTechnical), .init(model: "gpt-5.6-terra", effort: "medium"))
         XCTAssertEqual(try router.route(for: .hardTechnical), .init(model: "gpt-5.6-sol", effort: "high"))
     }
@@ -107,6 +114,7 @@ final class CodexOutputTests: XCTestCase {
     private func model(
         id: String,
         efforts: [String],
+        serviceTiers: [String] = [],
         isDefault: Bool = false
     ) -> CodexModel {
         CodexModel(
@@ -120,7 +128,9 @@ final class CodexOutputTests: XCTestCase {
             defaultReasoningEffort: efforts.first,
             inputModalities: ["text"],
             supportsPersonality: true,
-            serviceTiers: nil,
+            serviceTiers: serviceTiers.map {
+                CodexModelServiceTier(id: $0, name: $0, description: "")
+            },
             defaultServiceTier: nil,
             isDefault: isDefault
         )

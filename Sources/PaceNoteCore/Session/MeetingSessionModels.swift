@@ -50,6 +50,7 @@ public struct MeetingSessionConfiguration: Sendable {
     public let captureMode: MeetingCaptureMode
     public let localeIdentifier: String
     public let grounding: MeetingGroundingIdentity?
+    public let speakerBrief: String?
     public let transcriptRetention: Duration
     public let transcriptContextSeconds: TimeInterval
     public let turnBoundaryDelay: Duration
@@ -62,6 +63,7 @@ public struct MeetingSessionConfiguration: Sendable {
         captureMode: MeetingCaptureMode,
         localeIdentifier: String = "en-US",
         grounding: MeetingGroundingIdentity? = nil,
+        speakerBrief: String? = nil,
         transcriptRetention: Duration = .seconds(180),
         transcriptContextSeconds: TimeInterval = 45,
         turnBoundaryDelay: Duration = .milliseconds(450),
@@ -74,6 +76,7 @@ public struct MeetingSessionConfiguration: Sendable {
         self.captureMode = captureMode
         self.localeIdentifier = localeIdentifier
         self.grounding = grounding
+        self.speakerBrief = SpeakerBriefPolicy.normalized(speakerBrief)
         self.transcriptRetention = transcriptRetention
         self.transcriptContextSeconds = transcriptContextSeconds
         self.turnBoundaryDelay = turnBoundaryDelay
@@ -306,8 +309,15 @@ public enum MeetingSessionEvent: Sendable {
     case transcriptUpserted(TranscriptSegment)
     case transcriptRemoved(UUID)
     case transcriptsCleared
+    case suggestionThreadStarted(identity: TurnIdentity, question: String)
     case suggestionsCleared(TurnIdentity?)
     case suggestionUpserted(SuggestionCard)
+    case suggestionStageFailed(
+        identity: TurnIdentity,
+        stage: SuggestionStage,
+        reason: BrownoutReason
+    )
+    case suggestionThreadCompleted(TurnIdentity)
     case brownoutActivated(MeetingBrownout)
     case brownoutCleared(MeetingBrownout)
     case failed(MeetingSessionFailure)

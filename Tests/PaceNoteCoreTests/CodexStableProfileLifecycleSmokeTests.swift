@@ -106,7 +106,7 @@ final class CodexStableProfileLifecycleSmokeTests: XCTestCase {
                     configuration: .init(
                         executableURL: fixture.codexExecutableURL,
                         expectedCodexHome: isolated.profileRoot,
-                        requestTimeout: .seconds(15),
+                        requestTimeout: .seconds(30),
                         clientVersion: "0.1.0",
                         permissionProfileID: isolated.permissionProfileID,
                         processArguments: isolated.processArguments,

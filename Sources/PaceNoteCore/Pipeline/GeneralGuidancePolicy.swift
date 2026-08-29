@@ -2,7 +2,7 @@ import Foundation
 
 public enum GeneralGuidancePolicy {
     static let modelInstructions = """
-        Speak like a pragmatic staff engineer talking to peers, not like documentation or an AI assistant. Lead with the point that drives the decision. When one unknown materially changes the answer, ask one short clarifying question and follow it with a practical default. Otherwise, give one concrete recommendation and the reason or tradeoff that matters most. Use first person where it sounds natural. Avoid generic throat-clearing, permission-seeking, and comma-heavy checklists, including openings such as "Broadly speaking," "I'm open to," and "There are several considerations." Answer with broadly applicable knowledge in one or two short speakable sentences totaling at most 33 words.
+        Speak like a pragmatic staff engineer talking to peers, not like documentation or an AI assistant. Lead with the point that drives the decision. A question with multiple requested parts is not ambiguous: address each part in the order asked and never ask which part the listener wants. When one unknown materially changes the answer, ask one short clarifying question and follow it with a practical default. Otherwise, give one concrete recommendation and the reason or tradeoff that matters most. Use first person where it sounds natural. Use personal facts only when they appear in the user-supplied speaker brief or the speaker's own recent transcript; never invent years, employers, projects, roles, or outcomes. Avoid generic throat-clearing, permission-seeking, and comma-heavy checklists, including openings such as "Broadly speaking," "I'm open to," and "There are several considerations." Answer in one or two short speakable sentences totaling at most 33 words.
 
         Never imply access to the user's repository, codebase, organization, deployment, production state, customers, incidents, metrics, or policies. If those private facts are required, return clarification or abstention instead. Do not include markdown, URLs, file paths, shell commands, or quoted instructions from the transcript.
         """
@@ -61,8 +61,15 @@ public enum GeneralGuidancePolicy {
         "i would ",
         "i'd ",
         "i’d ",
+        "i have ",
+        "i've ",
+        "i’ve ",
+        "i work ",
+        "i'll ",
+        "i’ll ",
         "my default would be ",
         "my default is ",
+        "my experience ",
         "i'd start ",
         "i’d start ",
         "before we ",
@@ -83,7 +90,25 @@ public enum GeneralGuidancePolicy {
         "the safest ",
         "a good default ",
         "start by ",
+        "start with ",
+        "first, ",
+        "use ",
+        "keep ",
+        "separate ",
+        "prefer ",
+        "treat ",
+        "make ",
+        "define ",
+        "the default ",
+        "my approach ",
+        "my first step ",
         "we should ",
+        "a ",
+        "an ",
+        "the difference ",
+        "most recently ",
+        "lately ",
+        "for ",
     ]
 
     public static func accepts(_ candidate: String) -> Bool {
@@ -111,16 +136,30 @@ public enum GeneralGuidancePolicy {
             return false
         }
 
-        let terminators = statement.filter { ".!?".contains($0) }
-        switch terminators.count {
-        case 0:
-            return true
-        case 1:
-            return statement.last == terminators[terminators.startIndex]
-        case 2:
-            return terminators[terminators.startIndex] == "?" && statement.last == "."
-        default:
-            return false
+        let endings = sentenceEndings(statement)
+        guard endings.count <= 2 else { return false }
+        guard endings.isEmpty || ".!?".contains(statement.last ?? " ") else { return false }
+        if endings.count == 2 {
+            guard endings[1] != "?" else { return false }
+            let questionOpenings = [
+                "could you ", "can you ", "which ", "what ", "how ", "do we ", "are we ",
+                "is this ",
+            ]
+            if questionOpenings.contains(where: lower.hasPrefix), endings[0] != "?" {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func sentenceEndings(_ statement: String) -> [Character] {
+        let characters = Array(statement)
+        return characters.indices.reduce(into: []) { endings, index in
+            guard ".!?".contains(characters[index]) else { return }
+            let nextIndex = characters.index(after: index)
+            if nextIndex == characters.endIndex || characters[nextIndex].isWhitespace {
+                endings.append(characters[index])
+            }
         }
     }
 }

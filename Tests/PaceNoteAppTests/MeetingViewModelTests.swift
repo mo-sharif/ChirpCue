@@ -38,7 +38,7 @@ final class MeetingViewModelTests: XCTestCase {
     func testLocalAndProviderCapacityTitlesAreExplicitlyDistinct() {
         XCTAssertEqual(
             BrownoutReason.quickLimited.userTitle(for: .codex),
-            "ChirpCue's local Quick limit was reached"
+            "ChirpCue's Quick limit was reached"
         )
         XCTAssertEqual(
             BrownoutReason.providerLimited.userTitle(for: .codex),
@@ -576,6 +576,7 @@ final class MeetingViewModelTests: XCTestCase {
         XCTAssertTrue(firstRun.contains("google"))
         XCTAssertTrue(firstRun.contains("claude v1"))
         XCTAssertTrue(firstRun.contains("excludes agents.md"))
+        XCTAssertTrue(firstRun.contains("speaker brief"))
 
         for disclosure in [
             PaceNoteDisclosureText.meetingProcessing(for: .codex),
@@ -587,6 +588,7 @@ final class MeetingViewModelTests: XCTestCase {
             XCTAssertTrue(normalized.contains("tool output"))
             XCTAssertTrue(normalized.contains("repository excerpts"))
             XCTAssertTrue(normalized.contains("transcript slices"))
+            XCTAssertTrue(normalized.contains("speaker brief"))
             XCTAssertTrue(normalized.contains("no zero-retention claim"))
         }
 
@@ -597,6 +599,7 @@ final class MeetingViewModelTests: XCTestCase {
             let normalized = disclosure.lowercased()
             XCTAssertTrue(normalized.contains("google"))
             XCTAssertTrue(normalized.contains("transcript slices"))
+            XCTAssertTrue(normalized.contains("speaker brief"))
             XCTAssertTrue(normalized.contains("bounded host-selected lines"))
             XCTAssertTrue(normalized.contains("no zero-retention claim"))
         }
@@ -608,6 +611,7 @@ final class MeetingViewModelTests: XCTestCase {
             let normalized = disclosure.lowercased()
             XCTAssertTrue(normalized.contains("anthropic"))
             XCTAssertTrue(normalized.contains("transcript slices"))
+            XCTAssertTrue(normalized.contains("speaker brief"))
             XCTAssertTrue(normalized.contains("bounded host-selected lines"))
             XCTAssertTrue(normalized.contains("excludes agents.md"))
             XCTAssertTrue(normalized.contains("claude.md"))
@@ -1504,6 +1508,71 @@ final class MeetingViewModelTests: XCTestCase {
         model.receiveVerifiedDeepSuggestion(clarification)
 
         XCTAssertEqual(model.deepSuggestion, clarification)
+    }
+
+    func testFastAnswerUpgradesTheInstantBridgeForTheSameTurn() {
+        let model = MeetingViewModel(hasCompletedFirstRun: true)
+        model.phase = .listening
+        let identity = TurnIdentity(meetingID: UUID(), generation: 1)
+        let bridge = SuggestionCard(
+            identity: identity,
+            stage: .bridge,
+            text: "What constraint matters most here? I’d start with the simplest reversible option."
+        )
+        let quick = SuggestionCard(
+            identity: identity,
+            stage: .quick,
+            text: "I’d isolate the caller from downstream latency and make retries explicit."
+        )
+
+        model.receiveQuickSuggestion(bridge)
+        model.receiveQuickSuggestion(quick)
+
+        XCTAssertEqual(model.quickSuggestion, quick)
+        XCTAssertEqual(model.statusDetail, "A quick response is ready.")
+    }
+
+    func testFollowUpCreatesASecondThreadWithoutReplacingTheOriginalAnswer() {
+        let model = MeetingViewModel(hasCompletedFirstRun: true)
+        model.phase = .listening
+        let meetingID = UUID()
+        let firstIdentity = TurnIdentity(meetingID: meetingID, generation: 1)
+        let secondIdentity = TurnIdentity(meetingID: meetingID, generation: 2)
+        let firstQuick = SuggestionCard(
+            identity: firstIdentity,
+            stage: .quick,
+            text: "I’d start by separating authentication from authorization."
+        )
+        let secondQuick = SuggestionCard(
+            identity: secondIdentity,
+            stage: .quick,
+            text: "For the MCP specifically, I’d use a read-only service identity."
+        )
+        let firstDeep = SuggestionCard(
+            identity: firstIdentity,
+            stage: .deep,
+            text: "Then I’d add short-lived credentials, scoped datasets, and complete audit logs.",
+            deepKind: .generalAnswer
+        )
+
+        model.receiveSuggestionThreadStarted(
+            identity: firstIdentity,
+            question: "How would you secure database access?"
+        )
+        model.receiveQuickSuggestion(firstQuick)
+        model.receiveSuggestionThreadStarted(
+            identity: secondIdentity,
+            question: "What changes when the access comes through MCP?"
+        )
+        model.receiveQuickSuggestion(secondQuick)
+        model.receiveVerifiedDeepSuggestion(firstDeep)
+
+        XCTAssertEqual(model.suggestionThreads.map(\.identity), [firstIdentity, secondIdentity])
+        XCTAssertEqual(model.suggestionThreads[0].quick, firstQuick)
+        XCTAssertEqual(model.suggestionThreads[0].deep, firstDeep)
+        XCTAssertEqual(model.suggestionThreads[1].quick, secondQuick)
+        XCTAssertNil(model.suggestionThreads[1].deep)
+        XCTAssertEqual(model.quickSuggestion, secondQuick)
     }
 
     func testGeneralDeepCardIsNeverDescribedAsRepositoryGrounded() {

@@ -81,14 +81,23 @@ public struct ResponseCoordinatorConfiguration: Sendable {
         self.resultTTL = resultTTL
         self.bridgeText = bridgeText
     }
+
+    public func bridgeText(for question: String) -> String {
+        guard bridgeText == Self.deterministicFallback else { return bridgeText }
+        return LocalResponseBridge.response(for: question)
+    }
 }
 
 public actor ResponseCoordinator {
+    private struct ActiveResponse: Sendable {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+
     private let generator: any ResponseGenerating
     private let configuration: ResponseCoordinatorConfiguration
     private let sensitiveOutputBuffer: ResponseSensitiveOutputBuffer?
-    private var activeIdentity: TurnIdentity?
-    private var activeTask: Task<Void, Never>?
+    private var activeResponses: [TurnIdentity: ActiveResponse] = [:]
 
     public init(
         generator: any ResponseGenerating,
@@ -101,12 +110,14 @@ public actor ResponseCoordinator {
     }
 
     deinit {
-        activeTask?.cancel()
+        for response in activeResponses.values {
+            response.task.cancel()
+        }
     }
 
     public func suggestions(for turn: ConversationTurn) -> AsyncStream<ResponseCoordinatorEvent> {
-        activeTask?.cancel()
-        activeIdentity = turn.identity
+        activeResponses[turn.identity]?.task.cancel()
+        let token = UUID()
 
         return AsyncStream { continuation in
             let task = Task { [weak self] in
@@ -115,16 +126,28 @@ public actor ResponseCoordinator {
                     return
                 }
                 await self.run(turn: turn, continuation: continuation)
+                await self.finishResponse(identity: turn.identity, token: token)
             }
-            activeTask = task
+            activeResponses[turn.identity] = ActiveResponse(token: token, task: task)
             continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    public func invalidate() {
-        activeTask?.cancel()
-        activeTask = nil
-        activeIdentity = nil
+    public func invalidate(_ identity: TurnIdentity) async {
+        guard let response = activeResponses.removeValue(forKey: identity) else { return }
+        response.task.cancel()
+        await response.task.value
+    }
+
+    public func invalidate() async {
+        let responses = Array(activeResponses.values)
+        activeResponses.removeAll(keepingCapacity: false)
+        for response in responses {
+            response.task.cancel()
+        }
+        for response in responses {
+            await response.task.value
+        }
     }
 
     private func run(
@@ -155,63 +178,32 @@ public actor ResponseCoordinator {
             operation: { try await generator.generateDeep(for: turn) }
         )
 
-        defer {
+        defer { continuation.finish() }
+
+        var cue = bridge(
+            for: turn,
+            reason: "instant_local_bridge"
+        )
+        guard isActive(turn.identity), !Task.isCancelled else {
             quickOperation.task.cancel()
             deepOperation.task.cancel()
-            continuation.finish()
-        }
-
-        let quickResult = await Self.outcome(
-            from: quickOperation.gate,
-            deadline: quickDeadline
-        )
-        let cue: CueEnvelope
-        var quickFailure: ResponseCoordinatorFailure?
-        switch quickResult {
-        case .success(let output) where output.reason == "deterministic_safety_bridge":
-            cue = bridge(for: turn.identity, reason: output.reason)
-        case .success(let output) where Self.valid(output, for: turn):
-            cue = CueEnvelope(
-                turnID: turn.identity.turnID,
-                generation: turn.identity.generation,
-                text: Self.limitWords(output.sayNow, maximum: 24),
-                reason: output.reason,
-                isDeterministicBridge: false
-            )
-        case .success:
-            quickFailure = .responseRejected
-            cue = bridge(for: turn.identity, reason: "quick_response_rejected")
-        case .failure(let failure):
-            quickFailure = failure
-            cue = bridge(for: turn.identity, reason: "quick_response_unavailable")
-        case .timedOut:
-            quickOperation.task.cancel()
-            quickFailure = .timedOut
-            cue = bridge(for: turn.identity, reason: "quick_response_timed_out")
-        case .cancelled:
-            quickFailure = .providerUnavailable
-            cue = bridge(for: turn.identity, reason: "quick_response_cancelled")
-        }
-
-        guard isCurrent(turn.identity), !Task.isCancelled else {
+            await quickOperation.task.value
+            await deepOperation.task.value
             continuation.yield(.discardedStale(turn.identity))
             return
         }
         continuation.yield(.cue(cue))
-        if let quickFailure {
-            continuation.yield(.quickUnavailable(quickFailure))
-        }
 
-        let cleanupOperation = Self.startOperation(
-            deadline: resultDeadline,
-            operation: {
-                try await generator.awaitQuickCleanup(for: turn.identity)
-                return QuickCleanupConfirmation()
+        var cleanupOperation: PendingOperation<QuickCleanupConfirmation>?
+        await withTaskGroup(of: ResponseOperationOutcome.self) { group in
+            group.addTask {
+                .quick(
+                    await Self.outcome(
+                        from: quickOperation.gate,
+                        deadline: quickDeadline
+                    )
+                )
             }
-        )
-        defer { cleanupOperation.task.cancel() }
-
-        await withTaskGroup(of: PostCueOperationOutcome.self) { group in
             group.addTask {
                 .deep(
                     await Self.outcome(
@@ -220,23 +212,63 @@ public actor ResponseCoordinator {
                     )
                 )
             }
-            group.addTask {
-                .quickCleanup(
-                    await Self.outcome(
-                        from: cleanupOperation.gate,
-                        deadline: resultDeadline
-                    )
-                )
-            }
 
+            var deepWasDisplayed = false
             for await outcome in group {
                 guard !Task.isCancelled else {
                     group.cancelAll()
                     return
                 }
                 switch outcome {
+                case .quick(let result):
+                    var quickFailure: ResponseCoordinatorFailure?
+                    switch result {
+                    case .success(let output) where output.reason == "deterministic_safety_bridge":
+                        break
+                    case .success(let output) where Self.valid(output, for: turn):
+                        if !deepWasDisplayed {
+                            cue = CueEnvelope(
+                                turnID: turn.identity.turnID,
+                                generation: turn.identity.generation,
+                                text: Self.limitWords(output.sayNow, maximum: 24),
+                                reason: output.reason,
+                                isDeterministicBridge: false
+                            )
+                            continuation.yield(.cue(cue))
+                        }
+                    case .success:
+                        quickFailure = .responseRejected
+                    case .failure(let failure):
+                        quickFailure = failure
+                    case .timedOut:
+                        quickOperation.task.cancel()
+                        quickFailure = .timedOut
+                    case .cancelled:
+                        quickFailure = .providerUnavailable
+                    }
+                    if let quickFailure {
+                        continuation.yield(.quickUnavailable(quickFailure))
+                    }
+
+                    let operation = Self.startOperation(
+                        deadline: resultDeadline,
+                        operation: {
+                            try await generator.awaitQuickCleanup(for: turn.identity)
+                            return QuickCleanupConfirmation()
+                        }
+                    )
+                    cleanupOperation = operation
+                    group.addTask {
+                        .quickCleanup(
+                            await Self.outcome(
+                                from: operation.gate,
+                                deadline: resultDeadline
+                            )
+                        )
+                    }
+
                 case .deep(let result):
-                    emitDeepResult(
+                    deepWasDisplayed = emitDeepResult(
                         result,
                         turn: turn,
                         cue: cue,
@@ -248,6 +280,16 @@ public actor ResponseCoordinator {
                 }
             }
         }
+
+        let cancellationMustDrain = Task.isCancelled
+        quickOperation.task.cancel()
+        deepOperation.task.cancel()
+        cleanupOperation?.task.cancel()
+        if cancellationMustDrain {
+            await quickOperation.task.value
+            await deepOperation.task.value
+            await cleanupOperation?.task.value
+        }
     }
 
     private func emitDeepResult(
@@ -256,35 +298,38 @@ public actor ResponseCoordinator {
         cue: CueEnvelope,
         deadline: ContinuousClock.Instant,
         continuation: AsyncStream<ResponseCoordinatorEvent>.Continuation
-    ) {
-        guard isCurrent(turn.identity), !Task.isCancelled else {
+    ) -> Bool {
+        guard isActive(turn.identity), !Task.isCancelled else {
             continuation.yield(.discardedStale(turn.identity))
-            return
+            return false
         }
 
         switch result {
         case .failure(let failure):
             continuation.yield(.deepUnavailable(failure))
+            return false
         case .timedOut:
             continuation.yield(.deepUnavailable(.timedOut))
+            return false
         case .cancelled:
             continuation.yield(.deepUnavailable(.providerUnavailable))
-        case .success(let draft):
+            return false
+        case .success(let receivedDraft):
             guard ContinuousClock().now <= deadline else {
                 continuation.yield(.discardedStale(turn.identity))
-                return
+                return false
             }
-            guard Self.valid(draft, for: turn) else {
+            guard let draft = DeepDraftValidationPolicy.normalized(receivedDraft, for: turn) else {
                 continuation.yield(.deepUnavailable(.responseRejected))
-                return
+                return false
             }
 
             let reconciliation = Self.reconciliation(cue: cue, draft: draft)
-            guard isCurrent(turn.identity), !Task.isCancelled,
+            guard isActive(turn.identity), !Task.isCancelled,
                 ContinuousClock().now <= deadline
             else {
                 continuation.yield(.discardedStale(turn.identity))
-                return
+                return false
             }
 
             do {
@@ -303,11 +348,13 @@ public actor ResponseCoordinator {
                 )
                 guard Self.wordCount(bound.composedText) <= 40 else {
                     continuation.yield(.deepUnavailable(.responseRejected))
-                    return
+                    return false
                 }
                 continuation.yield(.deep(bound))
+                return true
             } catch {
                 continuation.yield(.deepUnavailable(Self.classify(error)))
+                return false
             }
         }
     }
@@ -397,43 +444,23 @@ public actor ResponseCoordinator {
         return PendingOperation(gate: gate, task: task)
     }
 
-    private func bridge(for identity: TurnIdentity, reason: String) -> CueEnvelope {
+    private func bridge(for turn: ConversationTurn, reason: String) -> CueEnvelope {
         CueEnvelope(
-            turnID: identity.turnID,
-            generation: identity.generation,
-            text: configuration.bridgeText,
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            text: configuration.bridgeText(for: turn.question),
             reason: reason,
             isDeterministicBridge: true
         )
     }
 
-    private func isCurrent(_ identity: TurnIdentity) -> Bool {
-        activeIdentity == identity
+    private func isActive(_ identity: TurnIdentity) -> Bool {
+        activeResponses[identity] != nil
     }
 
-    private static func valid(_ draft: DeepDraft, for turn: ConversationTurn) -> Bool {
-        guard draft.turnID == turn.identity.turnID,
-            draft.generation == turn.identity.generation,
-            !draft.candidateSayNext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            wordCount(draft.candidateSayNext) <= 33,
-            (0...1).contains(draft.confidence),
-            draft.groundingFingerprint == turn.groundingFingerprint
-        else {
-            return false
-        }
-
-        let isGrounded = turn.repoAlias != nil || turn.groundingFingerprint != nil
-        guard (turn.repoAlias != nil) == (turn.groundingFingerprint != nil) else { return false }
-        if isGrounded {
-            guard draft.kind != .generalAnswer else { return false }
-            if draft.kind == .answer { return !draft.basis.isEmpty }
-            return draft.basis.isEmpty
-        }
-        guard draft.kind != .answer, draft.basis.isEmpty else { return false }
-        if draft.kind == .generalAnswer {
-            return GeneralGuidancePolicy.accepts(draft.candidateSayNext)
-        }
-        return true
+    private func finishResponse(identity: TurnIdentity, token: UUID) {
+        guard activeResponses[identity]?.token == token else { return }
+        activeResponses.removeValue(forKey: identity)
     }
 
     private static func valid(_ output: QuickModelOutput, for turn: ConversationTurn) -> Bool {
@@ -509,7 +536,8 @@ private enum DeadlineOutcome<Value: Sendable>: Sendable {
 
 private struct QuickCleanupConfirmation: Sendable {}
 
-private enum PostCueOperationOutcome: Sendable {
+private enum ResponseOperationOutcome: Sendable {
+    case quick(DeadlineOutcome<QuickModelOutput>)
     case deep(DeadlineOutcome<DeepDraft>)
     case quickCleanup(DeadlineOutcome<QuickCleanupConfirmation>)
 }

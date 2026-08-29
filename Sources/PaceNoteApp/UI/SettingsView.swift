@@ -1,3 +1,4 @@
+import PaceNoteCore
 import SwiftUI
 
 @MainActor
@@ -9,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("paceNote.defaultOutputScope") private var defaultOutputScope = OutputCaptureScope.meetingApplication
         .rawValue
     @AppStorage("paceNote.speakingStyle") private var speakingStyle = "Direct"
+    @AppStorage("paceNote.speakerBrief") private var speakerBrief = ""
 
     var body: some View {
         TabView {
@@ -57,10 +59,42 @@ struct SettingsView: View {
                     }
                     .accessibilityLabel("Speaking Style")
                     .accessibilityIdentifier("settings.speaking-style")
+                    HStack {
+                        Text("About you")
+                            .font(.subheadline.weight(.medium))
+                        Spacer()
+                        if !speakerBrief.isEmpty {
+                            Button("Clear") { speakerBrief = "" }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Clear About You")
+                                .accessibilityIdentifier("settings.speaker-brief-clear")
+                        }
+                    }
+                    TextEditor(text: $speakerBrief)
+                        .frame(minHeight: 92)
+                        .accessibilityLabel("About You")
+                        .accessibilityIdentifier("settings.speaker-brief")
+                        .onChange(of: speakerBrief) { _, newValue in
+                            if newValue.count > SpeakerBriefPolicy.maximumCharacters {
+                                speakerBrief = String(
+                                    newValue.prefix(SpeakerBriefPolicy.maximumCharacters)
+                                )
+                            }
+                        }
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(
+                            "Add factual background for new meetings, such as years with React, recent applications, and your role. Stored locally on this Mac and sent only with meeting inference."
+                        )
+                        Spacer()
+                        Text("\(speakerBrief.count)/\(SpeakerBriefPolicy.maximumCharacters)")
+                            .monospacedDigit()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
                 Section("Keyboard shortcuts") {
                     ShortcutRow(action: "Set up meeting", shortcut: "⌘⇧L")
-                    ShortcutRow(action: "Coach current turn", shortcut: "⌘⇧↩")
+                    ShortcutRow(action: "Retry latest answer", shortcut: "⌘⇧↩")
                     ShortcutRow(action: "Coach typed question", shortcut: "⌘↩")
                     ShortcutRow(action: "Pause capture", shortcut: "⌘⇧P")
                     ShortcutRow(action: "Stop and clear", shortcut: "⌘.")

@@ -215,7 +215,8 @@ final class GeminiMeetingResponseGeneratorTests: XCTestCase {
                     endedAt: 2,
                     isFinal: true
                 )
-            ]
+            ],
+            speakerBrief: "Eight years with React; lately building TypeScript AI products."
         )
         let quick = try await generator.generateQuick(for: turn)
         let draft = try await generator.generateDeep(for: turn)
@@ -229,7 +230,9 @@ final class GeminiMeetingResponseGeneratorTests: XCTestCase {
             "I would start by clarifying which datasets and operations the connector actually needs.")
 
         let captured = await runner.capturedInput
-        XCTAssertTrue(String(decoding: captured, as: UTF8.self).contains("secure MCP database access"))
+        let capturedText = String(decoding: captured, as: UTF8.self)
+        XCTAssertTrue(capturedText.contains("secure MCP database access"))
+        XCTAssertTrue(capturedText.contains("Eight years with React"))
         let requests = await runner.requests
         XCTAssertEqual(requests.count, 1)
         XCTAssertFalse(requests[0].arguments.joined().contains("secure MCP database access"))

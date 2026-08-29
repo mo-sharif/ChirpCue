@@ -49,7 +49,7 @@ public struct CodexStableProfileSanitizer {
                 throw CodexStableProfileCleanupError.unsafeEntry(name)
             }
 
-            if Self.credentialEntryNames.contains(name) {
+            if Self.isCredentialEntryName(name) {
                 throw CodexStableProfileCleanupError.credentialMaterialPresent(name)
             }
             if Self.transientDirectoryNames.contains(name) {
@@ -59,7 +59,7 @@ public struct CodexStableProfileSanitizer {
                 removable.append(entry)
                 continue
             }
-            if Self.transientFileNames.contains(name) {
+            if Self.transientFileNames.contains(name) || Self.isTransientSQLiteEntryName(name) {
                 guard values.isRegularFile == true,
                     try hasSingleLink(entry)
                 else {
@@ -98,10 +98,8 @@ public struct CodexStableProfileSanitizer {
 
     public func restoreCanonicalConfiguration(profileRoot: URL) throws {
         let root = try validatedProfileRoot(profileRoot)
-        for name in Self.credentialEntryNames
-        where fileManager.fileExists(
-            atPath: root.appendingPathComponent(name, isDirectory: false).path
-        ) {
+        let existingNames = try fileManager.contentsOfDirectory(atPath: root.path)
+        for name in existingNames where Self.isCredentialEntryName(name) {
             throw CodexStableProfileCleanupError.credentialMaterialPresent(name)
         }
 
@@ -195,9 +193,9 @@ public struct CodexStableProfileSanitizer {
         return (attributes[.referenceCount] as? NSNumber)?.intValue == 1
     }
 
-    // Evidence: these are the only top-level transient entries produced by the pinned
-    // app-server after account/read, model, rate-limit, permission, and skill preflight
-    // calls with zero generations.
+    // These top-level transient entries are removed after every session. Codex can add
+    // versioned SQLite stores over time, so the bounded name parser below accepts their
+    // ordinary database sidecars while continuing to fail closed on credential-like stores.
     private static let transientDirectoryNames: Set<String> = [
         ".tmp", "cache", "plugins", "sessions", "shell_snapshots", "skills",
         "thread-writer-locks", "tmp",
@@ -210,10 +208,58 @@ public struct CodexStableProfileSanitizer {
         "models_cache.json",
         "queue_1.sqlite", "queue_1.sqlite-shm", "queue_1.sqlite-wal",
         "state_5.sqlite", "state_5.sqlite-shm", "state_5.sqlite-wal",
+        "thread_history_1.sqlite", "thread_history_1.sqlite-shm",
+        "thread_history_1.sqlite-wal",
     ]
     private static let persistentDirectoryNames: Set<String> = []
     private static let persistentFileNames: Set<String> = ["config.toml", "installation_id"]
     private static let credentialEntryNames: Set<String> = [
         ".credentials.json", "auth.json", "credentials.json",
     ]
+
+    private static let sqliteSuffixes = [
+        ".sqlite-journal", ".sqlite-shm", ".sqlite-wal", ".sqlite",
+    ]
+    private static let credentialSQLiteTerms = [
+        "account", "auth", "credential", "identity", "secret", "token",
+    ]
+
+    private static func isCredentialEntryName(_ name: String) -> Bool {
+        if credentialEntryNames.contains(name) { return true }
+        guard let namespace = versionedSQLiteNamespace(in: name) else { return false }
+        return credentialSQLiteTerms.contains(where: namespace.contains)
+    }
+
+    private static func isTransientSQLiteEntryName(_ name: String) -> Bool {
+        guard let namespace = versionedSQLiteNamespace(in: name),
+            !credentialSQLiteTerms.contains(where: namespace.contains)
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func versionedSQLiteNamespace(in name: String) -> String? {
+        guard name == name.lowercased(), name.utf8.count <= 96,
+            let suffix = sqliteSuffixes.first(where: name.hasSuffix)
+        else {
+            return nil
+        }
+        let stem = String(name.dropLast(suffix.count))
+        guard let separator = stem.lastIndex(of: "_"), separator != stem.startIndex else {
+            return nil
+        }
+        let namespace = String(stem[..<separator])
+        let version = stem[stem.index(after: separator)...]
+        guard !version.isEmpty, version.allSatisfy(\.isNumber),
+            namespace.unicodeScalars.allSatisfy({ scalar in
+                CharacterSet.lowercaseLetters.contains(scalar)
+                    || CharacterSet.decimalDigits.contains(scalar)
+                    || scalar == "_"
+            })
+        else {
+            return nil
+        }
+        return namespace
+    }
 }

@@ -9,10 +9,12 @@ public enum CodexResponseComplexity: Sendable {
 public struct CodexModelRoute: Equatable, Sendable {
     public let model: String
     public let effort: String
+    public let serviceTier: String?
 
-    public init(model: String, effort: String) {
+    public init(model: String, effort: String, serviceTier: String? = nil) {
         self.model = model
         self.effort = effort
+        self.serviceTier = serviceTier
     }
 }
 
@@ -32,7 +34,7 @@ public struct CodexRoutingPolicy: Equatable, Sendable {
     }
 
     public static let codex_0_147 = CodexRoutingPolicy(
-        quickModels: ["gpt-5.3-codex-spark", "gpt-5.6-luna", "gpt-5.4-mini"],
+        quickModels: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.3-codex-spark", "gpt-5.4-mini"],
         narrowTechnicalModels: ["gpt-5.6-terra", "gpt-5.6-sol"],
         hardTechnicalModels: ["gpt-5.6-sol", "gpt-5.6-terra"]
     )
@@ -69,22 +71,36 @@ public struct CodexModelRouter: Sendable {
         for identifier in preferred {
             guard let model = models.first(where: { $0.id == identifier || $0.model == identifier }) else { continue }
             let efforts = model.supportedReasoningEfforts.map(\.reasoningEffort)
+            let serviceTier = complexity == .quick ? Self.fastestServiceTier(for: model) : nil
             if efforts.contains(desiredEffort) {
-                return CodexModelRoute(model: model.model, effort: desiredEffort)
+                return CodexModelRoute(
+                    model: model.model,
+                    effort: desiredEffort,
+                    serviceTier: serviceTier
+                )
             }
             if let fallback = Self.closestEffort(to: desiredEffort, from: efforts) {
-                return CodexModelRoute(model: model.model, effort: fallback)
+                return CodexModelRoute(
+                    model: model.model,
+                    effort: fallback,
+                    serviceTier: serviceTier
+                )
             }
         }
         throw CodexModelRoutingError.noEligibleModel(complexity)
     }
 
     private static func closestEffort(to desired: String, from supported: [String]) -> String? {
-        let ranking = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        let ranking = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
         guard let desiredIndex = ranking.firstIndex(of: desired) else { return supported.first }
         return supported.min { lhs, rhs in
             abs((ranking.firstIndex(of: lhs) ?? desiredIndex) - desiredIndex)
                 < abs((ranking.firstIndex(of: rhs) ?? desiredIndex) - desiredIndex)
         }
+    }
+
+    private static func fastestServiceTier(for model: CodexModel) -> String? {
+        let advertised = Set((model.serviceTiers ?? []).map { $0.id.lowercased() })
+        return ["ultrafast", "priority", "fast"].first(where: advertised.contains)
     }
 }

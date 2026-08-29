@@ -31,11 +31,14 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         var primaryError: (any Error)?
 
         do {
-            let preparedGenerator = fixture.makeGenerator(recorder: recorder)
+            let preparedGenerator = fixture.makeGenerator(
+                recorder: recorder,
+                subscriptionQuickEnabled: false
+            )
             generator = preparedGenerator
 
             _ = try await Self.withTimeout(
-                .seconds(45),
+                .seconds(90),
                 operation: {
                     try await preparedGenerator.prepare()
                 })
@@ -64,7 +67,7 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
             latencyAttachment.lifetime = .keepAlways
             add(latencyAttachment)
         } catch {
-            let stage = await recorder.latestStage() ?? "unknown"
+            let stage = await recorder.stageTrace()
             XCTFail(
                 "Subscription smoke failed at safe stage \(stage) with \(String(describing: error))."
             )
@@ -88,10 +91,10 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         guard cleanup.failures.isEmpty else {
             throw LiveSubscriptionSmokeError.cleanupFailed
         }
-        XCTAssertEqual(cleanup.responseDeletedThreadCount, 2)
+        XCTAssertEqual(cleanup.responseDeletedThreadCount, 1)
         let successfulDeletes = await recorder.successfulThreadDeleteCount()
         let confirmedAbsentEphemeralThreads = await recorder.confirmedAbsentThreadCount()
-        XCTAssertEqual(successfulDeletes, 2)
+        XCTAssertEqual(successfulDeletes, 1)
         XCTAssertEqual(confirmedAbsentEphemeralThreads, 1)
     }
 
@@ -114,9 +117,14 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         var primaryError: (any Error)?
 
         do {
-            let preparedGenerator = fixture.makeGenerator(recorder: recorder, grounded: false)
+            let preparedGenerator = fixture.makeGenerator(
+                recorder: recorder,
+                grounded: false,
+                subscriptionQuickEnabled: false,
+                deepComplexity: .narrowTechnical
+            )
             generator = preparedGenerator
-            _ = try await Self.withTimeout(.seconds(45)) {
+            _ = try await Self.withTimeout(.seconds(90)) {
                 try await preparedGenerator.prepare()
             }
             let deep = try await Self.withTimeout(.seconds(180)) {
@@ -129,7 +137,7 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
             XCTAssertEqual(generationCounts.quick, 0)
             XCTAssertEqual(generationCounts.deep, 1)
         } catch {
-            let stage = await recorder.latestStage() ?? "unknown"
+            let stage = await recorder.stageTrace()
             XCTFail(
                 "Repository-free subscription smoke failed at safe stage \(stage) with \(String(describing: error))."
             )
@@ -155,9 +163,96 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         }
         let successfulDeletes = await recorder.successfulThreadDeleteCount()
         let confirmedAbsentEphemeralThreads = await recorder.confirmedAbsentThreadCount()
-        XCTAssertEqual(cleanup.responseDeletedThreadCount, 2)
-        XCTAssertEqual(successfulDeletes, 2)
+        XCTAssertEqual(cleanup.responseDeletedThreadCount, 1)
+        XCTAssertEqual(successfulDeletes, 1)
         XCTAssertEqual(confirmedAbsentEphemeralThreads, 1)
+    }
+
+    func testOneRepositoryFreeQuickResponseThenZeroize() async throws {
+        guard ProcessInfo.processInfo.environment[Self.optInEnvironmentKey] == "1" else {
+            throw XCTSkip(
+                "Set \(Self.optInEnvironmentKey)=1 to spend one repository-free Quick ChatGPT-subscription response."
+            )
+        }
+
+        let stableProfileRoot = try Self.stableProfileRoot()
+        let profileLease = try CodexProfileLease.acquire(profileRoot: stableProfileRoot)
+        defer { withExtendedLifetime(profileLease) {} }
+        try await Self.requireNoPendingCleanup(profileRoot: stableProfileRoot)
+
+        let fixture = try await LiveSubscriptionFixture(profileRoot: stableProfileRoot)
+        let recorder = LiveGenerationRecorder()
+        var generator: CodexMeetingResponseGenerator?
+        var generatedQuick: QuickModelOutput?
+        var primaryError: (any Error)?
+
+        do {
+            let preparedGenerator = fixture.makeGenerator(recorder: recorder, grounded: false)
+            generator = preparedGenerator
+            _ = try await Self.withTimeout(.seconds(120)) {
+                try await preparedGenerator.prepare()
+            }
+
+            let clock = ContinuousClock()
+            let quickStart = clock.now
+            let quick = try await Self.withTimeout(.seconds(9)) {
+                try await preparedGenerator.generateQuick(for: fixture.generalTurn)
+            }
+            generatedQuick = quick
+            let quickLatency = quickStart.duration(to: clock.now)
+            try await Self.withTimeout(.seconds(30)) {
+                try await preparedGenerator.awaitQuickCleanup(for: fixture.generalTurn.identity)
+            }
+
+            try fixture.assertValid(quick: quick)
+            await recorder.recordStage("quick-output-valid")
+            XCTAssertLessThanOrEqual(
+                quickLatency,
+                .seconds(8),
+                "A subscription Quick answer must arrive inside the live UI deadline."
+            )
+            try fixture.assertStrictRawQuickOutputs(await recorder.rawOutputs())
+            await recorder.recordStage("quick-raw-valid")
+            let generationCounts = await recorder.generationCounts()
+            XCTAssertEqual(generationCounts.quick, 1)
+            XCTAssertEqual(generationCounts.deep, 0)
+
+            let latencyAttachment = XCTAttachment(
+                string: "quick_ms=\(Self.milliseconds(quickLatency))"
+            )
+            latencyAttachment.name = "ChirpCue Quick subscription smoke latency"
+            latencyAttachment.lifetime = .keepAlways
+            add(latencyAttachment)
+        } catch {
+            let stage = await recorder.stageTrace()
+            XCTFail(
+                "Quick subscription smoke failed at safe stage \(stage) with \(String(describing: error))."
+            )
+            primaryError = error
+        }
+
+        let rawOutputs = await recorder.rawOutputs()
+        let cleanup = await fixture.cleanupAndVerify(
+            generator: generator,
+            sensitiveNeedles: fixture.residualSensitiveNeedles(
+                turn: fixture.generalTurn,
+                quick: generatedQuick,
+                rawOutputs: rawOutputs
+            )
+        )
+        for failure in cleanup.failures {
+            XCTFail("Quick subscription-smoke cleanup failed during \(failure.rawValue).")
+        }
+
+        if let primaryError { throw primaryError }
+        guard cleanup.failures.isEmpty else {
+            throw LiveSubscriptionSmokeError.cleanupFailed
+        }
+        XCTAssertEqual(cleanup.responseDeletedThreadCount, 0)
+        let successfulDeletes = await recorder.successfulThreadDeleteCount()
+        let confirmedAbsentThreads = await recorder.confirmedAbsentThreadCount()
+        XCTAssertEqual(successfulDeletes, 1)
+        XCTAssertEqual(confirmedAbsentThreads, 0)
     }
 
     func testRecoveryPlanRetainsEveryKnownIDWhenRemoteVerificationFails() {
@@ -523,10 +618,16 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
 
     func makeGenerator(
         recorder: LiveGenerationRecorder,
-        grounded: Bool = true
+        grounded: Bool = true,
+        subscriptionQuickEnabled: Bool = true,
+        deepComplexity: CodexResponseComplexity = .hardTechnical
     ) -> CodexMeetingResponseGenerator {
         CodexMeetingResponseGenerator(
-            configuration: responseConfiguration(grounded: grounded),
+            configuration: responseConfiguration(
+                grounded: grounded,
+                subscriptionQuickEnabled: subscriptionQuickEnabled,
+                deepComplexity: deepComplexity
+            ),
             journal: journal,
             evidenceVerifier: LiveRecordingEvidenceVerifier(recorder: recorder),
             clientFactory: { configuration in
@@ -607,6 +708,18 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
         }
     }
 
+    func assertValid(quick: QuickModelOutput) throws {
+        XCTAssertEqual(quick.turnID, generalTurn.identity.turnID)
+        XCTAssertEqual(quick.generation, generalTurn.identity.generation)
+        XCTAssertFalse(quick.sayNow.isEmpty)
+        XCTAssertLessThanOrEqual(Self.wordCount(quick.sayNow), 24)
+        XCTAssertTrue((0...1).contains(quick.confidence))
+        XCTAssertFalse(quick.reason.isEmpty)
+        guard GeneralGuidancePolicy.accepts(quick.sayNow) else {
+            throw LiveSubscriptionSmokeError.invalidEvidence
+        }
+    }
+
     func assertStrictRawOutputs(_ outputs: LiveRawOutputs) throws {
         guard outputs.quick.isEmpty,
             let deepText = outputs.deep.last,
@@ -628,6 +741,16 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
                         "repoAlias", "relativePath", "startLine", "endLine", "fileHash", "claim",
                     ])
             })
+        else {
+            throw LiveSubscriptionSmokeError.invalidEvidence
+        }
+    }
+
+    func assertStrictRawQuickOutputs(_ outputs: LiveRawOutputs) throws {
+        guard outputs.deep.isEmpty,
+            let quickText = outputs.quick.last,
+            let quickObject = try Self.jsonObject(quickText),
+            Set(quickObject.keys) == Set(["sayNow"])
         else {
             throw LiveSubscriptionSmokeError.invalidEvidence
         }
@@ -895,14 +1018,20 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
         )
     }
 
-    private func responseConfiguration(grounded: Bool) -> MeetingResponseConfiguration {
+    private func responseConfiguration(
+        grounded: Bool,
+        subscriptionQuickEnabled: Bool = true,
+        deepComplexity: CodexResponseComplexity = .hardTechnical
+    ) -> MeetingResponseConfiguration {
         .init(
             meetingID: meetingID,
             meetingPrivateRoot: meetingRoot,
             codexProfileRoot: codexProfileRoot,
             clientVersion: "0.1.0",
             groundingSnapshot: grounded ? snapshot : nil,
-            deepComplexity: .hardTechnical,
+            deepComplexity: deepComplexity,
+            subscriptionQuickEnabled: subscriptionQuickEnabled,
+            realtimeQuickEnabled: false,
             quickPerMinute: 1,
             deepPerMinute: 1
         )
@@ -937,6 +1066,21 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
             candidateSayNext: deep?.candidateSayNext,
             verifiedBasisClaims: deep?.basis.map(\.claim) ?? [],
             rawDeepOutputs: rawOutputs.deep
+        )
+    }
+
+    func residualSensitiveNeedles(
+        turn: ConversationTurn,
+        quick: QuickModelOutput?,
+        rawOutputs: LiveRawOutputs
+    ) -> [Data] {
+        LiveSubscriptionResidualNeedles.make(
+            transcriptQuestion: turn.question,
+            outsideRootCanary: escapeCanary,
+            repositorySourceLine: Self.repositoryCanarySourceLine,
+            candidateSayNext: quick?.sayNow,
+            verifiedBasisClaims: [],
+            rawDeepOutputs: rawOutputs.quick
         )
     }
 
@@ -1036,7 +1180,7 @@ private actor LiveGenerationRecorder {
     private var confirmedAbsentThreads = 0
     private var rawQuickOutputs: [String] = []
     private var rawDeepOutputs: [String] = []
-    private var latestSafeStage: String?
+    private var safeStages: [String] = []
 
     func recordQuickStart() { quickStarts += 1 }
     func recordDeepStart() { deepStarts += 1 }
@@ -1052,10 +1196,15 @@ private actor LiveGenerationRecorder {
     }
 
     func recordStage(_ stage: String) {
-        latestSafeStage = String(stage.prefix(80))
+        safeStages.append(String(stage.prefix(80)))
+        if safeStages.count > 24 {
+            safeStages.removeFirst(safeStages.count - 24)
+        }
     }
 
-    func latestStage() -> String? { latestSafeStage }
+    func stageTrace() -> String {
+        safeStages.suffix(10).joined(separator: " > ")
+    }
 
     func generationCounts() -> (quick: Int, deep: Int) {
         (quickStarts, deepStarts)
@@ -1145,6 +1294,7 @@ private struct LiveRecordingEvidenceVerifier: MeetingEvidenceVerifying {
 
 private actor LiveCountingCodexClient: CodexMeetingClient {
     nonisolated let runtimeCapabilities: CodexRuntimeCapabilities
+    nonisolated let usesDirectEphemeralResponses = true
 
     private let client: CodexAppServerClient
     private let recorder: LiveGenerationRecorder
@@ -1215,12 +1365,74 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
         )
     }
 
+    func prepareResponseTemplate(
+        cwd: String,
+        runtimeWorkspaceRoots: [String],
+        model: String,
+        baseInstructions: String?,
+        expectedInstructionSources: [String],
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexBaseThread {
+        await recorder.recordStage("create-template-\(runtimeWorkspaceRoots.count)-roots")
+        return try await client.prepareResponseTemplate(
+            cwd: cwd,
+            runtimeWorkspaceRoots: runtimeWorkspaceRoots,
+            model: model,
+            baseInstructions: baseInstructions,
+            expectedInstructionSources: expectedInstructionSources,
+            onCreated: onCreated
+        )
+    }
+
     func forkEphemeral(
         from base: CodexBaseThread,
         model: String?
     ) async throws -> CodexEphemeralThread {
         await recorder.recordStage("fork-ephemeral")
-        return try await client.forkEphemeral(from: base, model: model)
+        do {
+            return try await client.forkEphemeral(from: base, model: model)
+        } catch {
+            await recorder.recordStage(Self.safeClientStage("fork", for: error))
+            throw error
+        }
+    }
+
+    func createEphemeralResponseThread(
+        from base: CodexBaseThread,
+        model: String?,
+        baseInstructions: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexEphemeralThread {
+        await recorder.recordStage("start-ephemeral-response")
+        do {
+            return try await client.createEphemeralResponseThread(
+                from: base,
+                model: model,
+                baseInstructions: baseInstructions,
+                onCreated: onCreated
+            )
+        } catch {
+            await recorder.recordStage(Self.safeClientStage("ephemeral", for: error))
+            throw error
+        }
+    }
+
+    func forkEphemeral(
+        from base: CodexBaseThread,
+        model: String?,
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexEphemeralThread {
+        await recorder.recordStage("fork-ephemeral")
+        do {
+            return try await client.forkEphemeral(
+                from: base,
+                model: model,
+                onCreated: onCreated
+            )
+        } catch {
+            await recorder.recordStage(Self.safeClientStage("fork", for: error))
+            throw error
+        }
     }
 
     func deleteThread(id: String) async throws {
@@ -1261,18 +1473,62 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
     ) async throws -> CodexQuickSession {
         await recorder.recordStage("start-quick")
         await recorder.recordQuickStart()
-        let session = try await client.startQuick(
-            threadID: threadID,
-            text: text,
-            realtimePrompt: realtimePrompt,
-            model: model,
-            outputSchema: outputSchema,
-            skills: skills
-        )
+        let session: CodexQuickSession
+        do {
+            session = try await client.startQuick(
+                threadID: threadID,
+                text: text,
+                realtimePrompt: realtimePrompt,
+                model: model,
+                outputSchema: outputSchema,
+                skills: skills
+            )
+        } catch {
+            await recorder.recordStage(Self.safeClientStage("quick", for: error))
+            throw error
+        }
         switch session {
         case .turn(let turn):
+            await recorder.recordStage("quick-session-turn")
             return .turn(recording(turn, lane: .quick))
         case .realtime(let realtime):
+            await recorder.recordStage("quick-session-realtime")
+            return .realtime(recording(realtime, lane: .quick))
+        }
+    }
+
+    func startQuick(
+        threadID: String,
+        text: String,
+        realtimePrompt: String,
+        model: String?,
+        serviceTier: String?,
+        outputSchema: JSONValue?,
+        skills: [CodexSkillInvocation]
+    ) async throws -> CodexQuickSession {
+        await recorder.recordStage("start-quick-fast")
+        await recorder.recordQuickStart()
+        let session: CodexQuickSession
+        do {
+            session = try await client.startQuick(
+                threadID: threadID,
+                text: text,
+                realtimePrompt: realtimePrompt,
+                model: model,
+                serviceTier: serviceTier,
+                outputSchema: outputSchema,
+                skills: skills
+            )
+        } catch {
+            await recorder.recordStage(Self.safeClientStage("quick", for: error))
+            throw error
+        }
+        switch session {
+        case .turn(let turn):
+            await recorder.recordStage("quick-session-turn")
+            return .turn(recording(turn, lane: .quick))
+        case .realtime(let realtime):
+            await recorder.recordStage("quick-session-realtime")
             return .realtime(recording(realtime, lane: .quick))
         }
     }
@@ -1310,6 +1566,36 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
         await client.shutdown()
     }
 
+    private static func safeClientStage(_ prefix: String, for error: any Error) -> String {
+        let clientError: CodexClientError?
+        if let created = error as? CodexCreatedThreadFailure,
+            case .client(let nested) = created.cause
+        {
+            clientError = nested
+        } else {
+            clientError = error as? CodexClientError
+        }
+        guard let clientError else { return "\(prefix)-unknown-failure" }
+        return switch clientError {
+        case .requestTimedOut(let method):
+            "\(prefix)-timeout-\(CodexSafeLabel.method(method))"
+        case .requestFailed(let method, let code):
+            "\(prefix)-request-\(CodexSafeLabel.method(method))-\(code)"
+        case .invalidResponse(let method):
+            "\(prefix)-invalid-\(CodexSafeLabel.method(method))"
+        case .transportClosed:
+            "\(prefix)-transport-closed"
+        case .transportUnavailable:
+            "\(prefix)-transport-unavailable"
+        case .threadInvariantFailed:
+            "\(prefix)-thread-invariant"
+        case .permissionProfileMismatch:
+            "\(prefix)-permission-profile"
+        default:
+            "\(prefix)-\(String(describing: clientError).prefix(48))"
+        }
+    }
+
     private func recording(
         _ session: CodexTurnSession,
         lane: LiveGenerationLane
@@ -1331,6 +1617,7 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
                     }
                     continuation.finish()
                 } catch {
+                    await recorder.recordStage(Self.safeClientStage("turn-stream", for: error))
                     continuation.finish(throwing: error)
                 }
             }
@@ -1367,6 +1654,7 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
                     }
                     continuation.finish()
                 } catch {
+                    await recorder.recordStage(Self.safeClientStage("quick-stream", for: error))
                     continuation.finish(throwing: error)
                 }
             }

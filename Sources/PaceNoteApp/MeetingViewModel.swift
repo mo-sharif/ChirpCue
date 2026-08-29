@@ -94,6 +94,36 @@ struct InferenceAccountSummary: Equatable, Sendable {
 typealias CodexConnectionState = InferenceConnectionState
 typealias CodexAccountSummary = InferenceAccountSummary
 
+struct MeetingSuggestionThread: Identifiable, Equatable, Sendable {
+    let identity: TurnIdentity
+    var question: String
+    var quick: SuggestionCard?
+    var deep: SuggestionCard?
+    var quickFailure: BrownoutReason?
+    var deepFailure: BrownoutReason?
+    var isComplete: Bool
+
+    var id: TurnIdentity { identity }
+
+    init(
+        identity: TurnIdentity,
+        question: String,
+        quick: SuggestionCard? = nil,
+        deep: SuggestionCard? = nil,
+        quickFailure: BrownoutReason? = nil,
+        deepFailure: BrownoutReason? = nil,
+        isComplete: Bool = false
+    ) {
+        self.identity = identity
+        self.question = question
+        self.quick = quick
+        self.deep = deep
+        self.quickFailure = quickFailure
+        self.deepFailure = deepFailure
+        self.isComplete = isComplete
+    }
+}
+
 private extension MeetingInferenceProvider {
     func setupBlocker(for state: InferenceConnectionState) -> String {
         switch self {
@@ -163,7 +193,7 @@ enum OutputCaptureScope: String, CaseIterable, Identifiable, Sendable {
 
 enum PaceNoteDisclosureText {
     static let firstRunProviderProcessing =
-        "I understand Codex may send transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output to OpenAI. Claude v1 and Gemini may send transcript slices and bounded host-selected lines from the reviewed sealed snapshot to Anthropic or Google. Claude v1 excludes AGENTS.md, CLAUDE.md, provider configuration, skill content, model tools, and tool output; Gemini excludes AGENTS.md, GEMINI.md, provider configuration, skill content, model tools, and tool output. The selected provider uses my applicable subscription terms. \(AppBrand.displayName) makes no zero-retention claim."
+        "I understand Codex may send my optional speaker brief, transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output to OpenAI. Claude v1 and Gemini may send my optional speaker brief, transcript slices, and bounded host-selected lines from the reviewed sealed snapshot to Anthropic or Google. Claude v1 excludes AGENTS.md, CLAUDE.md, provider configuration, skill content, model tools, and tool output; Gemini excludes AGENTS.md, GEMINI.md, provider configuration, skill content, model tools, and tool output. The selected provider uses my applicable subscription terms. \(AppBrand.displayName) makes no zero-retention claim."
     static let meetingParticipantPermission =
         "I have informed all participants about live transcription and AI assistance, and I have permission to capture and process this meeting."
     static let soleNearbySpeaker =
@@ -172,22 +202,22 @@ enum PaceNoteDisclosureText {
     static func meetingProcessing(for provider: MeetingInferenceProvider) -> String {
         switch provider {
         case .codex:
-            "I understand this meeting's transcript slices, any selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my ChatGPT account. \(AppBrand.displayName) makes no zero-retention claim."
+            "I understand my optional speaker brief, this meeting's transcript slices, any selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac and be processed by OpenAI through my ChatGPT account. \(AppBrand.displayName) makes no zero-retention claim."
         case .claude:
-            "I understand this meeting's transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac and be processed by Anthropic through my Claude subscription. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+            "I understand my optional speaker brief, this meeting's transcript slices, and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac and be processed by Anthropic through my Claude subscription. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
         case .gemini:
-            "I understand this meeting's transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac and be processed by Google through my Google AI access. Gemini excludes repository instruction files, skills, model tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+            "I understand my optional speaker brief, this meeting's transcript slices, and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac and be processed by Google through my Google AI access. Gemini excludes repository instruction files, skills, model tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
         }
     }
 
     static func processingSummary(for provider: MeetingInferenceProvider) -> String {
         switch provider {
         case .codex:
-            "Transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac for processing under the signed-in ChatGPT account's applicable OpenAI terms. \(AppBrand.displayName) makes no zero-retention claim."
+            "The optional speaker brief, transcript slices, selected repository excerpts, applicable AGENTS.md instructions, selected skill content, and tool output may leave this Mac for processing under the signed-in ChatGPT account's applicable OpenAI terms. \(AppBrand.displayName) makes no zero-retention claim."
         case .claude:
-            "Transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac for processing under the signed-in Claude subscription's applicable Anthropic terms. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+            "The optional speaker brief, transcript slices, and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac for processing under the signed-in Claude subscription's applicable Anthropic terms. Claude v1 excludes AGENTS.md, CLAUDE.md, .claude content, skill content, tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
         case .gemini:
-            "Transcript slices and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac for processing under the signed-in Google account's applicable Google AI terms. Gemini excludes repository instruction files, skills, model tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
+            "The optional speaker brief, transcript slices, and bounded host-selected lines from the reviewed sealed snapshot may leave this Mac for processing under the signed-in Google account's applicable Google AI terms. Gemini excludes repository instruction files, skills, model tools, and tool output. \(AppBrand.displayName) makes no zero-retention claim."
         }
     }
 }
@@ -488,6 +518,7 @@ final class MeetingViewModel {
     var phase: MeetingPhase = .idle
     private(set) var isCaptureActive = false
     private(set) var transcript: [TranscriptSegment] = []
+    private(set) var suggestionThreads: [MeetingSuggestionThread] = []
     private(set) var quickSuggestion: SuggestionCard?
     private(set) var deepSuggestion: SuggestionCard?
     private(set) var brownouts: Set<BrownoutReason> = []
@@ -1117,6 +1148,7 @@ final class MeetingViewModel {
 
         // Clear meeting content before waiting for service cleanup. Stop is the privacy boundary.
         transcript.removeAll(keepingCapacity: false)
+        suggestionThreads.removeAll(keepingCapacity: false)
         quickSuggestion = nil
         deepSuggestion = nil
         manualQuestion = ""
@@ -1164,6 +1196,13 @@ final class MeetingViewModel {
 
     func dismissSuggestion() async {
         guard canDismissSuggestion, let identity = displayedSuggestionIdentity else { return }
+        await dismissSuggestion(identity)
+    }
+
+    func dismissSuggestion(_ identity: TurnIdentity) async {
+        guard canDismissSuggestion,
+            suggestionThreads.contains(where: { $0.identity == identity })
+        else { return }
         isDismissingSuggestion = true
         actionError = nil
         await actions.dismissSuggestion(identity)
@@ -1320,17 +1359,43 @@ final class MeetingViewModel {
         }
     }
 
+    func receiveSuggestionThreadStarted(identity: TurnIdentity, question: String) {
+        guard !isStopping, !hasIncompleteAudioTeardown, phase != .idle, phase != .ended else {
+            return
+        }
+        let normalized = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let index = suggestionThreads.firstIndex(where: { $0.identity == identity }) {
+            if !normalized.isEmpty {
+                suggestionThreads[index].question = normalized
+            }
+        } else {
+            suggestionThreads.append(
+                MeetingSuggestionThread(
+                    identity: identity,
+                    question: normalized.isEmpty ? "Current question" : normalized
+                )
+            )
+            suggestionThreads.sort { $0.identity.generation < $1.identity.generation }
+        }
+        phase = .thinking
+        statusDetail = "A new question was detected. Its answer is starting automatically."
+    }
+
     func receiveQuickSuggestion(_ card: SuggestionCard) {
         guard !isStopping, !hasIncompleteAudioTeardown, phase != .idle, phase != .ended,
             phase != .paused, card.stage == .quick || card.stage == .bridge
         else {
             return
         }
-        if let existing = quickSuggestion, existing.identity == card.identity {
-            return
+        let index = ensureSuggestionThread(for: card.identity)
+        if let existing = suggestionThreads[index].quick {
+            if existing.stage == .quick || card.stage == .bridge {
+                return
+            }
         }
-        quickSuggestion = card
-        deepSuggestion = nil
+        suggestionThreads[index].quick = card
+        suggestionThreads[index].quickFailure = nil
+        refreshDisplayedSuggestions()
         phase = .suggesting
         statusDetail =
             card.stage == .bridge
@@ -1341,14 +1406,61 @@ final class MeetingViewModel {
     func receiveVerifiedDeepSuggestion(_ card: SuggestionCard) {
         guard !isStopping, !hasIncompleteAudioTeardown, phase != .idle, phase != .ended,
             phase != .paused,
-            card.stage == .deep,
-            let quickSuggestion,
-            quickSuggestion.identity == card.identity,
-            deepSuggestion == nil
+            card.stage == .deep
         else { return }
-        deepSuggestion = card
+        let index = ensureSuggestionThread(for: card.identity)
+        guard suggestionThreads[index].quick != nil,
+            suggestionThreads[index].deep == nil
+        else { return }
+        suggestionThreads[index].deep = card
+        suggestionThreads[index].deepFailure = nil
+        suggestionThreads[index].isComplete = true
+        refreshDisplayedSuggestions()
         phase = .suggesting
         statusDetail = Self.deepSuggestionStatus(for: card.deepKind)
+    }
+
+    private func ensureSuggestionThread(for identity: TurnIdentity) -> Int {
+        if let index = suggestionThreads.firstIndex(where: { $0.identity == identity }) {
+            return index
+        }
+        suggestionThreads.append(
+            MeetingSuggestionThread(
+                identity: identity,
+                question: "Question \(identity.generation)"
+            )
+        )
+        suggestionThreads.sort { $0.identity.generation < $1.identity.generation }
+        return suggestionThreads.firstIndex(where: { $0.identity == identity })!
+    }
+
+    private func refreshDisplayedSuggestions() {
+        let latest = suggestionThreads.last(where: { $0.quick != nil || $0.deep != nil })
+        quickSuggestion = latest?.quick
+        deepSuggestion = latest?.deep
+    }
+
+    private func receiveSuggestionStageFailure(
+        identity: TurnIdentity,
+        stage: SuggestionStage,
+        reason: BrownoutReason
+    ) {
+        let index = ensureSuggestionThread(for: identity)
+        switch stage {
+        case .quick, .bridge:
+            suggestionThreads[index].quickFailure = reason
+        case .deep:
+            suggestionThreads[index].deepFailure = reason
+            suggestionThreads[index].isComplete = true
+        }
+        refreshDisplayedSuggestions()
+    }
+
+    private func completeSuggestionThread(_ identity: TurnIdentity) {
+        guard let index = suggestionThreads.firstIndex(where: { $0.identity == identity }) else {
+            return
+        }
+        suggestionThreads[index].isComplete = true
     }
 
     func updateBrownouts(_ reasons: Set<BrownoutReason>) {
@@ -1407,14 +1519,15 @@ final class MeetingViewModel {
             transcript.removeAll { $0.id == id }
         case .transcriptsCleared:
             transcript.removeAll(keepingCapacity: false)
+        case .suggestionThreadStarted(let identity, let question):
+            receiveSuggestionThreadStarted(identity: identity, question: question)
         case .suggestionsCleared(let identity):
             if let identity {
-                if quickSuggestion?.identity == identity { quickSuggestion = nil }
-                if deepSuggestion?.identity == identity { deepSuggestion = nil }
+                suggestionThreads.removeAll { $0.identity == identity }
             } else {
-                quickSuggestion = nil
-                deepSuggestion = nil
+                suggestionThreads.removeAll(keepingCapacity: false)
             }
+            refreshDisplayedSuggestions()
         case .suggestionUpserted(let card):
             if card.stage != .bridge {
                 markActiveProviderCapacityAvailable()
@@ -1424,6 +1537,10 @@ final class MeetingViewModel {
             } else {
                 receiveQuickSuggestion(card)
             }
+        case .suggestionStageFailed(let identity, let stage, let reason):
+            receiveSuggestionStageFailure(identity: identity, stage: stage, reason: reason)
+        case .suggestionThreadCompleted(let identity):
+            completeSuggestionThread(identity)
         case .brownoutActivated(let brownout):
             brownouts.insert(brownout.reason)
             if brownout.reason == .providerLimited {
@@ -1444,6 +1561,7 @@ final class MeetingViewModel {
 
     private func clearMeetingContent() {
         transcript.removeAll(keepingCapacity: false)
+        suggestionThreads.removeAll(keepingCapacity: false)
         quickSuggestion = nil
         deepSuggestion = nil
         manualQuestion = ""
@@ -1515,7 +1633,7 @@ final class MeetingViewModel {
         case .listening:
             statusDetail =
                 brownouts.contains(.providerPreparing)
-                ? "Listening now. AI coaching is connecting and will start automatically."
+                ? "Listening now. Instant local coaching is ready while AI connects."
                 : "Listening only to the capture sources you approved."
         case .candidateQuestion:
             statusDetail = "A possible question was detected."
@@ -1531,8 +1649,8 @@ final class MeetingViewModel {
             } else if quickSuggestion?.stage == .bridge {
                 statusDetail =
                     brownouts.contains(.providerPreparing)
-                    ? "A safe bridge is ready while AI coaching connects."
-                    : "A safe bridge is ready while deeper context is checked."
+                    ? "Your instant answer is ready while AI connects."
+                    : "Your instant answer is ready while deeper context is checked."
             } else if quickSuggestion?.stage == .quick,
                 brownouts.contains(where: \.isDeepResponseFailure)
             {
@@ -1676,14 +1794,14 @@ final class MeetingViewModel {
                 turnID: UUID(uuidString: "55555555-5555-5555-5555-555555555555") ?? UUID(),
                 generation: 3
             )
-            model.quickSuggestion = SuggestionCard(
+            let quick = SuggestionCard(
                 id: UUID(uuidString: "66666666-6666-6666-6666-666666666666") ?? UUID(),
                 identity: identity,
                 stage: .bridge,
                 text: ResponseCoordinatorConfiguration.deterministicFallback,
                 confidence: 1
             )
-            model.deepSuggestion = SuggestionCard(
+            let deep = SuggestionCard(
                 id: UUID(uuidString: "77777777-7777-7777-7777-777777777777") ?? UUID(),
                 identity: identity,
                 stage: .deep,
@@ -1702,6 +1820,18 @@ final class MeetingViewModel {
                 ],
                 deepKind: .answer
             )
+            model.suggestionThreads = [
+                MeetingSuggestionThread(
+                    identity: identity,
+                    question:
+                        "What's your plan for keeping our database secure when the MCP needs data access?",
+                    quick: quick,
+                    deep: deep,
+                    isComplete: true
+                )
+            ]
+            model.quickSuggestion = quick
+            model.deepSuggestion = deep
             return model
         }
 

@@ -1,6 +1,15 @@
 import Foundation
 
 public enum CodexOutputSchema {
+    public static let quickCandidate: JSONValue = [
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sayNow"],
+        "properties": [
+            "sayNow": ["type": "string", "minLength": 1, "maxLength": 220]
+        ],
+    ]
+
     public static let quick: JSONValue = [
         "type": "object",
         "additionalProperties": false,

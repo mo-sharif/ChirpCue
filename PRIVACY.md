@@ -19,6 +19,10 @@ ChirpCue cannot verify participant consent for you. You remain responsible for r
 
 “In memory” describes ChirpCue's intentional storage design. It is not a guarantee against operating-system swap, crash artifacts, hardware compromise, or provider-side processing.
 
+## Optional speaker brief
+
+The **About you** brief is optional factual background you enter in Settings, such as years of experience, recent work, and your role. It is stored in the app's local preferences until you clear it. ChirpCue includes the bounded brief with meeting inference so the selected provider can answer personal-background questions without inventing facts. The brief is treated as data, never model instruction.
+
 ## Dedicated Codex profile
 
 ChirpCue uses one stable, private Codex profile under its Application Support directory so a one-time ChatGPT sign-in can survive between meetings. It does not copy tokens or authentication files from another Codex installation. Codex is configured to keep credentials in the macOS Keychain, and ChirpCue rejects plaintext credential files in the profile.
@@ -41,13 +45,13 @@ On Stop, ChirpCue deletes app-created threads, snapshots, temporary context, and
 
 ## Data processed by OpenAI
 
-ChirpCue sends the minimum recent transcript slice needed for a response through the local Codex app-server. Without a repository, the model receives no repository files and any useful response is visibly labeled as unverified general guidance. When repository grounding is selected, a deeper technical answer can also cause Codex to read selected excerpts from the sealed snapshot, applicable `AGENTS.md` instructions, and one explicitly selected read-only skill.
+ChirpCue sends the optional speaker brief and minimum recent transcript slice needed for a response through the local Codex app-server. Without a repository, the model receives no repository files and any useful response is visibly labeled as unverified general guidance. When repository grounding is selected, a deeper technical answer can also cause Codex to read selected excerpts from the sealed snapshot, applicable `AGENTS.md` instructions, and one explicitly selected read-only skill.
 
 This uses the ChatGPT account signed into ChirpCue's dedicated Codex profile, not an OpenAI API key. OpenAI-side handling and usage limits follow that account and plan. ChirpCue does not claim server-side zero retention.
 
 ## Data processed by Anthropic
 
-When Claude is selected, ChirpCue sends the recent transcript slice and, if grounding is enabled, a small deterministic pack of bounded exact lines selected locally from the reviewed sealed snapshot. Claude receives no `AGENTS.md`, `CLAUDE.md`, `.claude` configuration, repository skill, tool output, live repository path, or ambient home-directory context. A repository claim is still displayed only after the same local source-freshness, path, line, hash, fingerprint, claim, and exact-answer verification used for Codex.
+When Claude is selected, ChirpCue sends the optional speaker brief, recent transcript slice, and, if grounding is enabled, a small deterministic pack of bounded exact lines selected locally from the reviewed sealed snapshot. Claude receives no `AGENTS.md`, `CLAUDE.md`, `.claude` configuration, repository skill, tool output, live repository path, or ambient home-directory context. A repository claim is still displayed only after the same local source-freshness, path, line, hash, fingerprint, claim, and exact-answer verification used for Codex.
 
 This uses the Claude.ai subscription login stored by Claude Code, not an Anthropic API key or Console account. Anthropic-side handling, Agent SDK credits, usage limits, and any extra-usage terms follow that account and plan. ChirpCue does not claim server-side zero retention.
 
@@ -60,7 +64,7 @@ This uses the Claude.ai subscription login stored by Claude Code, not an Anthrop
 
 Private-key blocks, major provider tokens, bearer tokens, JWTs, and Slack or Discord webhooks are hard-denied by content and cannot be approved. Only ambiguous credential-assignment warnings can be approved. The default grounding limits are 2 MiB per file, 5,000 accepted files, 32 MiB of accepted content, 192 MiB of scanned content, 50,000 traversed entries, 8 MiB of Git output, 10 seconds per Git command, and 30 seconds per top-level grounding operation. Snapshot creation shares one budget across its build, copy, rebuild, and retry phases. Freshness checks and evidence verification are separate bounded operations with fresh budgets. Every displayed repository answer must pass local path, line, hash, scope, grounding-fingerprint, freshness, claim-to-excerpt, and answer-to-claim checks.
 
-For a repository answer to be displayed, its candidate sentence must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation. The claim must contain at least two informative terms and copy one complete cited source line exactly, apart from a leading code-comment or list marker. ChirpCue rejects appended, combined, paraphrased, punctuation-changed, and negation-changed repository answer candidates. A repository-free `general_answer` must instead carry a null grounding fingerprint, empty evidence basis, a qualified or proposal-style opening, and no explicit local codebase, organization, or production-state claim. The UI marks it **verify before speaking** because it remains model guidance, not verified implementation evidence.
+For a repository answer to be displayed, its candidate sentence must exactly match one verified basis claim after case and whitespace normalization while preserving punctuation. The claim must contain at least two informative terms and copy one complete cited source line exactly, apart from a leading code-comment or list marker. ChirpCue rejects appended, combined, paraphrased, punctuation-changed, and negation-changed repository answer candidates. A `general_answer`, including one returned while a repository is attached, must instead carry a null grounding fingerprint, empty evidence basis, a qualified or proposal-style opening, and no explicit local codebase, organization, or production-state claim. The UI marks it **verify before speaking** because it remains model guidance, not verified implementation evidence.
 
 ## User control
 

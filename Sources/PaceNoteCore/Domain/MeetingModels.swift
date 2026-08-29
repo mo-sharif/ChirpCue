@@ -62,6 +62,7 @@ public struct ConversationTurn: Codable, Equatable, Sendable {
     public let identity: TurnIdentity
     public let question: String
     public let recentTranscript: [TranscriptSegment]
+    public let speakerBrief: String?
     public let repoAlias: String?
     public let groundingFingerprint: String?
 
@@ -69,12 +70,14 @@ public struct ConversationTurn: Codable, Equatable, Sendable {
         identity: TurnIdentity,
         question: String,
         recentTranscript: [TranscriptSegment],
+        speakerBrief: String? = nil,
         repoAlias: String? = nil,
         groundingFingerprint: String? = nil
     ) {
         self.identity = identity
         self.question = question
         self.recentTranscript = recentTranscript
+        self.speakerBrief = SpeakerBriefPolicy.normalized(speakerBrief)
         self.repoAlias = repoAlias
         self.groundingFingerprint = groundingFingerprint
     }

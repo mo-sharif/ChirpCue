@@ -10,7 +10,7 @@ public struct PackagedMeetingCoachSkill: Sendable {
     public static let name = "pacenote-meeting-coach"
 
     public static let expectedSkillHash =
-        "35e178c19a45e56deb60fc560672975703235e8acbf4b595e81b853ac255dd65"
+        "88b01a2f2ce2acdd1e08fb9a079b42f169e6e748fa37df147e99f0fca0d34f46"
     public static let expectedMetadataHash =
         "66b0d0648153cfcaf53ee8c6088e0cec1c50599f91cdf0118233630f19ecf94f"
 
