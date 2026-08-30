@@ -84,6 +84,32 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
         XCTAssertFalse(output.sayNow.lowercased().contains("which part"))
     }
 
+    func testPersonalExperienceQuestionUsesRelevantBriefFactsWithoutModelDelay() async throws {
+        let question =
+            "How many years have you had with React JS, and what kind of applications have you been working on lately?"
+        let turn = ConversationTurn(
+            identity: TurnIdentity(meetingID: UUID(), generation: 1),
+            question: question,
+            recentTranscript: [],
+            speakerBrief: """
+                I’ve worked with React for eight years across production web applications.
+                Lately, I’ve focused on TypeScript AI products and reusable frontend architecture.
+                """
+        )
+        let generator = FoundationModelQuickGenerator(systemModelEnabled: true)
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        let output = try await generator.generateQuick(for: turn)
+
+        XCTAssertEqual(output.reason, "speaker_brief_extract")
+        XCTAssertEqual(
+            output.sayNow,
+            "I’ve worked with React for eight years across production web applications. Lately, I’ve focused on TypeScript AI products and reusable frontend architecture."
+        )
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
+    }
+
     func testAvailableSystemModelProducesLiveQuickInsideDeadline() async throws {
         guard ProcessInfo.processInfo.environment["PACENOTE_RUN_APPLE_QUICK_SMOKE"] == "1" else {
             throw XCTSkip("Set PACENOTE_RUN_APPLE_QUICK_SMOKE=1 for the on-device generation smoke.")

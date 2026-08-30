@@ -88,6 +88,57 @@ final class LowLatencyMeetingResponseGeneratorTests: XCTestCase {
         _ = await generator.shutdown()
     }
 
+    func testLocalQuickSuccessRemovesSubscriptionQuickHeadStartFromDeep() async throws {
+        let turn = Self.turn(generation: 6)
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(gate: gate)
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider,
+            quickGenerator: StubLocalQuickGenerator(turn: turn),
+            planType: "plus",
+            providerName: "codex",
+            providerQuickHeadStart: .seconds(1)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+        _ = try await generator.generateQuick(for: turn)
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        _ = try await generator.generateDeep(for: turn)
+
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(200))
+        let quickCalls = await provider.quickCallCount()
+        XCTAssertEqual(quickCalls, 0)
+        _ = await generator.shutdown()
+    }
+
+    func testProviderQuickStillClaimsQueueBeforeDeepWhenLocalBridgeNeedsUpgrade() async throws {
+        let turn = Self.turn(generation: 7)
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(gate: gate)
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider,
+            quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus",
+            providerName: "codex",
+            providerQuickHeadStart: .milliseconds(10),
+            quickPathDecisionWindow: .milliseconds(10)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+
+        async let quick = generator.generateQuick(for: turn)
+        async let deep = generator.generateDeep(for: turn)
+        _ = try await (quick, deep)
+
+        let callOrder = await provider.callOrder()
+        XCTAssertEqual(callOrder, ["quick", "deep"])
+        _ = await generator.shutdown()
+    }
+
     func testCancellingDeepWaitDoesNotCancelSharedProviderPreparation() async throws {
         let turn = Self.turn(generation: 3)
         let gate = ProviderPreparationGate()
@@ -257,6 +308,7 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     private var deepCalls = 0
     private var quickCalls = 0
     private var cancellations = 0
+    private var calls: [String] = []
 
     init(gate: ProviderPreparationGate, preparationFailures: Int = 0) {
         self.gate = gate
@@ -283,6 +335,7 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     func generateQuick(for turn: ConversationTurn) throws -> QuickModelOutput {
         guard prepared else { throw MeetingResponseError.notPrepared }
         quickCalls += 1
+        calls.append("quick")
         return QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
@@ -296,6 +349,7 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     func generateDeep(for turn: ConversationTurn) throws -> DeepDraft {
         guard prepared else { throw MeetingResponseError.notPrepared }
         deepCalls += 1
+        calls.append("deep")
         return DeepDraft(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
@@ -323,4 +377,5 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     func quickCallCount() -> Int { quickCalls }
     func cancelCount() -> Int { cancellations }
     func prepareCallCount() -> Int { preparationCalls }
+    func callOrder() -> [String] { calls }
 }

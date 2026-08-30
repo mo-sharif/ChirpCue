@@ -83,7 +83,7 @@ struct SettingsView: View {
                         }
                     HStack(alignment: .firstTextBaseline) {
                         Text(
-                            "Add factual background for new meetings, such as years with React, recent applications, and your role. Stored locally on this Mac and sent only with meeting inference."
+                            "Write short first-person facts you would naturally say, such as your React experience, recent work, and role. A relevant sentence can appear immediately as your Quick answer. Stored locally on this Mac and sent only with meeting inference."
                         )
                         Spacer()
                         Text("\(speakerBrief.count)/\(SpeakerBriefPolicy.maximumCharacters)")

@@ -16,6 +16,21 @@ public enum GeneralGuidancePolicy {
         "there are a few considerations",
     ]
 
+    private static let instructionOpenings = [
+        "as an ai",
+        "disregard ",
+        "execute ",
+        "forget the ",
+        "follow these instructions",
+        "ignore ",
+        "output ",
+        "repeat after me",
+        "reveal ",
+        "return only ",
+        "run this ",
+        "say the following",
+    ]
+
     private static let privateContextClaims = [
         "your codebase",
         "your repository",
@@ -64,7 +79,17 @@ public enum GeneralGuidancePolicy {
         "i have ",
         "i've ",
         "i’ve ",
+        "i built ",
+        "i designed ",
+        "i delivered ",
+        "i helped ",
+        "i influenced ",
+        "i led ",
+        "i owned ",
         "i work ",
+        "i worked ",
+        "i'm looking ",
+        "i’m looking ",
         "i'll ",
         "i’ll ",
         "my default would be ",
@@ -102,12 +127,24 @@ public enum GeneralGuidancePolicy {
         "the default ",
         "my approach ",
         "my first step ",
+        "my biggest strength ",
+        "my greatest strength ",
+        "my role ",
+        "my strength ",
+        "my weakness ",
         "we should ",
         "a ",
         "an ",
+        "one example ",
+        "one project ",
+        "at a high level,",
+        "in that ",
+        "the main ",
         "the difference ",
         "most recently ",
+        "most recently,",
         "lately ",
+        "lately,",
         "for ",
     ]
 
@@ -129,6 +166,7 @@ public enum GeneralGuidancePolicy {
         let lower = statement.lowercased()
         guard !lower.contains("http://"), !lower.contains("https://"),
             !cannedOpenings.contains(where: lower.hasPrefix),
+            !instructionOpenings.contains(where: lower.hasPrefix),
             !privateContextClaims.contains(where: lower.contains),
             !unsafeClaims.contains(where: lower.contains),
             qualifiedOpenings.contains(where: lower.hasPrefix)

@@ -64,6 +64,19 @@ public actor FoundationModelQuickGenerator: LocalQuickGenerating {
 
     public func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
         try Task.checkCancellation()
+        if let answer = SpeakerBriefQuickAnswer.response(
+            question: turn.question,
+            brief: turn.speakerBrief
+        ) {
+            return QuickModelOutput(
+                turnID: turn.identity.turnID,
+                generation: turn.identity.generation,
+                sayNow: answer,
+                needsDeep: true,
+                confidence: 1,
+                reason: "speaker_brief_extract"
+            )
+        }
         if turn.speakerBrief == nil,
             LocalResponseBridge.requiresPersonalFacts(turn.question)
         {

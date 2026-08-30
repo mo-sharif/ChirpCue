@@ -12,7 +12,14 @@ public enum LocalResponseBridge {
             [
                 "how many years", "years of experience", "your experience", "have you had with",
                 "have you worked with", "what have you been working on", "worked on lately",
-                "your background", "your most recent role", "tell me about yourself",
+                "working on lately", "what are you working on", "your background",
+                "your most recent role", "tell me about yourself", "tell me about a time",
+                "describe a time", "give me an example", "walk me through your",
+                "walk me through a recent", "your greatest strength", "your strengths",
+                "your weakness", "your weaknesses", "why should we hire you",
+                "why are you interested", "why do you want", "what are you looking for",
+                "what motivates you", "where do you see yourself", "why are you leaving",
+                "why did you leave", "salary expectations",
             ]
         )
     }
@@ -21,6 +28,34 @@ public enum LocalResponseBridge {
         let normalized = normalize(question)
 
         if requiresPersonalFacts(question) {
+            if containsAny(
+                normalized,
+                [
+                    "tell me about a time", "describe a time", "give me an example",
+                    "walk me through your", "walk me through a recent",
+                ]
+            ) {
+                return
+                    "I’ll anchor this in one concrete example, then make the decision, my role, and the outcome clear."
+            }
+            if containsAny(
+                normalized,
+                ["greatest strength", "your strengths", "your weakness", "your weaknesses"]
+            ) {
+                return
+                    "I’ll give the honest headline first, then ground it in one recent example and what changed because of it."
+            }
+            if containsAny(
+                normalized,
+                [
+                    "why should we hire you", "why are you interested", "why do you want",
+                    "what are you looking for", "what motivates you", "where do you see yourself",
+                    "why are you leaving", "why did you leave", "salary expectations",
+                ]
+            ) {
+                return
+                    "I’ll connect what I’m looking for next to this role, then make the fit concrete with one recent example."
+            }
             return
                 "I’ll start with the timeline, then walk through the most relevant recent application and the part I owned."
         }
