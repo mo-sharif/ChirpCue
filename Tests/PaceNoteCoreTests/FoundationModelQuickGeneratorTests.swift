@@ -63,7 +63,7 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
 
         let output = try await generator.generateQuick(for: turn)
 
-        XCTAssertEqual(output.reason, "deterministic_safety_bridge")
+        XCTAssertEqual(output.reason, "reviewed_local_technical_answer")
         XCTAssertTrue(output.sayNow.contains("least-privilege"))
         XCTAssertEqual(output.turnID, turn.identity.turnID)
     }
