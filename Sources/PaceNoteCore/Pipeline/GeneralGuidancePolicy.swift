@@ -1,6 +1,21 @@
 import Foundation
 
 public enum GeneralGuidancePolicy {
+    enum RejectionReason: String, Sendable {
+        case empty
+        case size
+        case controlCharacter
+        case markup
+        case url
+        case cannedOpening
+        case instructionOpening
+        case privateContextClaim
+        case unsafeClaim
+        case sentenceCount
+        case sentenceTermination
+        case questionShape
+    }
+
     static let modelInstructions = """
         Speak like a pragmatic staff engineer talking to peers, not like documentation or an AI assistant. Lead with the point that drives the decision. A question with multiple requested parts is not ambiguous: address each part in the order asked and never ask which part the listener wants. When one unknown materially changes the answer, ask one short clarifying question and follow it with a practical default. Otherwise, give one concrete recommendation and the reason or tradeoff that matters most. Use first person where it sounds natural. Use personal facts only when they appear in the user-supplied speaker brief or the speaker's own recent transcript; never invent years, employers, projects, roles, or outcomes. Avoid generic throat-clearing, permission-seeking, and comma-heavy checklists, including openings such as "Broadly speaking," "I'm open to," and "There are several considerations." Answer in one or two short speakable sentences totaling at most 33 words.
 
@@ -14,12 +29,19 @@ public enum GeneralGuidancePolicy {
         "i’m open to",
         "there are several considerations",
         "there are a few considerations",
+        "absolutely,",
+        "certainly,",
+        "i can explain",
+        "i can help",
+        "of course,",
+        "sure,",
     ]
 
     private static let instructionOpenings = [
         "as an ai",
         "disregard ",
         "execute ",
+        "first answer",
         "forget the ",
         "follow these instructions",
         "ignore ",
@@ -63,154 +85,115 @@ public enum GeneralGuidancePolicy {
         "in our production",
     ]
 
+    private static let privateContextSubjects = [
+        "the application ",
+        "the deployment ",
+        "the production ",
+        "the service ",
+        "the system ",
+        "production ",
+    ]
+
+    private static let assertedPrivateStateOpenings = [
+        "allows ",
+        "contains ",
+        "depends ",
+        "exposes ",
+        "has ",
+        "is ",
+        "retries ",
+        "runs ",
+        "sends ",
+        "stores ",
+        "uses ",
+    ]
+
+    private static let assertedPrivateStateQualifiers = [
+        "actually ",
+        "already ",
+        "always ",
+        "currently ",
+        "definitely ",
+        "now ",
+        "presently ",
+    ]
+
     private static let unsafeClaims = [
         "patient records",
         "leaked patient",
         "leaks patient",
         "compromised accounts",
+        "developer instruction",
+        "developer message",
+        "hidden instruction",
         "without consent",
+        "repeat the transcript",
+        "reveal the transcript",
+        "system prompt",
         "our-system-",
     ]
 
-    private static let qualifiedOpenings = [
-        "i would ",
-        "i'd ",
-        "i’d ",
-        "i have ",
-        "i've ",
-        "i’ve ",
-        "i built ",
-        "i designed ",
-        "i delivered ",
-        "i helped ",
-        "i influenced ",
-        "i led ",
-        "i owned ",
-        "i work ",
-        "i worked ",
-        "i'm looking ",
-        "i’m looking ",
-        "i'll ",
-        "i’ll ",
-        "my default would be ",
-        "my default is ",
-        "my experience ",
-        "i'd start ",
-        "i’d start ",
-        "before we ",
-        "if ",
-        "could you ",
-        "can you ",
-        "which ",
-        "what ",
-        "how ",
-        "do we ",
-        "are we ",
-        "is this ",
-        "the question i'd ",
-        "the question i’d ",
-        "let's ",
-        "let’s ",
-        "the key ",
-        "the safest ",
-        "a good default ",
-        "start by ",
-        "start with ",
-        "first, ",
-        "use ",
-        "keep ",
-        "separate ",
-        "prefer ",
-        "treat ",
-        "make ",
-        "define ",
-        "the default ",
-        "my approach ",
-        "my first step ",
-        "my biggest strength ",
-        "my greatest strength ",
-        "my role ",
-        "my strength ",
-        "my weakness ",
-        "we should ",
-        "a ",
-        "an ",
-        "one example ",
-        "one project ",
-        "at a high level,",
-        "authentication ",
-        "browser memory leaks ",
-        "cap ",
-        "code splitting ",
-        "cors ",
-        "debouncing ",
-        "dependency injection ",
-        "event delegation ",
-        "feature flags ",
-        "javascript ",
-        "microfrontends ",
-        "observability ",
-        "oauth ",
-        "offset pagination ",
-        "optimistic locking ",
-        "rate limiting ",
-        "react ",
-        "rest ",
-        "the browser ",
-        "tree shaking ",
-        "tls ",
-        "usememo ",
-        "websockets ",
-        "in that ",
-        "the main ",
-        "the difference ",
-        "most recently ",
-        "most recently,",
-        "lately ",
-        "lately,",
-        "for ",
-    ]
-
     public static func accepts(_ candidate: String) -> Bool {
+        rejectionReason(for: candidate) == nil
+    }
+
+    static func rejectionReason(for candidate: String) -> RejectionReason? {
         let statement = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !statement.isEmpty,
-            statement.utf8.count <= 320,
-            statement.split(whereSeparator: { $0.isWhitespace }).count <= 33,
+        guard !statement.isEmpty else { return .empty }
+        guard statement.utf8.count <= 320,
+            statement.split(whereSeparator: { $0.isWhitespace }).count <= 33
+        else { return .size }
+        guard
             !candidate.unicodeScalars.contains(where: {
                 CharacterSet.newlines.contains($0) || CharacterSet.controlCharacters.contains($0)
-            }),
-            !statement.contains("`"),
+            })
+        else { return .controlCharacter }
+        guard !statement.contains("`"),
             !statement.contains("<"),
             !statement.contains(">")
-        else {
-            return false
-        }
+        else { return .markup }
 
         let lower = statement.lowercased()
-        guard !lower.contains("http://"), !lower.contains("https://"),
-            !cannedOpenings.contains(where: lower.hasPrefix),
-            !instructionOpenings.contains(where: lower.hasPrefix),
-            !privateContextClaims.contains(where: lower.contains),
-            !unsafeClaims.contains(where: lower.contains),
-            qualifiedOpenings.contains(where: lower.hasPrefix)
-        else {
-            return false
+        guard !lower.contains("http://"), !lower.contains("https://") else { return .url }
+        guard !cannedOpenings.contains(where: lower.hasPrefix) else { return .cannedOpening }
+        guard !instructionOpenings.contains(where: lower.hasPrefix) else {
+            return .instructionOpening
         }
+        guard !privateContextClaims.contains(where: lower.contains) else {
+            return .privateContextClaim
+        }
+        guard !assertsUnseenPrivateState(lower) else { return .privateContextClaim }
+        guard !unsafeClaims.contains(where: lower.contains) else { return .unsafeClaim }
 
         let endings = sentenceEndings(statement)
-        guard endings.count <= 2 else { return false }
-        guard endings.isEmpty || ".!?".contains(statement.last ?? " ") else { return false }
+        guard endings.count <= 2 else { return .sentenceCount }
+        guard endings.isEmpty || ".!?".contains(statement.last ?? " ") else {
+            return .sentenceTermination
+        }
         if endings.count == 2 {
-            guard endings[1] != "?" else { return false }
+            guard endings[1] != "?" else { return .questionShape }
             let questionOpenings = [
                 "could you ", "can you ", "which ", "what ", "how ", "do we ", "are we ",
                 "is this ",
             ]
             if questionOpenings.contains(where: lower.hasPrefix), endings[0] != "?" {
-                return false
+                return .questionShape
             }
         }
-        return true
+        return nil
+    }
+
+    private static func assertsUnseenPrivateState(_ statement: String) -> Bool {
+        for subject in privateContextSubjects where statement.hasPrefix(subject) {
+            var remainder = statement.dropFirst(subject.count)
+            if let qualifier = assertedPrivateStateQualifiers.first(where: remainder.hasPrefix) {
+                remainder = remainder.dropFirst(qualifier.count)
+            }
+            if assertedPrivateStateOpenings.contains(where: remainder.hasPrefix) {
+                return true
+            }
+        }
+        return false
     }
 
     private static func sentenceEndings(_ statement: String) -> [Character] {

@@ -5,6 +5,28 @@ import XCTest
 @testable import PaceNoteCore
 
 final class CodexProcessTransportTests: XCTestCase {
+    func testSpawnAttributesClearInheritedSignalsForCodexChild() throws {
+        var attributes: posix_spawnattr_t?
+        XCTAssertEqual(posix_spawnattr_init(&attributes), 0)
+        defer { posix_spawnattr_destroy(&attributes) }
+
+        try CodexProcessTransport.configureSpawnAttributes(&attributes)
+
+        var flags: Int16 = 0
+        XCTAssertEqual(posix_spawnattr_getflags(&attributes, &flags), 0)
+        XCTAssertNotEqual(flags & Int16(POSIX_SPAWN_SETSIGMASK), 0)
+        XCTAssertNotEqual(flags & Int16(POSIX_SPAWN_SETSIGDEF), 0)
+
+        var signalMask = sigset_t()
+        var defaultSignals = sigset_t()
+        XCTAssertEqual(posix_spawnattr_getsigmask(&attributes, &signalMask), 0)
+        XCTAssertEqual(posix_spawnattr_getsigdefault(&attributes, &defaultSignals), 0)
+        for signal in [SIGHUP, SIGINT, SIGQUIT, SIGPIPE, SIGCHLD, SIGTERM] {
+            XCTAssertEqual(sigismember(&signalMask, signal), 0)
+            XCTAssertEqual(sigismember(&defaultSignals, signal), 1)
+        }
+    }
+
     func testStopWaitsForGracefulProcessExitAndIsIdempotent() async throws {
         let transport = CodexProcessTransport(
             configuration: CodexProcessTransportConfiguration(
