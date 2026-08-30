@@ -2350,6 +2350,8 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
         let turn = fixture.generalTurn(generation: 1)
+        let replacementGate = SuspendedCallGate()
+        let joinProbe = DeferredPreparationJoinProbe()
         let expected = DeepDraft(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
@@ -2375,7 +2377,10 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
             threadIDPrefix: "replacement-",
             threadStore: threadStore
         )
-        let factory = SequencedCodexClientFactory(clients: [failedClient, replacement])
+        let factory = SequencedCodexClientFactory(
+            clients: [failedClient, replacement],
+            replacementGate: replacementGate
+        )
         let generator = fixture.generator(
             clientFactory: { configuration in
                 try await factory.connect(configuration)
@@ -2383,9 +2388,18 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
             includeGrounding: false,
             subscriptionQuickEnabled: false
         )
+        await generator.setDeferredPreparationJoinTestHooks(deep: {
+            await joinProbe.record()
+        })
 
         _ = try await generator.prepare()
-        let generated = try await generator.generateDeep(for: turn)
+        await replacementGate.waitUntilSuspended()
+        let generation = Task {
+            try await generator.generateDeep(for: turn)
+        }
+        await joinProbe.waitUntilObserved()
+        await replacementGate.release()
+        let generated = try await generation.value
 
         XCTAssertEqual(generated, expected)
         let factoryCalls = await factory.callCount()
@@ -2396,6 +2410,74 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertTrue(replacementDeleted.contains("failed-base-1"))
         let cleanup = await generator.shutdown()
         XCTAssertTrue(cleanup.failures.isEmpty)
+    }
+
+    func testDeferredQuickWarmupJoinsClientReplacementAndStillGenerates() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.generalTurn(generation: 1)
+        let replacementGate = SuspendedCallGate()
+        let joinProbe = DeferredPreparationJoinProbe()
+        let expected = QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            sayNow:
+                "I’d start with the React timeline, then use one recent application to show the architecture and impact.",
+            needsDeep: true,
+            confidence: 0.7,
+            reason: "subscription_sol_low_fast"
+        )
+        let threadStore = FakePersistentThreadStore()
+        let failedClient = FakeMeetingCodexClient(
+            realtime: false,
+            directEphemeralResponses: true,
+            lostBaseResponseNumber: 1,
+            threadIDPrefix: "failed-",
+            threadStore: threadStore
+        )
+        let replacement = FakeMeetingCodexClient(
+            realtime: false,
+            directEphemeralResponses: true,
+            quickOutputs: [try Self.json(["sayNow": expected.sayNow])],
+            threadIDPrefix: "replacement-",
+            threadStore: threadStore
+        )
+        let factory = SequencedCodexClientFactory(
+            clients: [failedClient, replacement],
+            replacementGate: replacementGate
+        )
+        let generator = fixture.generator(
+            clientFactory: { configuration in
+                try await factory.connect(configuration)
+            },
+            includeGrounding: false,
+            subscriptionQuickEnabled: true
+        )
+        await generator.setDeferredPreparationJoinTestHooks(quick: {
+            await joinProbe.record()
+        })
+
+        _ = try await generator.prepare()
+        await replacementGate.waitUntilSuspended()
+        let generation = Task {
+            try await generator.generateQuick(for: turn)
+        }
+        await joinProbe.waitUntilObserved()
+        await replacementGate.release()
+        let generated = try await generation.value
+        try await generator.awaitQuickCleanup(for: turn.identity)
+
+        XCTAssertEqual(generated, expected)
+        let factoryCalls = await factory.callCount()
+        let failedShutdowns = await failedClient.shutdownCallCount()
+        let replacementDeleted = await replacement.deletedThreadIDs()
+        XCTAssertEqual(factoryCalls, 2)
+        XCTAssertEqual(failedShutdowns, 1)
+        XCTAssertTrue(replacementDeleted.contains("failed-base-1"))
+        let cleanup = await generator.shutdown()
+        let remainingThreads = await threadStore.threadIDs()
+        XCTAssertTrue(cleanup.failures.isEmpty)
+        XCTAssertTrue(remainingThreads.isEmpty)
     }
 
     func testInitialPrepareTransportFailureDeletesJournaledBaseBeforeRetry() async throws {
@@ -3468,6 +3550,27 @@ private actor CompletionProbe {
 
     func isCompleted() -> Bool {
         completed
+    }
+}
+
+private actor DeferredPreparationJoinProbe {
+    private var observed = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func record() {
+        observed = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
+
+    func waitUntilObserved() async {
+        guard !observed else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
     }
 }
 
