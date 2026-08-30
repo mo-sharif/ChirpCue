@@ -285,7 +285,7 @@ public struct BoundDeep: Codable, Equatable, Sendable {
         [transition, sayNext]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .joined(separator: " ")
+            .joined(separator: "\n")
     }
 
     public static func draftHash(_ draft: DeepDraft) throws -> String {

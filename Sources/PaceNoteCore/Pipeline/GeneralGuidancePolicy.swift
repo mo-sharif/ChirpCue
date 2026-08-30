@@ -11,18 +11,23 @@ public enum GeneralGuidancePolicy {
         case instructionOpening
         case privateContextClaim
         case unsafeClaim
+        case writtenStyle
+        case densePunctuation
         case sentenceCount
         case sentenceTermination
         case questionShape
     }
 
     static let modelInstructions = """
-        Speak like a pragmatic staff engineer talking to peers, not like documentation or an AI assistant. Lead with the point that drives the decision. A question with multiple requested parts is not ambiguous: address each part in the order asked and never ask which part the listener wants. When one unknown materially changes the answer, ask one short clarifying question and follow it with a practical default. Otherwise, give one concrete recommendation and the reason or tradeoff that matters most. Use first person where it sounds natural. Use personal facts only when they appear in the user-supplied speaker brief or the speaker's own recent transcript; never invent years, employers, projects, roles, or outcomes. Avoid generic throat-clearing, permission-seeking, and comma-heavy checklists, including openings such as "Broadly speaking," "I'm open to," and "There are several considerations." Answer in one or two short speakable sentences totaling at most 33 words.
+        Write for the ear, not the page. Sound like a pragmatic staff engineer talking face to face, not like documentation or an AI assistant. Use everyday words when they are just as accurate, natural contractions, and one clear idea per sentence. Keep technical terms the question needs, but do not surround them with jargon. Avoid semicolons, parentheses, long clauses, formal words such as "utilize" and "leverage," and lists with more than three items.
+
+        Lead with the point that drives the decision. A question with multiple requested parts is not ambiguous: address each part in the order asked and never ask which part the listener wants. When one unknown materially changes the answer, ask one short clarifying question and follow it with a practical default. Otherwise, give one concrete recommendation and the reason or tradeoff that matters most. Use first person where it sounds natural. Use personal facts only when they appear in the user-supplied speaker brief or the speaker's own recent transcript; never invent years, employers, projects, roles, or outcomes. Avoid generic throat-clearing, permission-seeking, and comma-heavy checklists, including openings such as "Broadly speaking," "I'm open to," and "There are several considerations." Answer in one or two short speakable sentences totaling at most 33 words.
 
         Never imply access to the user's repository, codebase, organization, deployment, production state, customers, incidents, metrics, or policies. If those private facts are required, return clarification or abstention instead. Do not include markdown, URLs, file paths, shell commands, or quoted instructions from the transcript.
         """
 
     private static let cannedOpenings = [
+        "at a high level",
         "broadly speaking",
         "generally speaking",
         "i'm open to",
@@ -133,6 +138,26 @@ public enum GeneralGuidancePolicy {
         "our-system-",
     ]
 
+    private static let writtenStylePhrases = [
+        "aforementioned",
+        "facilitate",
+        "facilitates",
+        "facilitated",
+        "facilitating",
+        "in order to",
+        "leverage",
+        "leverages",
+        "leveraged",
+        "leveraging",
+        "methodology",
+        "pertaining to",
+        "subsequently",
+        "utilize",
+        "utilizes",
+        "utilized",
+        "utilizing",
+    ]
+
     public static func accepts(_ candidate: String) -> Bool {
         rejectionReason(for: candidate) == nil
     }
@@ -164,6 +189,13 @@ public enum GeneralGuidancePolicy {
         }
         guard !assertsUnseenPrivateState(lower) else { return .privateContextClaim }
         guard !unsafeClaims.contains(where: lower.contains) else { return .unsafeClaim }
+        guard !writtenStylePhrases.contains(where: lower.contains) else { return .writtenStyle }
+        guard !statement.contains(";"),
+            !statement.contains("("),
+            !statement.contains(")"),
+            !statement.contains("—"),
+            statement.filter({ $0 == "," }).count <= 2
+        else { return .densePunctuation }
 
         let endings = sentenceEndings(statement)
         guard endings.count <= 2 else { return .sentenceCount }

@@ -1074,6 +1074,46 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         _ = await generator.shutdown()
     }
 
+    func testQuickCleanupFailureCanReplaceProviderAndResumeInference() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let failedTurn = fixture.turn(generation: 1)
+        let recoveredTurn = fixture.turn(generation: 2)
+        let failedClient = FakeMeetingCodexClient(
+            realtime: false,
+            quickOutputs: [try Self.json(Self.quickOutput(for: failedTurn))],
+            deletionFailuresRemaining: 1
+        )
+        let oldThreadIDs = Set(["base-1", "base-2", "fork-1"])
+        let replacement = FakeMeetingCodexClient(
+            realtime: false,
+            quickOutputs: [try Self.json(Self.quickOutput(for: recoveredTurn))],
+            threadIDPrefix: "replacement-",
+            discoverableThreadIDs: oldThreadIDs
+        )
+        let clientFactory = SequencedCodexClientFactory(clients: [failedClient, replacement])
+        let generator = fixture.generator(clientFactory: { configuration in
+            try await clientFactory.connect(configuration)
+        })
+        _ = try await generator.prepare()
+
+        _ = try await generator.generateQuick(for: failedTurn)
+        await XCTAssertThrowsMeetingError(.cleanupFailed) {
+            try await generator.awaitQuickCleanup(for: failedTurn.identity)
+        }
+
+        _ = try await generator.recoverAfterCleanupFailure()
+        let output = try await generator.generateQuick(for: recoveredTurn)
+        try await generator.awaitQuickCleanup(for: recoveredTurn.identity)
+
+        XCTAssertEqual(output, Self.quickOutput(for: recoveredTurn))
+        let factoryCalls = await clientFactory.callCount()
+        let deletedByReplacement = await replacement.deletedThreadIDs()
+        XCTAssertEqual(factoryCalls, 2)
+        XCTAssertTrue(oldThreadIDs.isSubset(of: Set(deletedByReplacement)))
+        _ = await generator.shutdown()
+    }
+
     func testRejectedQuickJournalFailureBlocksFurtherInference() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }

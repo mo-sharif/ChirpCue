@@ -634,6 +634,32 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         return try result.get()
     }
 
+    public func recoverAfterCleanupFailure() async throws -> MeetingResponseRuntime {
+        guard lifecycle == .open || lifecycle == .cancelling else {
+            throw MeetingResponseError.notPrepared
+        }
+
+        if lifecycle == .open {
+            guard client != nil, runtime != nil else {
+                throw MeetingResponseError.notPrepared
+            }
+            if poisonedClientEpoch == nil {
+                poisonedClientEpoch = PoisonedClientEpoch(
+                    epoch: clientEpoch,
+                    recoveryAttempted: false
+                )
+            }
+        }
+
+        await cancelActiveWork()
+
+        if let recoveryBlockedError { throw recoveryBlockedError }
+        guard !cleanupBlocked, lifecycle == .open, let runtime else {
+            throw MeetingResponseError.cleanupFailed
+        }
+        return runtime
+    }
+
     public func cancelActiveWork() async {
         if let cancellationTask {
             await cancellationTask.value

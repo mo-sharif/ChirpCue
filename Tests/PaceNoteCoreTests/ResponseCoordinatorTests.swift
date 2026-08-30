@@ -128,8 +128,12 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertFalse(cue.isDeterministicBridge)
         XCTAssertEqual(deep.cueID, cue.id)
         XCTAssertEqual(deep.cueHash, cue.textHash)
-        XCTAssertEqual(deep.transition, "More specifically,")
+        XCTAssertEqual(deep.transition, "The part I’d add is this.")
         XCTAssertEqual(deep.sayNext, MatchingSpeakerBriefGenerator.deepText)
+        XCTAssertEqual(
+            deep.composedText,
+            "The part I’d add is this.\n\(MatchingSpeakerBriefGenerator.deepText)"
+        )
     }
 
     func testCustomBridgeStillOverridesMatchingSpeakerBrief() async throws {
@@ -182,14 +186,35 @@ final class ResponseCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(bridge.isDeterministicBridge)
         XCTAssertFalse(cue.isDeterministicBridge)
-        XCTAssertEqual(cue.text, QuickBeforeDeepGenerator.quickText)
+        XCTAssertEqual(cue.text, QuickBeforeDeepGenerator.defaultQuickText)
         XCTAssertEqual(deep.cueID, cue.id)
         XCTAssertEqual(deep.cueHash, cue.textHash)
         XCTAssertEqual(deep.kind, .generalAnswer)
         XCTAssertTrue(deep.basis.isEmpty)
-        XCTAssertEqual(deep.transition, "More specifically,")
-        XCTAssertEqual(deep.sayNext, QuickBeforeDeepGenerator.deepText)
+        XCTAssertEqual(deep.transition, "The part I’d add is this.")
+        XCTAssertEqual(deep.sayNext, QuickBeforeDeepGenerator.defaultDeepText)
         XCTAssertLessThanOrEqual(deep.composedText.split(separator: " ").count, 40)
+    }
+
+    func testRepeatedDeepUsesANaturalRestatementHandoff() async throws {
+        let quick = "I’d use read-only access with short-lived credentials and audit logs."
+        let repeated =
+            "I’d use read-only access with short-lived credentials and audit logs for every query."
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let coordinator = ResponseCoordinator(
+            generator: QuickBeforeDeepGenerator(
+                gate: QuickHandledGate(),
+                quickText: quick,
+                deepText: repeated
+            ),
+            configuration: .init(quickDeadline: .milliseconds(100), resultTTL: .seconds(1))
+        )
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+        let deep = try XCTUnwrap(events.compactMap(\.deep).first)
+
+        XCTAssertEqual(deep.transition, "Put another way,")
+        XCTAssertEqual(deep.composedText, "Put another way,\n\(repeated)")
     }
 
     func testValidatedQuickAndDeepAreVisibleWhileQuickCleanupRemainsPending() async throws {
@@ -350,7 +375,8 @@ final class ResponseCoordinatorTests: XCTestCase {
         let events = await Self.collect(coordinator.suggestions(for: turn))
         let deep = try XCTUnwrap(events.compactMap(\.deep).first)
 
-        XCTAssertEqual(deep.sayNext, "I need one more detail before I can verify that.")
+        XCTAssertEqual(deep.transition, "One thing I’d ask first.")
+        XCTAssertEqual(deep.sayNext, "Can you share the missing detail so I can verify it?")
         XCTAssertFalse(deep.composedText.contains("retries three times"))
     }
 
@@ -752,7 +778,7 @@ private struct ScriptedGenerator: ResponseGenerating {
     }
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
-        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        Reconciliation(relationship: .continueAnswer, transition: "The part I’d add is this.")
     }
 }
 
@@ -760,18 +786,30 @@ private struct ScriptedGenerator: ResponseGenerating {
 /// Deep waits until the coordinator has consumed Quick and begun its cleanup step, avoiding a
 /// scheduler-dependent race between two short sleeps on loaded CI hosts.
 private struct QuickBeforeDeepGenerator: ResponseGenerating {
-    static let quickText =
+    static let defaultQuickText =
         "I would frame the decision around reversibility and the cost of being wrong."
-    static let deepText =
+    static let defaultDeepText =
         "I would isolate callers from retries and downstream outages with a queued boundary."
 
     let gate: QuickHandledGate
+    let quickText: String
+    let deepText: String
+
+    init(
+        gate: QuickHandledGate,
+        quickText: String = Self.defaultQuickText,
+        deepText: String = Self.defaultDeepText
+    ) {
+        self.gate = gate
+        self.quickText = quickText
+        self.deepText = deepText
+    }
 
     func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
         QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
-            sayNow: Self.quickText,
+            sayNow: quickText,
             needsDeep: false,
             confidence: 0.72,
             reason: "general_question"
@@ -790,14 +828,14 @@ private struct QuickBeforeDeepGenerator: ResponseGenerating {
             generation: turn.identity.generation,
             groundingFingerprint: nil,
             kind: .generalAnswer,
-            candidateSayNext: Self.deepText,
+            candidateSayNext: deepText,
             confidence: 0.91,
             basis: []
         )
     }
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
-        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        Reconciliation(relationship: .continueAnswer, transition: "The part I’d add is this.")
     }
 }
 
@@ -805,7 +843,7 @@ private struct MatchingSpeakerBriefGenerator: ResponseGenerating {
     static let quickText =
         "I have eight years of experience with React. Lately, I have been building TypeScript AI products and reusable frontend platforms."
     static let deepText =
-        "Most recently, I have focused on shared component systems, performance, and maintainable frontend architecture."
+        "Most recently, I’ve focused on shared components and frontend performance. I’ve also worked on architecture that stays easier to maintain."
 
     let gate: QuickHandledGate
 
@@ -839,7 +877,7 @@ private struct MatchingSpeakerBriefGenerator: ResponseGenerating {
     }
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
-        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        Reconciliation(relationship: .continueAnswer, transition: "The part I’d add is this.")
     }
 }
 
@@ -918,7 +956,7 @@ private struct HangingGenerator: ResponseGenerating {
         if hangingStage == .reconcile {
             return await suspendForever()
         }
-        return Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        return Reconciliation(relationship: .continueAnswer, transition: "The part I’d add is this.")
     }
 
     private func suspendForever<Value: Sendable>() async -> Value {
@@ -1010,7 +1048,7 @@ private struct QuickCleanupControlledGenerator: ResponseGenerating {
     }
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
-        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        Reconciliation(relationship: .continueAnswer, transition: "The part I’d add is this.")
     }
 }
 

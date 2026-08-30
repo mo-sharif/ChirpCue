@@ -37,12 +37,21 @@ final class MeetingDismissControlTests: XCTestCase {
         let meetingWindow = try source("Sources/PaceNoteApp/UI/MeetingWindow.swift")
 
         XCTAssertTrue(meetingWindow.contains("meeting.retry-deep"))
-        XCTAssertTrue(meetingWindow.contains("Retry Deep Answer"))
+        XCTAssertTrue(meetingWindow.contains("Retry Next Part"))
         XCTAssertTrue(
             meetingWindow.contains(
-                "The quick answer stays available; no detailed answer arrived."
+                "The first answer stays available; the next part didn’t arrive."
             )
         )
+    }
+
+    func testPrompterLabelsGuideTheSpokenHandoff() throws {
+        let meetingWindow = try source("Sources/PaceNoteApp/UI/MeetingWindow.swift")
+
+        XCTAssertTrue(meetingWindow.contains("title: \"Start here\""))
+        XCTAssertTrue(meetingWindow.contains("title: \"Then add this\""))
+        XCTAssertTrue(meetingWindow.contains("Say this first • the next part is coming"))
+        XCTAssertTrue(meetingWindow.contains(".lineSpacing(5)"))
     }
 
     private func source(_ relativePath: String) throws -> String {

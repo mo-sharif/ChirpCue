@@ -63,7 +63,7 @@ final class CodexOutputTests: XCTestCase {
         )
         XCTAssertThrowsError(
             try CodexStructuredOutput.decode(
-                "{\"relationship\":\"continue\",\"transition\":\"More specifically,\",\"extra\":\"unsafe\"}",
+                "{\"relationship\":\"continue\",\"transition\":\"The part I’d add is this.\",\"extra\":\"unsafe\"}",
                 as: Reconciliation.self
             )
         )
