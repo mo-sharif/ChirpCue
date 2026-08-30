@@ -1,7 +1,7 @@
 import Foundation
 
 /// Decouples immediate coaching from subscription-provider startup and generation latency.
-/// Quick responses stay local; the selected subscription provider prepares and reasons in parallel.
+/// The first cue stays local; optional generated Quick and Deep work continue independently.
 public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     private enum QuickPathDecision: Sendable {
         case localSatisfied
@@ -32,6 +32,8 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     private var activeProviderCalls = 0
     private var providerQuickIdentities: Set<TurnIdentity> = []
     private var quickPathDecisions: [TurnIdentity: QuickPathDecision] = [:]
+    private var quickPathDecisionWaiters: [TurnIdentity: [UUID: AsyncStream<QuickPathDecision>.Continuation]] = [:]
+    private var deepFinishedBeforeQuickDecision: Set<TurnIdentity> = []
     private var shutdownTask: Task<MeetingResponseCleanupReport, Never>?
     private var lastShutdownReport: MeetingResponseCleanupReport?
 
@@ -78,11 +80,13 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         do {
             local = try await quickGenerator.generateQuick(for: turn)
         } catch {
-            quickPathDecisions[turn.identity] = .unavailable
+            recordQuickPathDecision(.unavailable, for: turn.identity)
             throw error
         }
-        quickPathDecisions[turn.identity] =
-            local.reason == "deterministic_safety_bridge" ? .providerNeeded : .localSatisfied
+        recordQuickPathDecision(
+            local.reason == "deterministic_safety_bridge" ? .providerNeeded : .localSatisfied,
+            for: turn.identity
+        )
         guard local.reason == "deterministic_safety_bridge" else { return local }
 
         do {
@@ -109,7 +113,6 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     public func awaitQuickCleanup(for identity: TurnIdentity) async throws {
-        defer { quickPathDecisions.removeValue(forKey: identity) }
         await quickGenerator.awaitCleanup(for: identity)
         guard providerQuickIdentities.remove(identity) != nil else { return }
         try await provider.awaitQuickCleanup(for: identity)
@@ -117,6 +120,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
 
     public func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
         try requireOpen()
+        defer { finishDeepDecisionPath(for: turn.identity) }
         let runtime = try await waitForProviderRuntime()
         if Self.supportsGeneratedQuick(runtime) {
             let quickDecision = await quickPathDecision(for: turn.identity)
@@ -124,7 +128,6 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
                 try await Task.sleep(for: providerQuickHeadStart)
             }
         }
-        quickPathDecisions.removeValue(forKey: turn.identity)
         try Task.checkCancellation()
         activeProviderCalls += 1
         do {
@@ -176,6 +179,8 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         providerFailure = nil
         providerQuickIdentities.removeAll()
         quickPathDecisions.removeAll()
+        finishQuickPathDecisionWaiters()
+        deepFinishedBeforeQuickDecision.removeAll()
         lifecycle = .closed
         shutdownTask = nil
         lastShutdownReport = report
@@ -283,17 +288,79 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
 
     private func quickPathDecision(for identity: TurnIdentity) async -> QuickPathDecision? {
         if let decision = quickPathDecisions[identity] { return decision }
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: quickPathDecisionWindow)
-        while clock.now < deadline {
-            do {
-                try await Task.sleep(for: .milliseconds(1))
-            } catch {
-                return .unavailable
-            }
-            if let decision = quickPathDecisions[identity] { return decision }
+
+        let waiterID = UUID()
+        let pair = AsyncStream.makeStream(
+            of: QuickPathDecision.self,
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        quickPathDecisionWaiters[identity, default: [:]][waiterID] = pair.continuation
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeQuickPathDecisionWaiter(waiterID, identity: identity) }
         }
+        let decisionWindow = quickPathDecisionWindow
+        let timeoutTask = Task {
+            do {
+                try await ContinuousClock().sleep(for: decisionWindow)
+            } catch {
+                return
+            }
+            pair.continuation.finish()
+        }
+        defer {
+            timeoutTask.cancel()
+            pair.continuation.finish()
+        }
+
+        for await decision in pair.stream { return decision }
         return quickPathDecisions[identity]
+    }
+
+    private func recordQuickPathDecision(
+        _ decision: QuickPathDecision,
+        for identity: TurnIdentity
+    ) {
+        guard deepFinishedBeforeQuickDecision.remove(identity) == nil else {
+            finishQuickPathDecisionWaiters(for: identity)
+            return
+        }
+        quickPathDecisions[identity] = decision
+        let waiters =
+            quickPathDecisionWaiters.removeValue(forKey: identity).map {
+                Array($0.values)
+            } ?? []
+        for waiter in waiters {
+            waiter.yield(decision)
+            waiter.finish()
+        }
+    }
+
+    private func finishDeepDecisionPath(for identity: TurnIdentity) {
+        finishQuickPathDecisionWaiters(for: identity)
+        if quickPathDecisions.removeValue(forKey: identity) == nil {
+            deepFinishedBeforeQuickDecision.insert(identity)
+        }
+    }
+
+    private func removeQuickPathDecisionWaiter(_ id: UUID, identity: TurnIdentity) {
+        quickPathDecisionWaiters[identity]?.removeValue(forKey: id)
+        if quickPathDecisionWaiters[identity]?.isEmpty == true {
+            quickPathDecisionWaiters.removeValue(forKey: identity)
+        }
+    }
+
+    private func finishQuickPathDecisionWaiters(for identity: TurnIdentity) {
+        let waiters =
+            quickPathDecisionWaiters.removeValue(forKey: identity).map {
+                Array($0.values)
+            } ?? []
+        for waiter in waiters { waiter.finish() }
+    }
+
+    private func finishQuickPathDecisionWaiters() {
+        let waiters = quickPathDecisionWaiters.values.flatMap { $0.values }
+        quickPathDecisionWaiters.removeAll()
+        for waiter in waiters { waiter.finish() }
     }
 
     private static func supportsGeneratedQuick(_ runtime: MeetingResponseRuntime) -> Bool {

@@ -155,14 +155,156 @@ final class LocalResponseBridgeTests: XCTestCase {
                 "How would you improve frontend performance and Core Web Vitals?",
                 "measure LCP, INP, and CLS"
             ),
+            (
+                "Why do React list items need stable keys?",
+                "stable identity"
+            ),
+            (
+                "Compare controlled and uncontrolled inputs in React.",
+                "lets the DOM own it"
+            ),
+            (
+                "When should I use useMemo versus useCallback?",
+                "avoided work outweighs their overhead"
+            ),
+            (
+                "What tradeoff comes with React Context?",
+                "re-render many consumers"
+            ),
+            (
+                "What do React error boundaries catch?",
+                "rendering failures below them"
+            ),
+            (
+                "What does hoisting mean in JavaScript?",
+                "let and const stay unusable"
+            ),
+            (
+                "What is the difference between debouncing and throttling?",
+                "waits for activity to stop"
+            ),
+            (
+                "How does event delegation work?",
+                "through event bubbling"
+            ),
+            (
+                "What problem does CORS solve in browsers?",
+                "which origins may read"
+            ),
+            (
+                "Walk through the browser rendering pipeline.",
+                "paints and composites pixels"
+            ),
+            (
+                "How does code splitting improve a web application?",
+                "adding explicit loading boundaries"
+            ),
+            (
+                "What does tree shaking do?",
+                "statically unused exports"
+            ),
+            (
+                "How would you investigate a browser memory leak?",
+                "heap snapshots reveal the retaining path"
+            ),
+            (
+                "Explain the CAP theorem.",
+                "favors consistency or availability"
+            ),
+            (
+                "Compare an inner join with a left join in SQL.",
+                "keeps every left-side row"
+            ),
+            (
+                "What does ACID mean for database transactions?",
+                "do not leave partial state"
+            ),
+            (
+                "Compare optimistic locking and pessimistic locking.",
+                "detects conflicts at write time"
+            ),
+            (
+                "What does a load balancer do?",
+                "spreads traffic across healthy instances"
+            ),
+            (
+                "Why would you put work on a message queue?",
+                "decouples producers from consumers"
+            ),
+            (
+                "How would you design rate limiting?",
+                "protects capacity and fairness"
+            ),
+            (
+                "Compare REST and GraphQL.",
+                "cache-friendly semantics"
+            ),
+            (
+                "Compare offset pagination and cursor pagination.",
+                "drifts under writes"
+            ),
+            (
+                "When would you use WebSockets versus server-sent events?",
+                "only the server streams updates"
+            ),
+            (
+                "Compare microservices with a modular monolith.",
+                "cost of distributed coordination"
+            ),
+            (
+                "How does a CDN improve web performance?",
+                "serves cacheable content near users"
+            ),
+            (
+                "What makes a design system successful?",
+                "tokens, accessibility rules, documentation, and governance"
+            ),
+            (
+                "What are the tradeoffs of microfrontends?",
+                "duplicated runtime cost"
+            ),
+            (
+                "How should teams manage feature flags?",
+                "a removal date"
+            ),
+            (
+                "What is observability and why does it matter?",
+                "logs, metrics, and traces"
+            ),
+            (
+                "What should a strong CI/CD pipeline provide?",
+                "makes rollback fast and observable"
+            ),
+            (
+                "What is dependency injection?",
+                "supplies collaborators from outside"
+            ),
+            (
+                "What is the difference between authentication and authorization?",
+                "decides what that identity may do"
+            ),
+            (
+                "How does OAuth delegate access?",
+                "without receiving the user’s password"
+            ),
+            (
+                "How do encryption at rest and encryption in transit differ?",
+                "TLS protects data in transit"
+            ),
+            (
+                "How should an application store and rotate secrets?",
+                "store them in a managed vault"
+            ),
         ]
         let clock = ContinuousClock()
         let startedAt = clock.now
 
         for fixture in fixtures {
             let response = LocalResponseBridge.response(for: fixture.question)
+            let reviewed = LocalResponseBridge.reviewedTechnicalResponse(for: fixture.question)
 
             XCTAssertTrue(response.contains(fixture.expectedText), "\(fixture.question): \(response)")
+            XCTAssertEqual(reviewed, response, fixture.question)
             XCTAssertTrue(GeneralGuidancePolicy.accepts(response), response)
             XCTAssertLessThanOrEqual(
                 response.split(whereSeparator: \Character.isWhitespace).count,
@@ -172,7 +314,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             XCTAssertFalse(response.contains("What level of detail"), response)
         }
 
-        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(500))
     }
 
     func testWholeWordMatchingDoesNotConfuseRelatedTechnicalTerms() {
@@ -209,9 +351,27 @@ final class LocalResponseBridgeTests: XCTestCase {
         let launchHooks = LocalResponseBridge.response(
             for: "Which hooks do we need in the launch process?"
         )
+        let leadershipSecret = LocalResponseBridge.response(
+            for: "What is your secret to resolving conflict on a team?"
+        )
+        let roadmapPermission = LocalResponseBridge.response(
+            for: "How do you get permission to change a team roadmap?"
+        )
+        let contextualMCPFollowUp =
+            LocalResponseBridge.reviewedTechnicalResponse(for: "And how does MCP change that plan?")
+        let specificTypeScriptQuestion =
+            LocalResponseBridge.reviewedTechnicalResponse(
+                for: "How do conditional types distribute over a union in TypeScript?"
+            )
 
         XCTAssertFalse(deliveryPromise.contains("future result"), deliveryPromise)
         XCTAssertFalse(patientHydration.contains("client-side behavior"), patientHydration)
         XCTAssertFalse(launchHooks.contains("function components"), launchHooks)
+        XCTAssertFalse(leadershipSecret.contains("least-privilege"), leadershipSecret)
+        XCTAssertTrue(leadershipSecret.contains("team"), leadershipSecret)
+        XCTAssertFalse(roadmapPermission.contains("least-privilege"), roadmapPermission)
+        XCTAssertTrue(roadmapPermission.contains("team"), roadmapPermission)
+        XCTAssertNil(contextualMCPFollowUp)
+        XCTAssertNil(specificTypeScriptQuestion)
     }
 }

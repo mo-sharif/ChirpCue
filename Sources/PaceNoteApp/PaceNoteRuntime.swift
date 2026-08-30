@@ -992,11 +992,15 @@ actor PaceNoteRuntime {
             let responseGenerator: any MeetingResponseGenerating =
                 LowLatencyMeetingResponseGenerator(
                     provider: providerResponseGenerator,
-                    quickGenerator: FoundationModelQuickGenerator(
-                        speakingStyle: Self.speakingStyle
+                    quickGenerator: BoundedLocalQuickGenerator(
+                        base: FoundationModelQuickGenerator(
+                            speakingStyle: Self.speakingStyle
+                        ),
+                        timeout: .seconds(3)
                     ),
                     planType: verifiedSubscription.planType,
-                    providerName: request.provider.rawValue
+                    providerName: request.provider.rawValue,
+                    quickPathDecisionWindow: .milliseconds(3_250)
                 )
             let cleaner = DefaultMeetingSessionResourceCleaner(
                 privateRoot: context.privateRoot,

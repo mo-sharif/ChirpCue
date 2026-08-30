@@ -82,6 +82,16 @@ public actor FoundationModelQuickGenerator: LocalQuickGenerating {
         {
             return Self.fallback(for: turn)
         }
+        if let reviewed = LocalResponseBridge.reviewedTechnicalResponse(for: turn.question) {
+            return QuickModelOutput(
+                turnID: turn.identity.turnID,
+                generation: turn.identity.generation,
+                sayNow: reviewed,
+                needsDeep: true,
+                confidence: 1,
+                reason: "reviewed_local_technical_answer"
+            )
+        }
         guard systemModelEnabled, model.isAvailable else { return Self.fallback(for: turn) }
 
         let session = takePreparedSession()

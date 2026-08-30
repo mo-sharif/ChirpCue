@@ -103,6 +103,18 @@ public struct ResponseCoordinatorConfiguration: Sendable {
             )
         }
 
+        if bridgeText == Self.deterministicFallback,
+            let answer = LocalResponseBridge.reviewedTechnicalResponse(for: turn.question)
+        {
+            return CueEnvelope(
+                turnID: turn.identity.turnID,
+                generation: turn.identity.generation,
+                text: answer,
+                reason: "reviewed_local_technical_answer",
+                isDeterministicBridge: false
+            )
+        }
+
         return CueEnvelope(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
