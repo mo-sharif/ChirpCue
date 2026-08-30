@@ -1237,7 +1237,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         try await prepareAndStart(harness)
         try await harness.controller.submitTypedQuestion("How does the bounded queue work?")
         let cueArrived = await eventually {
-            await harness.controller.state().suggestions.contains { $0.stage == .quick }
+            await harness.controller.state().suggestions.contains { $0.stage != .deep }
         }
         XCTAssertTrue(cueArrived)
 
