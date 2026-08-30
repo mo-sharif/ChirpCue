@@ -60,4 +60,28 @@ final class LocalResponseBridgeTests: XCTestCase {
 
         XCTAssertEqual(configuration.bridgeText(for: "How should this scale?"), custom)
     }
+
+    func testCommonPersonalInterviewPromptsUseNaturalNoninventedOpeners() {
+        let expected: [(String, String)] = [
+            (
+                "Tell me about a time you influenced without authority.",
+                "I’ll anchor this in one concrete example, then make the decision, my role, and the outcome clear."
+            ),
+            (
+                "What is your greatest strength?",
+                "I’ll give the honest headline first, then ground it in one recent example and what changed because of it."
+            ),
+            (
+                "Why are you interested in this role?",
+                "I’ll connect what I’m looking for next to this role, then make the fit concrete with one recent example."
+            ),
+        ]
+
+        for (question, opener) in expected {
+            XCTAssertTrue(LocalResponseBridge.requiresPersonalFacts(question), question)
+            XCTAssertEqual(LocalResponseBridge.response(for: question), opener)
+            XCTAssertTrue(GeneralGuidancePolicy.accepts(opener), opener)
+            XCTAssertFalse(opener.contains("?"), opener)
+        }
+    }
 }

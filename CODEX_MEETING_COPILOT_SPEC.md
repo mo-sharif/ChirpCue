@@ -311,11 +311,11 @@ Local deterministic reconciliation relates the verified Deep answer to the exact
 
 Purpose: give the user a useful, natural first answer while Deep works.
 
-The coordinator first emits a deterministic, question-aware local bridge without waiting for any provider. The bridge selects only from reviewed staff-level response patterns, never claims private facts, and gives the user a concrete sentence to say while generated work continues.
+The coordinator first emits a deterministic, question-aware local answer without waiting for any provider. For a personal-background question, it may select up to two relevant, already-speakable sentences verbatim from the optional user-written speaker brief. It never paraphrases, completes, or invents a personal fact. When no safe brief match exists, the bridge selects only from reviewed staff-level response patterns, never claims private facts, and gives the user a concrete sentence to say while generated work continues.
 
 Apple's on-device model can replace the bridge inside a 15-second Quick window. When it is unavailable and Codex is selected, Quick uses GPT-5.6 Sol at low reasoning effort, requests the fastest service tier advertised by the signed-in catalog, has no repository tools, and returns only one spoken sentence. Turn identity, generation, confidence, and the decision to continue Deep are host-owned rather than model-generated. The coordinator validates word count, speakability, and absence of private-context claims before display.
 
-A locally validated generated Quick answer becomes visible as soon as validation completes; it does not wait for cleanup of its transcript-bearing ephemeral thread. Cleanup remains tracked as part of the same turn. A late, rejected, rate-limited, or unavailable Quick result leaves the already visible local bridge in place. Deep starts one second after Quick and remains eligible for up to 90 seconds without blocking or removing either cue.
+A locally validated generated Quick answer becomes visible as soon as validation completes; it does not wait for cleanup of its transcript-bearing ephemeral thread. Cleanup remains tracked as part of the same turn. A late, rejected, rate-limited, or unavailable Quick result leaves the already visible local answer in place. Deep starts without a fixed delay when local Quick succeeds. When the local path needs a subscription Quick upgrade, Deep preserves a one-second provider-queue head start for Quick. Deep remains eligible for up to 90 seconds without blocking or removing either cue.
 
 ### 7.3 Deep worker
 

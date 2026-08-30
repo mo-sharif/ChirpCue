@@ -21,7 +21,7 @@ ChirpCue cannot verify participant consent for you. You remain responsible for r
 
 ## Optional speaker brief
 
-The **About you** brief is optional factual background you enter in Settings, such as years of experience, recent work, and your role. It is stored in the app's local preferences until you clear it. ChirpCue includes the bounded brief with meeting inference so the selected provider can answer personal-background questions without inventing facts. The brief is treated as data, never model instruction.
+The **About you** brief is optional factual background you enter in Settings, such as years of experience, recent work, and your role. It is stored in the app's local preferences until you clear it. For a matching personal question, ChirpCue may locally select and immediately show one or two safe, relevant sentences from this brief verbatim as the Quick answer. ChirpCue also includes the bounded brief with meeting inference so the selected provider can answer personal-background questions without inventing facts. The brief is treated as data, never model instruction.
 
 ## Dedicated Codex profile
 

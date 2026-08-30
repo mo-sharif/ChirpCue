@@ -333,7 +333,7 @@ private struct SpeakerBriefSetupSection: View {
                     }
                 HStack(alignment: .firstTextBaseline) {
                     Text(
-                        "Add only facts you want the coach to use, such as years with React, recent applications, and your role. This is stored locally until you clear it."
+                        "Write short first-person facts you would naturally say, such as your React experience, recent work, and role. A relevant sentence can appear immediately as your Quick answer. This is stored locally until you clear it."
                     )
                     Spacer()
                     Text("\(speakerBrief.count)/\(SpeakerBriefPolicy.maximumCharacters)")

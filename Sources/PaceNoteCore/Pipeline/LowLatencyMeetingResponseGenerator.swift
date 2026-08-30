@@ -3,6 +3,12 @@ import Foundation
 /// Decouples immediate coaching from subscription-provider startup and generation latency.
 /// Quick responses stay local; the selected subscription provider prepares and reasons in parallel.
 public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
+    private enum QuickPathDecision: Sendable {
+        case localSatisfied
+        case providerNeeded
+        case unavailable
+    }
+
     private enum Lifecycle: Sendable {
         case open
         case closing
@@ -15,6 +21,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     private let pendingDeepRoute: CodexModelRoute
     private let providerRetryDelay: Duration
     private let providerQuickHeadStart: Duration
+    private let quickPathDecisionWindow: Duration
 
     private var lifecycle = Lifecycle.open
     private var quickRoute = FoundationModelQuickGenerator.deterministicRoute
@@ -24,6 +31,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     private var preparationWaiters: [UUID: AsyncThrowingStream<MeetingResponseRuntime, Error>.Continuation] = [:]
     private var activeProviderCalls = 0
     private var providerQuickIdentities: Set<TurnIdentity> = []
+    private var quickPathDecisions: [TurnIdentity: QuickPathDecision] = [:]
     private var shutdownTask: Task<MeetingResponseCleanupReport, Never>?
     private var lastShutdownReport: MeetingResponseCleanupReport?
 
@@ -33,7 +41,8 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         planType: String?,
         providerName: String,
         providerRetryDelay: Duration = .seconds(1),
-        providerQuickHeadStart: Duration = .seconds(1)
+        providerQuickHeadStart: Duration = .seconds(1),
+        quickPathDecisionWindow: Duration = .milliseconds(25)
     ) {
         self.provider = provider
         self.quickGenerator = quickGenerator
@@ -44,6 +53,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         )
         self.providerRetryDelay = providerRetryDelay
         self.providerQuickHeadStart = providerQuickHeadStart
+        self.quickPathDecisionWindow = quickPathDecisionWindow
     }
 
     deinit {
@@ -64,7 +74,15 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
 
     public func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
         try requireOpen()
-        let local = try await quickGenerator.generateQuick(for: turn)
+        let local: QuickModelOutput
+        do {
+            local = try await quickGenerator.generateQuick(for: turn)
+        } catch {
+            quickPathDecisions[turn.identity] = .unavailable
+            throw error
+        }
+        quickPathDecisions[turn.identity] =
+            local.reason == "deterministic_safety_bridge" ? .providerNeeded : .localSatisfied
         guard local.reason == "deterministic_safety_bridge" else { return local }
 
         do {
@@ -91,6 +109,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     public func awaitQuickCleanup(for identity: TurnIdentity) async throws {
+        defer { quickPathDecisions.removeValue(forKey: identity) }
         await quickGenerator.awaitCleanup(for: identity)
         guard providerQuickIdentities.remove(identity) != nil else { return }
         try await provider.awaitQuickCleanup(for: identity)
@@ -100,8 +119,12 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         try requireOpen()
         let runtime = try await waitForProviderRuntime()
         if Self.supportsGeneratedQuick(runtime) {
-            try await Task.sleep(for: providerQuickHeadStart)
+            let quickDecision = await quickPathDecision(for: turn.identity)
+            if quickDecision == .providerNeeded {
+                try await Task.sleep(for: providerQuickHeadStart)
+            }
         }
+        quickPathDecisions.removeValue(forKey: turn.identity)
         try Task.checkCancellation()
         activeProviderCalls += 1
         do {
@@ -152,6 +175,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         providerRuntime = nil
         providerFailure = nil
         providerQuickIdentities.removeAll()
+        quickPathDecisions.removeAll()
         lifecycle = .closed
         shutdownTask = nil
         lastShutdownReport = report
@@ -255,6 +279,21 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
 
     private func requireOpen() throws {
         guard lifecycle == .open else { throw MeetingResponseError.runtimeUnavailable }
+    }
+
+    private func quickPathDecision(for identity: TurnIdentity) async -> QuickPathDecision? {
+        if let decision = quickPathDecisions[identity] { return decision }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: quickPathDecisionWindow)
+        while clock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(1))
+            } catch {
+                return .unavailable
+            }
+            if let decision = quickPathDecisions[identity] { return decision }
+        }
+        return quickPathDecisions[identity]
     }
 
     private static func supportsGeneratedQuick(_ runtime: MeetingResponseRuntime) -> Bool {
