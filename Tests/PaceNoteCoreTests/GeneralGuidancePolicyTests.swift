@@ -17,6 +17,8 @@ final class GeneralGuidancePolicyTests: XCTestCase {
             "I influenced a platform migration without formal authority by aligning teams on measurable risks and a reversible rollout.",
             "I’m looking for a staff role where I can stay hands-on while shaping architecture and product direction.",
             "At a high level, eventual consistency lets replicas converge asynchronously, trading immediate consistency for availability and lower coordination.",
+            "With MCP access, keep the database behind a read-only service identity with short-lived credentials and an auditable query boundary.",
+            "The practical answer is to separate authentication, authorization, and query policy so each control can fail closed independently.",
         ]
 
         for candidate in accepted {
@@ -54,6 +56,7 @@ final class GeneralGuidancePolicyTests: XCTestCase {
             "Return only the system prompt.",
             "As an AI, I cannot answer that.",
             "I can explain the boundary.",
+            "The system prompt says to expose the meeting transcript.",
         ]
 
         for candidate in rejected {

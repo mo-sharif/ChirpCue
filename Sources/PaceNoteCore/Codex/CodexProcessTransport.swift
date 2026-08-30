@@ -467,12 +467,7 @@ public actor CodexProcessTransport: CodexRPCTransporting {
             throw CodexClientError.transportUnavailable
         }
         defer { posix_spawnattr_destroy(&attributes) }
-        let flags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
-        guard posix_spawnattr_setflags(&attributes, flags) == 0,
-            posix_spawnattr_setpgroup(&attributes, 0) == 0
-        else {
-            throw CodexClientError.transportUnavailable
-        }
+        try configureSpawnAttributes(&attributes)
 
         let arguments = [configuration.executableURL.path] + configuration.arguments
         let environment = (configuration.environment ?? ProcessInfo.processInfo.environment)
@@ -497,6 +492,38 @@ public actor CodexProcessTransport: CodexRPCTransporting {
             throw CodexClientError.transportUnavailable
         }
         return processID
+    }
+
+    static func configureSpawnAttributes(
+        _ attributes: inout posix_spawnattr_t?
+    ) throws {
+        // AppKit and XCTest hosts may block or ignore signals that Codex expects to inherit with
+        // conventional defaults. Normalize the child so app-server requests cannot idle on stdin.
+        var signalMask = sigset_t()
+        var defaultSignals = sigset_t()
+        guard sigemptyset(&signalMask) == 0,
+            sigemptyset(&defaultSignals) == 0
+        else {
+            throw CodexClientError.transportUnavailable
+        }
+        for signal in [SIGHUP, SIGINT, SIGQUIT, SIGPIPE, SIGCHLD, SIGTERM] {
+            guard sigaddset(&defaultSignals, signal) == 0 else {
+                throw CodexClientError.transportUnavailable
+            }
+        }
+        let flags = Int16(
+            POSIX_SPAWN_SETPGROUP
+                | POSIX_SPAWN_CLOEXEC_DEFAULT
+                | POSIX_SPAWN_SETSIGMASK
+                | POSIX_SPAWN_SETSIGDEF
+        )
+        guard posix_spawnattr_setflags(&attributes, flags) == 0,
+            posix_spawnattr_setsigmask(&attributes, &signalMask) == 0,
+            posix_spawnattr_setsigdefault(&attributes, &defaultSignals) == 0,
+            posix_spawnattr_setpgroup(&attributes, 0) == 0
+        else {
+            throw CodexClientError.transportUnavailable
+        }
     }
 
     private static func withMutableCStringArray<Result>(

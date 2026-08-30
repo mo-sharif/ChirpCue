@@ -146,6 +146,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         let task: Task<PreparedDeep, Error>
     }
 
+    private struct DeferredQuickPreparationWorker: Sendable {
+        let operationID: UUID
+        let task: Task<CodexBaseThread, Error>
+    }
+
     private let configuration: MeetingResponseConfiguration
     private let journal: CleanupJournalStore
     private let evidenceVerifier: any MeetingEvidenceVerifying
@@ -160,6 +165,8 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     private var runtime: MeetingResponseRuntime?
     private var remoteCapacity = RemoteCapacityState()
     private var quickBase: CodexBaseThread?
+    private var quickPreparationError: MeetingResponseError?
+    private var quickPreparationDeferred = false
     private var preparedDeep: PreparedDeep?
     private var deepPreparationError: MeetingResponseError?
     private var deepPreparationDeferred = false
@@ -176,6 +183,8 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         private var capacityCheckJoinedTestHook: (@Sendable (UInt64) async -> Void)?
         private var capacityCheckResumedTestHook: (@Sendable (UInt64) async -> Void)?
         private var capacityCheckAppliedTestHook: (@Sendable (UInt64) async -> Void)?
+        private var deferredQuickPreparationJoinedTestHook: (@Sendable () async -> Void)?
+        private var deferredDeepPreparationJoinedTestHook: (@Sendable () async -> Void)?
     #endif
     private var pendingOperationCancellations: [UUID: PendingOperationCancellation] = [:]
     private var pendingQuickCleanups: [UUID: PendingQuickCleanup] = [:]
@@ -187,6 +196,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             task: Task<MeetingResponseRuntime, Error>
         )?
     private var deferredDeepPreparationWorker: DeferredDeepPreparationWorker?
+    private var deferredQuickPreparationWorker: DeferredQuickPreparationWorker?
     private var unresolvedPreparationThreadStarts: Set<UUID> = []
     private var cancellationTask: Task<Void, Never>?
     private var shutdownTask: Task<MeetingResponseCleanupReport, Never>?
@@ -220,6 +230,14 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             capacityCheckJoinedTestHook = joined
             capacityCheckResumedTestHook = resumed
             capacityCheckAppliedTestHook = applied
+        }
+
+        func setDeferredPreparationJoinTestHooks(
+            quick: (@Sendable () async -> Void)? = nil,
+            deep: (@Sendable () async -> Void)? = nil
+        ) {
+            deferredQuickPreparationJoinedTestHook = quick
+            deferredDeepPreparationJoinedTestHook = deep
         }
     #endif
 
@@ -355,19 +373,30 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
 
         if configuration.subscriptionQuickEnabled {
-            let quick = try await createBase(
-                client: client,
-                cwd: quickRoot,
-                workspaceRoots: [quickRoot],
-                model: quickRoute.model,
-                baseInstructions: Self.quickBaseInstructions,
-                expectedInstructionSources: [],
-                operationID: operationID
-            )
-            try requireContinuingOperation(operationID)
-            quickBase = quick
+            if client.usesDirectEphemeralResponses {
+                // Publish the verified runtime before cold, transcript-free response templates.
+                // Capture and the local cue stay live while Quick and then Deep warm separately.
+                quickBase = nil
+                quickPreparationDeferred = true
+            } else {
+                let quick = try await createBase(
+                    client: client,
+                    cwd: quickRoot,
+                    workspaceRoots: [quickRoot],
+                    model: quickRoute.model,
+                    baseInstructions: Self.quickBaseInstructions,
+                    expectedInstructionSources: [],
+                    operationID: operationID
+                )
+                try requireContinuingOperation(operationID)
+                quickBase = quick
+                quickPreparationDeferred = false
+            }
+            quickPreparationError = nil
         } else {
             quickBase = nil
+            quickPreparationError = nil
+            quickPreparationDeferred = false
         }
 
         do {
@@ -414,8 +443,10 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                 && client.runtimeCapabilities.realtimeTextV3
         )
         runtime = preparedRuntime
-        if deepPreparationDeferred {
-            startDeferredDeepPreparationIfNeeded(client: client, route: deepRoute)
+        if quickPreparationDeferred {
+            startDeferredQuickPreparationIfNeeded(route: quickRoute)
+        } else if deepPreparationDeferred {
+            startDeferredDeepPreparationIfNeeded(route: deepRoute)
         }
         unresolvedPreparationThreadStarts.remove(operationID)
         return preparedRuntime
@@ -426,9 +457,10 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     /// but lost its response before the creation callback could record the thread ID.
     private func replaceFailedPreparationClient(
         retainForRetry: Bool,
-        operationID: UUID
+        operationID: UUID,
+        preservePreparedRuntime: Bool = false
     ) async -> Bool {
-        guard runtime == nil else { return false }
+        guard runtime == nil || preservePreparedRuntime else { return false }
 
         if let failedClient = client {
             await failedClient.shutdown()
@@ -465,9 +497,18 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         pendingCapacityCheck = nil
         quickBase = nil
         preparedDeep = nil
-        deferredDeepPreparationWorker = nil
-        deepPreparationDeferred = false
         deepPreparationError = nil
+        if preservePreparedRuntime {
+            quickPreparationError = nil
+            quickPreparationDeferred = configuration.subscriptionQuickEnabled
+            deepPreparationDeferred = true
+        } else {
+            quickPreparationError = nil
+            quickPreparationDeferred = false
+            deferredQuickPreparationWorker = nil
+            deferredDeepPreparationWorker = nil
+            deepPreparationDeferred = false
+        }
         poisonedClientEpoch = nil
         recoveryBlockedError = nil
         clearResolvedThreadCleanupFailures()
@@ -663,6 +704,9 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         remoteCapacity.reset()
         pendingCapacityCheck = nil
         quickBase = nil
+        quickPreparationError = nil
+        quickPreparationDeferred = false
+        deferredQuickPreparationWorker = nil
         preparedDeep = nil
         deferredDeepPreparationWorker = nil
         deepPreparationDeferred = false
@@ -697,6 +741,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         cancellationTask = nil
         if lifecycle == .cancelling {
             lifecycle = .open
+            if quickPreparationDeferred, let runtime {
+                startDeferredQuickPreparationIfNeeded(route: runtime.quickRoute)
+            } else if deepPreparationDeferred, let runtime, client != nil {
+                startDeferredDeepPreparationIfNeeded(route: runtime.deepRoute)
+            }
         }
     }
 
@@ -980,6 +1029,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         operationID: UUID
     ) async throws -> QuickModelOutput {
         try requireContinuingOperation(operationID)
+        guard runtime != nil else { throw MeetingResponseError.notPrepared }
+        if quickPreparationDeferred {
+            try await prepareDeferredQuick(operationID: operationID)
+        }
+        if let quickPreparationError { throw quickPreparationError }
         guard let runtime, let quickBase, let client else {
             throw MeetingResponseError.notPrepared
         }
@@ -1131,7 +1185,19 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         operationID: UUID
     ) async throws -> DeepDraft {
         try requireContinuingOperation(operationID)
-        guard let runtime, let client else { throw MeetingResponseError.notPrepared }
+        guard let initialRuntime = runtime else {
+            throw MeetingResponseError.notPrepared
+        }
+        if deepPreparationDeferred {
+            try await prepareDeferredDeep(
+                route: initialRuntime.deepRoute,
+                operationID: operationID
+            )
+        }
+        if let deepPreparationError { throw deepPreparationError }
+        guard let runtime, let client, let preparedDeep else {
+            throw MeetingResponseError.groundingUnavailable
+        }
         let epoch = clientEpoch
         try await requireRemoteCapacityForGeneration(
             client: client,
@@ -1152,15 +1218,6 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
 
         do {
-            if deepPreparationDeferred {
-                try await prepareDeferredDeep(
-                    client: client,
-                    route: runtime.deepRoute,
-                    operationID: operationID
-                )
-            }
-            if let deepPreparationError { throw deepPreparationError }
-            guard let preparedDeep else { throw MeetingResponseError.groundingUnavailable }
             let output = try await performDeep(
                 for: turn,
                 operationID: operationID,
@@ -1181,17 +1238,165 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
     }
 
+    private func prepareDeferredQuick(operationID: UUID) async throws {
+        guard quickPreparationDeferred else {
+            if let quickPreparationError { throw quickPreparationError }
+            return
+        }
+        guard let runtime else { throw MeetingResponseError.notPrepared }
+        if deferredQuickPreparationWorker == nil {
+            guard client != nil else { throw MeetingResponseError.runtimeUnavailable }
+            startDeferredQuickPreparationIfNeeded(route: runtime.quickRoute)
+        }
+        guard let worker = deferredQuickPreparationWorker else {
+            if let quickPreparationError { throw quickPreparationError }
+            throw MeetingResponseError.runtimeUnavailable
+        }
+        #if DEBUG
+            if let deferredQuickPreparationJoinedTestHook {
+                await deferredQuickPreparationJoinedTestHook()
+            }
+        #endif
+        let result = await worker.task.result
+        try requireContinuingOperation(operationID)
+        completeDeferredQuickPreparation(result, operationID: worker.operationID)
+        if let quickPreparationError { throw quickPreparationError }
+        guard quickBase != nil else { throw MeetingResponseError.runtimeUnavailable }
+    }
+
+    private func startDeferredQuickPreparationIfNeeded(
+        route: CodexModelRoute
+    ) {
+        guard lifecycle == .open,
+            quickPreparationDeferred,
+            client != nil,
+            deferredQuickPreparationWorker == nil
+        else { return }
+
+        let operationID = beginPublicOperation(.prepare)
+        let task = Task.detached {
+            try await self.performDeferredQuickPreparation(
+                route: route,
+                operationID: operationID
+            )
+        }
+        deferredQuickPreparationWorker = DeferredQuickPreparationWorker(
+            operationID: operationID,
+            task: task
+        )
+        installLocalCancellation(of: task, operationID: operationID)
+        Task { [weak self] in
+            let result = await task.result
+            await self?.completeDeferredQuickPreparation(
+                result,
+                operationID: operationID
+            )
+        }
+    }
+
+    private func performDeferredQuickPreparation(
+        route: CodexModelRoute,
+        operationID: UUID
+    ) async throws -> CodexBaseThread {
+        let quickRoot = try privateDirectoryURL(named: "quick-context")
+        var retriesRemaining = 2
+
+        while true {
+            try requireContinuingOperation(operationID)
+            guard let currentClient = client else {
+                throw MeetingResponseError.runtimeUnavailable
+            }
+            do {
+                return try await createBase(
+                    client: currentClient,
+                    cwd: quickRoot,
+                    workspaceRoots: [quickRoot],
+                    model: route.model,
+                    baseInstructions: Self.quickBaseInstructions,
+                    expectedInstructionSources: [],
+                    operationID: operationID
+                )
+            } catch {
+                let unresolvedThreadStart = unresolvedPreparationThreadStarts.contains(operationID)
+                let cancelled = error is CancellationError || operationWasCancelled(operationID)
+                if cancelled, !unresolvedThreadStart { throw CancellationError() }
+
+                let transient = Self.isRetriablePreparationTransportFailure(error)
+                guard unresolvedThreadStart || transient else { throw Self.map(error) }
+                let shouldRetry = transient && retriesRemaining > 0 && !cancelled
+                let cleanup = Task.detached {
+                    await self.replaceFailedPreparationClient(
+                        retainForRetry: !cancelled,
+                        operationID: operationID,
+                        preservePreparedRuntime: true
+                    )
+                }
+                guard await cleanup.value else { throw MeetingResponseError.cleanupFailed }
+                if cancelled { throw CancellationError() }
+                guard shouldRetry else { throw Self.map(error) }
+                retriesRemaining -= 1
+            }
+        }
+    }
+
+    private func completeDeferredQuickPreparation(
+        _ result: Result<CodexBaseThread, Error>,
+        operationID: UUID
+    ) {
+        guard deferredQuickPreparationWorker?.operationID == operationID else { return }
+        deferredQuickPreparationWorker = nil
+        completePublicOperation(operationID)
+
+        switch result {
+        case .success(let base) where lifecycle == .open:
+            quickBase = base
+            quickPreparationError = nil
+            quickPreparationDeferred = false
+        case .failure(let error) where !(error is CancellationError) && lifecycle == .open:
+            quickBase = nil
+            quickPreparationError = Self.safeMeetingError(error)
+            quickPreparationDeferred = false
+        case .success, .failure:
+            break
+        }
+
+        if lifecycle == .open,
+            deepPreparationDeferred,
+            client != nil,
+            let runtime
+        {
+            startDeferredDeepPreparationIfNeeded(route: runtime.deepRoute)
+        }
+    }
+
     private func prepareDeferredDeep(
-        client: any CodexMeetingClient,
         route: CodexModelRoute,
         operationID: UUID
     ) async throws {
+        if quickPreparationDeferred {
+            do {
+                try await prepareDeferredQuick(operationID: operationID)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Deep owns a separate response template. A failed optional Quick warm-up must
+                // not suppress the detailed lane after cleanup has installed a healthy client.
+            }
+        }
         guard deepPreparationDeferred else { return }
-        startDeferredDeepPreparationIfNeeded(client: client, route: route)
+        if deferredDeepPreparationWorker == nil {
+            guard client != nil else { throw MeetingResponseError.runtimeUnavailable }
+            startDeferredDeepPreparationIfNeeded(route: route)
+        }
         guard let worker = deferredDeepPreparationWorker else {
             if let deepPreparationError { throw deepPreparationError }
             throw MeetingResponseError.groundingUnavailable
         }
+        #if DEBUG
+            if let deferredDeepPreparationJoinedTestHook {
+                await deferredDeepPreparationJoinedTestHook()
+            }
+        #endif
         let result = await worker.task.result
         try requireContinuingOperation(operationID)
         switch result {
@@ -1206,19 +1411,18 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         }
     }
 
-    private func startDeferredDeepPreparationIfNeeded(
-        client: any CodexMeetingClient,
-        route: CodexModelRoute
-    ) {
+    private func startDeferredDeepPreparationIfNeeded(route: CodexModelRoute) {
         guard lifecycle == .open,
             deepPreparationDeferred,
+            !quickPreparationDeferred,
+            client != nil,
+            deferredQuickPreparationWorker == nil,
             deferredDeepPreparationWorker == nil
         else { return }
 
         let operationID = beginPublicOperation(.prepare)
         let task = Task.detached {
             try await self.performDeferredDeepPreparation(
-                client: client,
                 route: route,
                 operationID: operationID
             )
@@ -1238,7 +1442,6 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     private func performDeferredDeepPreparation(
-        client: any CodexMeetingClient,
         route: CodexModelRoute,
         operationID: UUID
     ) async throws -> PreparedDeep {
@@ -1246,17 +1449,50 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         let packagedSkillRoot = PackagedMeetingSkillStager.destination(
             in: configuration.meetingPrivateRoot
         )
-        try await client.setSkillExtraRoots([packagedSkillRoot.path])
-        try requireContinuingOperation(operationID)
-        let prepared = try await prepareDeep(
-            client: client,
-            route: route,
-            generalContextRoot: quickRoot,
-            packagedSkillRoot: packagedSkillRoot,
-            operationID: operationID
-        )
-        try requireContinuingOperation(operationID)
-        return prepared
+        var retriesRemaining = 2
+
+        while true {
+            try requireContinuingOperation(operationID)
+            guard let currentClient = self.client else {
+                throw MeetingResponseError.runtimeUnavailable
+            }
+            do {
+                if !currentClient.usesDirectEphemeralResponses
+                    || configuration.groundingSnapshot != nil
+                {
+                    try await currentClient.setSkillExtraRoots([packagedSkillRoot.path])
+                    try requireContinuingOperation(operationID)
+                }
+                let prepared = try await prepareDeep(
+                    client: currentClient,
+                    route: route,
+                    generalContextRoot: quickRoot,
+                    packagedSkillRoot: packagedSkillRoot,
+                    operationID: operationID
+                )
+                try requireContinuingOperation(operationID)
+                return prepared
+            } catch {
+                let unresolvedThreadStart = unresolvedPreparationThreadStarts.contains(operationID)
+                let cancelled = error is CancellationError || operationWasCancelled(operationID)
+                if cancelled, !unresolvedThreadStart { throw CancellationError() }
+
+                let transient = Self.isRetriablePreparationTransportFailure(error)
+                guard unresolvedThreadStart || transient else { throw Self.map(error) }
+                let shouldRetry = transient && retriesRemaining > 0 && !cancelled
+                let cleanup = Task.detached {
+                    await self.replaceFailedPreparationClient(
+                        retainForRetry: !cancelled,
+                        operationID: operationID,
+                        preservePreparedRuntime: true
+                    )
+                }
+                guard await cleanup.value else { throw MeetingResponseError.cleanupFailed }
+                if cancelled { throw CancellationError() }
+                guard shouldRetry else { throw Self.map(error) }
+                retriesRemaining -= 1
+            }
+        }
     }
 
     private func completeDeferredDeepPreparation(
@@ -1404,6 +1640,11 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         operationID: UUID
     ) async throws -> Reconciliation {
         try requireContinuingOperation(operationID)
+        guard runtime != nil, client != nil else { throw MeetingResponseError.notPrepared }
+        if quickPreparationDeferred {
+            try await prepareDeferredQuick(operationID: operationID)
+        }
+        if let quickPreparationError { throw quickPreparationError }
         guard let runtime, let quickBase, let client else {
             throw MeetingResponseError.notPrepared
         }
@@ -1529,7 +1770,9 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         return CodexAppServerConfiguration(
             executableURL: configuration.executableURL,
             expectedCodexHome: isolated.profileRoot,
-            requestTimeout: .seconds(10),
+            // Response-template and cleanup RPCs run outside the visible lane and can exceed ten
+            // seconds on a cold app-server. Coordinator deadlines still bound user-facing work.
+            requestTimeout: .seconds(20),
             clientVersion: configuration.clientVersion,
             permissionProfileID: isolated.permissionProfileID,
             enableRealtimeQuick: configuration.subscriptionQuickEnabled
@@ -1593,6 +1836,9 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         remoteCapacity.reset()
         pendingCapacityCheck = nil
         quickBase = nil
+        quickPreparationError = nil
+        quickPreparationDeferred = false
+        deferredQuickPreparationWorker = nil
         preparedDeep = nil
         deferredDeepPreparationWorker = nil
         deepPreparationError = nil
@@ -1619,7 +1865,9 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         recoveryOperationID = operationID
         do {
             let quick: CodexBaseThread?
-            if configuration.subscriptionQuickEnabled {
+            if configuration.subscriptionQuickEnabled,
+                !replacement.client.usesDirectEphemeralResponses
+            {
                 quick = try await createBase(
                     client: replacement.client,
                     cwd: replacement.quickRoot,
@@ -1650,6 +1898,10 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
             clientEpoch &+= 1
             runtime = replacementRuntime
             quickBase = quick
+            quickPreparationError = nil
+            quickPreparationDeferred =
+                configuration.subscriptionQuickEnabled
+                && replacement.client.usesDirectEphemeralResponses
             preparedDeep = deep
             deepPreparationError = nil
             deepPreparationDeferred = replacement.client.usesDirectEphemeralResponses
@@ -1864,6 +2116,19 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         guard configuration.selectedDomainSkillName == nil else {
             throw MeetingResponseError.skillPolicyMismatch
         }
+        if client.usesDirectEphemeralResponses {
+            let base = try await createBase(
+                client: client,
+                cwd: generalContextRoot,
+                workspaceRoots: [generalContextRoot],
+                model: route.model,
+                baseInstructions: Self.generalDeepBaseInstructions,
+                expectedInstructionSources: [],
+                operationID: operationID
+            )
+            try requireContinuingOperation(operationID)
+            return PreparedDeep(base: base, snapshot: nil, skills: [])
+        }
         let skills = try await enforceSkillPolicy(
             client: client,
             contextRoot: generalContextRoot,
@@ -1974,8 +2239,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         try requireContinuingOperation(operationID)
 
         let tracksUnresolvedStart =
-            runtime == nil
-            && recoveryOperationID == nil
+            recoveryOperationID == nil
             && publicOperations[operationID]?.kind == .prepare
 
         if tracksUnresolvedStart {
@@ -1999,7 +2263,9 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
         } catch let failure as CodexCreatedThreadFailure {
             throw await handleCreatedThreadFailure(failure, client: client)
         } catch {
-            if Self.isRetriablePreparationTransportFailure(error), runtime == nil {
+            if Self.isRetriablePreparationTransportFailure(error),
+                runtime == nil || publicOperations[operationID]?.kind == .prepare
+            {
                 throw error
             }
             throw Self.map(error)

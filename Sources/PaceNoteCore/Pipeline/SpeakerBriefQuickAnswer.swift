@@ -34,6 +34,7 @@ public enum SpeakerBriefQuickAnswer {
         for (index, sentence) in sentences(in: brief).enumerated() {
             let sentenceWordCount = wordCount(sentence)
             guard sentenceWordCount <= 24 else { continue }
+            guard isFirstPersonFact(sentence) else { continue }
             guard GeneralGuidancePolicy.accepts(sentence) else { continue }
             let sentenceTerms = terms(in: sentence)
             let overlapCount = questionTerms.intersection(sentenceTerms).count
@@ -116,5 +117,16 @@ public enum SpeakerBriefQuickAnswer {
 
     private static func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace }).count
+    }
+
+    private static func isFirstPersonFact(_ text: String) -> Bool {
+        text.lowercased().split(whereSeparator: { $0.isWhitespace }).contains { rawToken in
+            let token = rawToken.trimmingCharacters(in: .punctuationCharacters)
+            return token == "i"
+                || token == "me"
+                || token == "my"
+                || token.hasPrefix("i'")
+                || token.hasPrefix("i’")
+        }
     }
 }

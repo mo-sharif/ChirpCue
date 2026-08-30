@@ -112,6 +112,42 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         XCTAssertEqual(report.failures, [])
     }
 
+    func testDirectPreparationPublishesRuntimeBeforeQuickTemplateWarmupCompletes() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let gate = SuspendedCallGate()
+        let runtimeReady = expectation(description: "runtime published before Quick warm-up")
+        let client = FakeMeetingCodexClient(
+            realtime: false,
+            directEphemeralResponses: true,
+            baseCreationGate: gate
+        )
+        let generator = fixture.generator(client: client)
+
+        let preparation = Task {
+            let runtime = try await generator.prepare()
+            runtimeReady.fulfill()
+            return runtime
+        }
+
+        await gate.waitUntilSuspended()
+        await fulfillment(
+            of: [runtimeReady],
+            timeout: 1,
+            enforceOrder: true
+        )
+
+        await gate.release()
+        _ = try await preparation.value
+
+        // Quick completion starts the serialized Deep warm-up. Release that explicit gate too so
+        // shutdown can prove every background preparation operation was joined.
+        await gate.waitUntilSuspended()
+        await gate.release()
+        let report = await generator.shutdown()
+        XCTAssertTrue(report.failures.isEmpty)
+    }
+
     func testStableSubscriptionQuickCanDisableExperimentalRealtimeTransport() async throws {
         let fixture = try ResponseGeneratorFixture()
         defer { fixture.cleanup() }
@@ -1459,6 +1495,7 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         defer { fixture.cleanup() }
         let turn = fixture.turn(generation: 1)
         let rateLimitGate = SuspendedCallGate()
+        let joinProbe = CapacityJoinProbe()
         let client = FakeMeetingCodexClient(
             realtime: false,
             quickOutputs: [try Self.json(Self.quickOutput(for: turn))],
@@ -1470,11 +1507,14 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
         )
         let generator = fixture.generator(client: client)
         _ = try await generator.prepare()
+        await generator.setCapacityCheckTestHooks(
+            joined: { revision in await joinProbe.record(revision) }
+        )
 
         let deep = Task { try await generator.generateDeep(for: turn) }
         await rateLimitGate.waitUntilSuspended()
         let quick = Task { try await generator.generateQuick(for: turn) }
-        for _ in 0..<100 { await Task.yield() }
+        await joinProbe.waitUntilObserved(revision: 1, count: 2)
 
         let readsWhileSuspended = await client.rateLimitReadCount()
         let forksWhileSuspended = await client.forkCount()
@@ -2304,6 +2344,140 @@ final class CodexMeetingResponseGeneratorTests: XCTestCase {
 
         let cleanup = await generator.shutdown()
         XCTAssertTrue(cleanup.failures.isEmpty)
+    }
+
+    func testDeferredDeepWarmupReplacesTimedOutClientAndStillGenerates() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.generalTurn(generation: 1)
+        let replacementGate = SuspendedCallGate()
+        let joinProbe = DeferredPreparationJoinProbe()
+        let expected = DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext:
+                "I’d separate exclusivity from capacity: use a mutex for one owner, and a semaphore when a bounded number of workers may proceed.",
+            confidence: 0.84,
+            basis: []
+        )
+        let threadStore = FakePersistentThreadStore()
+        let failedClient = FakeMeetingCodexClient(
+            realtime: false,
+            directEphemeralResponses: true,
+            lostBaseResponseNumber: 1,
+            threadIDPrefix: "failed-",
+            threadStore: threadStore
+        )
+        let replacement = FakeMeetingCodexClient(
+            realtime: false,
+            directEphemeralResponses: true,
+            turnOutputs: [try Self.json(expected)],
+            threadIDPrefix: "replacement-",
+            threadStore: threadStore
+        )
+        let factory = SequencedCodexClientFactory(
+            clients: [failedClient, replacement],
+            replacementGate: replacementGate
+        )
+        let generator = fixture.generator(
+            clientFactory: { configuration in
+                try await factory.connect(configuration)
+            },
+            includeGrounding: false,
+            subscriptionQuickEnabled: false
+        )
+        await generator.setDeferredPreparationJoinTestHooks(deep: {
+            await joinProbe.record()
+        })
+
+        _ = try await generator.prepare()
+        await replacementGate.waitUntilSuspended()
+        let generation = Task {
+            try await generator.generateDeep(for: turn)
+        }
+        await joinProbe.waitUntilObserved()
+        await replacementGate.release()
+        let generated = try await generation.value
+
+        XCTAssertEqual(generated, expected)
+        let factoryCalls = await factory.callCount()
+        let failedShutdowns = await failedClient.shutdownCallCount()
+        let replacementDeleted = await replacement.deletedThreadIDs()
+        XCTAssertEqual(factoryCalls, 2)
+        XCTAssertEqual(failedShutdowns, 1)
+        XCTAssertTrue(replacementDeleted.contains("failed-base-1"))
+        let cleanup = await generator.shutdown()
+        XCTAssertTrue(cleanup.failures.isEmpty)
+    }
+
+    func testDeferredQuickWarmupJoinsClientReplacementAndStillGenerates() async throws {
+        let fixture = try ResponseGeneratorFixture()
+        defer { fixture.cleanup() }
+        let turn = fixture.generalTurn(generation: 1)
+        let replacementGate = SuspendedCallGate()
+        let joinProbe = DeferredPreparationJoinProbe()
+        let expected = QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            sayNow:
+                "I’d start with the React timeline, then use one recent application to show the architecture and impact.",
+            needsDeep: true,
+            confidence: 0.7,
+            reason: "subscription_sol_low_fast"
+        )
+        let threadStore = FakePersistentThreadStore()
+        let failedClient = FakeMeetingCodexClient(
+            realtime: false,
+            directEphemeralResponses: true,
+            lostBaseResponseNumber: 1,
+            threadIDPrefix: "failed-",
+            threadStore: threadStore
+        )
+        let replacement = FakeMeetingCodexClient(
+            realtime: false,
+            directEphemeralResponses: true,
+            quickOutputs: [try Self.json(["sayNow": expected.sayNow])],
+            threadIDPrefix: "replacement-",
+            threadStore: threadStore
+        )
+        let factory = SequencedCodexClientFactory(
+            clients: [failedClient, replacement],
+            replacementGate: replacementGate
+        )
+        let generator = fixture.generator(
+            clientFactory: { configuration in
+                try await factory.connect(configuration)
+            },
+            includeGrounding: false,
+            subscriptionQuickEnabled: true
+        )
+        await generator.setDeferredPreparationJoinTestHooks(quick: {
+            await joinProbe.record()
+        })
+
+        _ = try await generator.prepare()
+        await replacementGate.waitUntilSuspended()
+        let generation = Task {
+            try await generator.generateQuick(for: turn)
+        }
+        await joinProbe.waitUntilObserved()
+        await replacementGate.release()
+        let generated = try await generation.value
+        try await generator.awaitQuickCleanup(for: turn.identity)
+
+        XCTAssertEqual(generated, expected)
+        let factoryCalls = await factory.callCount()
+        let failedShutdowns = await failedClient.shutdownCallCount()
+        let replacementDeleted = await replacement.deletedThreadIDs()
+        XCTAssertEqual(factoryCalls, 2)
+        XCTAssertEqual(failedShutdowns, 1)
+        XCTAssertTrue(replacementDeleted.contains("failed-base-1"))
+        let cleanup = await generator.shutdown()
+        let remainingThreads = await threadStore.threadIDs()
+        XCTAssertTrue(cleanup.failures.isEmpty)
+        XCTAssertTrue(remainingThreads.isEmpty)
     }
 
     func testInitialPrepareTransportFailureDeletesJournaledBaseBeforeRetry() async throws {
@@ -3379,6 +3553,63 @@ private actor CompletionProbe {
     }
 }
 
+private actor DeferredPreparationJoinProbe {
+    private var observed = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func record() {
+        observed = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
+
+    func waitUntilObserved() async {
+        guard !observed else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+}
+
+private actor CapacityJoinProbe {
+    private struct Waiter {
+        let count: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private var observations: [UInt64: Int] = [:]
+    private var waiters: [UInt64: [Waiter]] = [:]
+
+    func record(_ revision: UInt64) {
+        observations[revision, default: 0] += 1
+        let observed = observations[revision, default: 0]
+        let pending = waiters.removeValue(forKey: revision) ?? []
+        var remaining: [Waiter] = []
+        for waiter in pending {
+            if observed >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        if !remaining.isEmpty {
+            waiters[revision] = remaining
+        }
+    }
+
+    func waitUntilObserved(revision: UInt64, count: Int) async {
+        guard observations[revision, default: 0] < count else { return }
+        await withCheckedContinuation { continuation in
+            waiters[revision, default: []].append(
+                Waiter(count: count, continuation: continuation)
+            )
+        }
+    }
+}
+
 private actor CapacityCheckInterleavingProbe {
     private let delayedResumeGate: SuspendedCallGate
     private var joins: [UInt64: Int] = [:]
@@ -3465,6 +3696,7 @@ private actor FakePersistentThreadStore {
 
 private actor FakeMeetingCodexClient: CodexMeetingClient {
     nonisolated let runtimeCapabilities: CodexRuntimeCapabilities
+    nonisolated let usesDirectEphemeralResponses: Bool
 
     struct SkillWrite: Equatable {
         let name: String
@@ -3531,6 +3763,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
 
     init(
         realtime: Bool,
+        directEphemeralResponses: Bool = false,
         quickOutputs: [String] = [],
         turnOutputs: [String] = [],
         quickTerminalStatuses: [String] = [],
@@ -3573,6 +3806,7 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
         confirmsAbsentAfterDeleteFailure: Bool = false
     ) {
         runtimeCapabilities = .init(realtimeTextV3: realtime)
+        usesDirectEphemeralResponses = directEphemeralResponses
         self.quickOutputs = quickOutputs
         self.turnOutputs = turnOutputs
         self.quickTerminalStatuses = quickTerminalStatuses
@@ -3774,6 +4008,24 @@ private actor FakeMeetingCodexClient: CodexMeetingClient {
             )
         }
         return base
+    }
+
+    func prepareResponseTemplate(
+        cwd: String,
+        runtimeWorkspaceRoots: [String],
+        model: String,
+        baseInstructions: String?,
+        expectedInstructionSources: [String],
+        onCreated: @Sendable (String) async throws -> Void
+    ) async throws -> CodexBaseThread {
+        _ = expectedInstructionSources
+        return try await createPersistentBase(
+            cwd: cwd,
+            runtimeWorkspaceRoots: usesDirectEphemeralResponses ? [cwd] : runtimeWorkspaceRoots,
+            model: model,
+            baseInstructions: baseInstructions,
+            onCreated: onCreated
+        )
     }
 
     func forkEphemeral(from base: CodexBaseThread, model: String?) async throws

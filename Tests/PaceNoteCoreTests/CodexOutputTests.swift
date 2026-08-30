@@ -97,7 +97,7 @@ final class CodexOutputTests: XCTestCase {
             model(id: "gpt-5.6-terra", efforts: ["low", "medium", "high"]),
             model(
                 id: "gpt-5.6-sol",
-                efforts: ["low", "high"],
+                efforts: ["low", "medium", "high"],
                 serviceTiers: ["priority"]
             ),
         ]
@@ -107,7 +107,10 @@ final class CodexOutputTests: XCTestCase {
             try router.route(for: .quick),
             .init(model: "gpt-5.6-sol", effort: "low", serviceTier: "priority")
         )
-        XCTAssertEqual(try router.route(for: .narrowTechnical), .init(model: "gpt-5.6-terra", effort: "medium"))
+        XCTAssertEqual(
+            try router.route(for: .narrowTechnical),
+            .init(model: "gpt-5.6-sol", effort: "medium")
+        )
         XCTAssertEqual(try router.route(for: .hardTechnical), .init(model: "gpt-5.6-sol", effort: "high"))
     }
 

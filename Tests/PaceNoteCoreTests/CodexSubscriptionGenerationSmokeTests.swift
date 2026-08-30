@@ -68,8 +68,9 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
             add(latencyAttachment)
         } catch {
             let stage = await recorder.stageTrace()
+            let diagnostic = fixture.safeDeepOutputDiagnostic(await recorder.rawOutputs())
             XCTFail(
-                "Subscription smoke failed at safe stage \(stage) with \(String(describing: error))."
+                "Subscription smoke failed at safe stage \(stage) [\(diagnostic)] with \(String(describing: error))."
             )
             primaryError = error
         }
@@ -91,11 +92,11 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         guard cleanup.failures.isEmpty else {
             throw LiveSubscriptionSmokeError.cleanupFailed
         }
-        XCTAssertEqual(cleanup.responseDeletedThreadCount, 1)
+        XCTAssertEqual(cleanup.responseDeletedThreadCount, 0)
         let successfulDeletes = await recorder.successfulThreadDeleteCount()
         let confirmedAbsentEphemeralThreads = await recorder.confirmedAbsentThreadCount()
         XCTAssertEqual(successfulDeletes, 1)
-        XCTAssertEqual(confirmedAbsentEphemeralThreads, 1)
+        XCTAssertEqual(confirmedAbsentEphemeralThreads, 0)
     }
 
     func testOneRepositoryFreeDeepResponseThenZeroize() async throws {
@@ -138,8 +139,9 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
             XCTAssertEqual(generationCounts.deep, 1)
         } catch {
             let stage = await recorder.stageTrace()
+            let diagnostic = fixture.safeDeepOutputDiagnostic(await recorder.rawOutputs())
             XCTFail(
-                "Repository-free subscription smoke failed at safe stage \(stage) with \(String(describing: error))."
+                "Repository-free subscription smoke failed at safe stage \(stage) [\(diagnostic)] with \(String(describing: error))."
             )
             primaryError = error
         }
@@ -163,9 +165,9 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         }
         let successfulDeletes = await recorder.successfulThreadDeleteCount()
         let confirmedAbsentEphemeralThreads = await recorder.confirmedAbsentThreadCount()
-        XCTAssertEqual(cleanup.responseDeletedThreadCount, 1)
+        XCTAssertEqual(cleanup.responseDeletedThreadCount, 0)
         XCTAssertEqual(successfulDeletes, 1)
-        XCTAssertEqual(confirmedAbsentEphemeralThreads, 1)
+        XCTAssertEqual(confirmedAbsentEphemeralThreads, 0)
     }
 
     func testOneRepositoryFreeQuickResponseThenZeroize() async throws {
@@ -248,10 +250,12 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         guard cleanup.failures.isEmpty else {
             throw LiveSubscriptionSmokeError.cleanupFailed
         }
-        XCTAssertEqual(cleanup.responseDeletedThreadCount, 0)
+        // Quick consumes and deletes its prewarmed thread. The serialized Deep template remains
+        // transcript-free and is deleted when the meeting generator shuts down.
+        XCTAssertEqual(cleanup.responseDeletedThreadCount, 1)
         let successfulDeletes = await recorder.successfulThreadDeleteCount()
         let confirmedAbsentThreads = await recorder.confirmedAbsentThreadCount()
-        XCTAssertEqual(successfulDeletes, 1)
+        XCTAssertEqual(successfulDeletes, 2)
         XCTAssertEqual(confirmedAbsentThreads, 0)
     }
 
@@ -694,6 +698,34 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
                 throw LiveSubscriptionSmokeError.invalidEvidence
             }
         }
+    }
+
+    func safeDeepOutputDiagnostic(_ outputs: LiveRawOutputs) -> String {
+        guard let text = outputs.deep.last else { return "deep-raw-missing" }
+        guard let object = try? Self.jsonObject(text) else { return "deep-json-invalid" }
+        let candidate = object["candidateSayNext"]?.stringValue ?? ""
+        let expectedKeys = Set([
+            "turnID", "generation", "groundingFingerprint", "kind", "candidateSayNext",
+            "confidence", "basis", "missingEvidence",
+        ])
+        let keysMatch = Set(object.keys) == expectedKeys
+        let turnMatches =
+            object["turnID"]?.stringValue == generalTurn.identity.turnID.uuidString
+            || object["turnID"]?.stringValue == turn.identity.turnID.uuidString
+        let basisCount = object["basis"]?.arrayValue?.count ?? -1
+        let missingCount = object["missingEvidence"]?.arrayValue?.count ?? -1
+        return [
+            keysMatch ? "keys-ok" : "keys-bad",
+            turnMatches ? "turn-ok" : "turn-bad",
+            "kind-\(CodexSafeLabel.capability(object["kind"]?.stringValue ?? "missing"))",
+            "words-\(Self.wordCount(candidate))",
+            "bytes-\(candidate.utf8.count)",
+            GeneralGuidancePolicy.rejectionReason(for: candidate).map {
+                "general-\($0.rawValue)"
+            } ?? "general-ok",
+            "basis-\(basisCount)",
+            "missing-\(missingCount)",
+        ].joined(separator: ",")
     }
 
     func assertValidGeneral(deep: DeepDraft) throws {
@@ -1373,15 +1405,22 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
         expectedInstructionSources: [String],
         onCreated: @Sendable (String) async throws -> Void
     ) async throws -> CodexBaseThread {
-        await recorder.recordStage("create-template-\(runtimeWorkspaceRoots.count)-roots")
-        return try await client.prepareResponseTemplate(
-            cwd: cwd,
-            runtimeWorkspaceRoots: runtimeWorkspaceRoots,
-            model: model,
-            baseInstructions: baseInstructions,
-            expectedInstructionSources: expectedInstructionSources,
-            onCreated: onCreated
+        await recorder.recordStage(
+            "create-template-\(runtimeWorkspaceRoots.count)-roots-\(CodexSafeLabel.capability(model))"
         )
+        do {
+            return try await client.prepareResponseTemplate(
+                cwd: cwd,
+                runtimeWorkspaceRoots: runtimeWorkspaceRoots,
+                model: model,
+                baseInstructions: baseInstructions,
+                expectedInstructionSources: expectedInstructionSources,
+                onCreated: onCreated
+            )
+        } catch {
+            await recorder.recordStage(Self.safeClientStage("template", for: error))
+            throw error
+        }
     }
 
     func forkEphemeral(

@@ -12,13 +12,14 @@ This is the completion contract for the personal production build. A checked ite
 - [ ] A clean-checkout test, lint, release build, package, and verification sequence passes at the final committed revision.
 - [ ] Debug and release builds are confirmed warning-free from a clean checkout at the final committed revision.
 - [x] Grounding test fixtures use throwing XCTest teardown blocks, so an owned temporary repository that cannot be removed fails visibly instead of leaving silent residue.
-- [x] Version `0.3.12` documents completed instant technical Quick answers, the bounded Apple improvement lane, meeting-scoped timeout circuit, expanded ambiguity checks, and unchanged live, manual, and distribution gates.
+- [x] Version `0.3.13` documents the Codex child-process signal fix, nonblocking template preparation, bounded retry, Sol Quick and narrow-technical routing, and unchanged live, manual, and distribution gates.
 
 ## Codex subscription path
 
 - [x] Codex discovery accepts only the two official ChatGPT/Codex application-bundle paths, validates the OpenAI Team ID, `codex` signing identifier, executable path, symlink status, and minimum protocol version without reading credentials, and accepts newer official builds subject to runtime capability and protocol checks.
 - [x] Version and schema preflight subprocesses have timeout, output-cap, cancellation, force-kill, process-reaping, no-follow regular-file, and schema-size coverage.
 - [x] The JSONL client, strict output decoding, handshake ordering, cancellation, process shutdown, and malformed-output paths have fixture coverage.
+- [x] Codex app-server children start with an empty inherited signal mask and conventional default process signals; deterministic transport coverage prevents a macOS or XCTest host from leaving `thread/start` idle on standard input.
 - [x] Required app-server methods, generated schema, and a zero-generation read-only lifecycle have been probed on the development environment.
 - [x] The dedicated ChirpCue profile enforces Keychain credential storage, a scrubbed environment, restrictive features, and rejection of plaintext credential files. History is enabled only for transcript-free fork bases; every response turn remains ephemeral and its base is deleted at teardown.
 - [x] Codex subprocesses keep the authoritative macOS `HOME` so Security.framework can resolve the default Keychain while `CODEX_HOME` remains isolated; inherited `HOME` values and profile-as-home regressions are covered.
@@ -76,7 +77,7 @@ This is the completion contract for the personal production build. A checked ite
 ## Response behavior
 
 - [x] Every eligible production turn immediately displays a deterministic question-aware local cue, including while the selected provider runtime is still preparing, then starts generated Quick and high-reasoning Deep independently. A matching user-written fact or one of 52 reviewed technical responses is labeled as completed Quick immediately, while uncovered questions retain a bridge. Apple gets three seconds to improve an uncovered cue; a timeout or failure opens a meeting-scoped circuit and leaves the provider the rest of the 15-second Quick window. An identical result is suppressed so the answer does not flicker. Deep starts immediately after a local Quick succeeds; when provider Quick is needed, it retains a one-second queue head start. Deep remains eligible for 90 seconds. Model-controlled `needsDeep` never suppresses Deep.
-- [ ] Codex 0.150 passes repeated cold and warm live Quick and Deep latency probes without intermittent `thread/start` or turn stalls. Until then, the local bridge is the only hard real-time guarantee.
+- [ ] Repeat the post-fix Codex 0.150 cold and warm Quick and Deep probes across more machines before treating subscription latency as a hard guarantee. The final repository-free Quick run passed its eight-second provider deadline and two-thread cleanup in 14.0 seconds end to end; Deep passed strict validation and cleanup in 17.1 seconds. The immediate local answer remains the hard real-time guarantee.
 - [x] Quick validation, emergency fallback, locally reconciled cue-bound Deep results, word budgets, per-thread TTL, identity-scoped cancellation, parallel follow-ups, and output-only automatic coaching have automated coverage. No third reconciliation model turn is spent.
 - [x] Progressive and final revisions retain one Speech segment ID. Punctuation-only finalization does not duplicate work, while a meaningfully expanded final question starts a second independent response thread without canceling or hiding the original.
 - [x] General Deep uses a distinct `general_answer` kind, requires a null grounding fingerprint and empty basis, rejects explicit local codebase or production-state claims, and reaches the UI with an explicit unverified-guidance label. A sealed repository no longer blocks a safe general answer based only on the optional speaker brief or broad knowledge.

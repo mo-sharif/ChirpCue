@@ -35,7 +35,7 @@ public struct CodexRoutingPolicy: Equatable, Sendable {
 
     public static let codex_0_147 = CodexRoutingPolicy(
         quickModels: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.3-codex-spark", "gpt-5.4-mini"],
-        narrowTechnicalModels: ["gpt-5.6-terra", "gpt-5.6-sol"],
+        narrowTechnicalModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
         hardTechnicalModels: ["gpt-5.6-sol", "gpt-5.6-terra"]
     )
 }
