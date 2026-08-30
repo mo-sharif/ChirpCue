@@ -86,6 +86,31 @@ public struct ResponseCoordinatorConfiguration: Sendable {
         guard bridgeText == Self.deterministicFallback else { return bridgeText }
         return LocalResponseBridge.response(for: question)
     }
+
+    public func initialCue(for turn: ConversationTurn) -> CueEnvelope {
+        if bridgeText == Self.deterministicFallback,
+            let answer = SpeakerBriefQuickAnswer.response(
+                question: turn.question,
+                brief: turn.speakerBrief
+            )
+        {
+            return CueEnvelope(
+                turnID: turn.identity.turnID,
+                generation: turn.identity.generation,
+                text: answer,
+                reason: "speaker_brief_extract",
+                isDeterministicBridge: false
+            )
+        }
+
+        return CueEnvelope(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            text: bridgeText(for: turn.question),
+            reason: "instant_local_bridge",
+            isDeterministicBridge: true
+        )
+    }
 }
 
 public actor ResponseCoordinator {
@@ -180,10 +205,7 @@ public actor ResponseCoordinator {
 
         defer { continuation.finish() }
 
-        var cue = bridge(
-            for: turn,
-            reason: "instant_local_bridge"
-        )
+        var cue = configuration.initialCue(for: turn)
         guard isActive(turn.identity), !Task.isCancelled else {
             quickOperation.task.cancel()
             deepOperation.task.cancel()
@@ -227,14 +249,17 @@ public actor ResponseCoordinator {
                         break
                     case .success(let output) where Self.valid(output, for: turn):
                         if !deepWasDisplayed {
-                            cue = CueEnvelope(
+                            let candidate = CueEnvelope(
                                 turnID: turn.identity.turnID,
                                 generation: turn.identity.generation,
                                 text: Self.limitWords(output.sayNow, maximum: 24),
                                 reason: output.reason,
                                 isDeterministicBridge: false
                             )
-                            continuation.yield(.cue(cue))
+                            if candidate.textHash != cue.textHash {
+                                cue = candidate
+                                continuation.yield(.cue(cue))
+                            }
                         }
                     case .success:
                         quickFailure = .responseRejected
@@ -442,16 +467,6 @@ public actor ResponseCoordinator {
             }
         }
         return PendingOperation(gate: gate, task: task)
-    }
-
-    private func bridge(for turn: ConversationTurn, reason: String) -> CueEnvelope {
-        CueEnvelope(
-            turnID: turn.identity.turnID,
-            generation: turn.identity.generation,
-            text: configuration.bridgeText(for: turn.question),
-            reason: reason,
-            isDeterministicBridge: true
-        )
     }
 
     private func isActive(_ identity: TurnIdentity) -> Bool {

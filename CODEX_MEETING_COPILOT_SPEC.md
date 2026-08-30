@@ -35,7 +35,7 @@ For a personal Mac app, this is the simplest credible architecture:
 2. AVAudioEngine captures the microphone.
 3. Apple's on-device Speech framework creates two timestamped transcript lanes.
 4. A local turn detector decides when the other party has probably asked a question.
-5. For every eligible turn, ChirpCue starts Quick and Deep concurrently. Codex Quick uses the fastest compatible low-effort route and may state only broadly applicable guidance; Deep uses the high-reasoning route. If Quick fails validation or misses 1.25 seconds, ChirpCue shows the fixed local bridge. Codex Deep uses a deny-by-default permission profile over an empty private context or sanitized repo/skill snapshot. Claude and Gemini retain deterministic Quick fallback and their narrower tool-free Deep contracts.
+5. For every eligible turn, ChirpCue first shows a reviewed local cue, then starts Quick and Deep independently. A matching user-written personal fact may become the first cue even while the provider runtime is preparing; otherwise ChirpCue uses a question-aware deterministic bridge. Codex Quick uses the fastest compatible low-effort route and may state only broadly applicable guidance; Deep uses the high-reasoning route. Codex Deep uses a deny-by-default permission profile over an empty private context or sanitized repo/skill snapshot. Claude and Gemini retain deterministic Quick fallback and their narrower tool-free Deep contracts.
 6. The UI keeps the fast answer or emergency bridge separate from the later visibly unverified general guidance, verified repository continuation, or fixed local clarification or hold state.
 
 This avoids the cost and latency of sending continuous audio to a realtime API. It also avoids pretending that a Codex subscription is a general-purpose OpenAI API allowance.
@@ -296,14 +296,15 @@ Every candidate question receives:
 
 Quick and Deep start concurrently for every eligible response-required turn. Codex Quick uses the fastest compatible route at low effort and must return at most 24 natural spoken words. Local policy rejects private-context claims, generic waiting language, malformed output, and stale identity. Deep always runs regardless of model-controlled `needsDeep`, using the high-reasoning route selected at runtime. Repository Deep additionally requires a fresh sealed snapshot and stable source attribution; general Deep uses an empty private context with no repository or domain skill.
 
-The visible cue is sealed exactly once:
+The visible cue is selected and bound deterministically:
 
-1. the coordinator starts Quick and Deep together under independent deadlines;
-2. a locally valid Quick answer becomes displayedCue; otherwise the coordinator seals the deterministic bridge at the Quick deadline;
-3. Deep independently returns a schema-bound DeepDraft;
-4. in repository mode, local verification accepts an answer candidate only when it exactly matches one extractive verified basis claim after case and whitespace normalization while preserving punctuation; in general mode, local validation requires `general_answer`, a null grounding fingerprint, and empty basis;
-5. a binder produces BoundDeep against exactly that cue ID, cue hash, and DeepDraft hash;
-6. only the locally validated BoundDeep bundle may display, with general guidance visibly distinguished from repository-verified evidence.
+1. the coordinator immediately emits either a safe matching sentence from the speaker brief or a deterministic question-aware bridge, without waiting for a model or prepared provider runtime;
+2. Quick and Deep start under independent deadlines as soon as the selected response runtime is available;
+3. a locally valid generated Quick may replace a bridge before Deep displays, while text identical to the existing cue is suppressed;
+4. Deep independently returns a schema-bound DeepDraft;
+5. in repository mode, local verification accepts an answer candidate only when it exactly matches one extractive verified basis claim after case and whitespace normalization while preserving punctuation; in general mode, local validation requires `general_answer`, a null grounding fingerprint, and empty basis;
+6. a binder produces BoundDeep against exactly that cue ID, cue hash, and DeepDraft hash;
+7. only the locally validated BoundDeep bundle may display, with general guidance visibly distinguished from repository-verified evidence.
 
 Local deterministic reconciliation relates the verified Deep answer to the exact cue ID and hash without spending a third model turn. It binds an answer as continue, a missing-context question as clarify, and an abstention as abstain. A Deep validation failure leaves the fast cue or bridge visible and enters `DEEP_REJECTED`; rejected text is never shown. Completion orderings are fixture-tested. Results are accepted only when meeting ID, turn ID, generation, cue binding, DeepDraft hash, and optional grounding fingerprint still match.
 
@@ -311,7 +312,7 @@ Local deterministic reconciliation relates the verified Deep answer to the exact
 
 Purpose: give the user a useful, natural first answer while Deep works.
 
-The coordinator first emits a deterministic, question-aware local answer without waiting for any provider. For a personal-background question, it may select up to two relevant, already-speakable sentences verbatim from the optional user-written speaker brief. It never paraphrases, completes, or invents a personal fact. When no safe brief match exists, the bridge selects only from reviewed staff-level response patterns, never claims private facts, and gives the user a concrete sentence to say while generated work continues.
+The coordinator first emits a deterministic, question-aware local answer without waiting for any provider. For a personal-background question, it may select up to two relevant, already-speakable sentences verbatim from the optional user-written speaker brief, including while provider preparation is still in progress. It never paraphrases, completes, or invents a personal fact. When no safe brief match exists, the bridge selects only from reviewed staff-level response patterns, never claims private facts, and gives the user a concrete sentence to say while generated work continues. If generated Quick later returns the same text, the coordinator retains the existing cue instead of replacing or repeating it.
 
 Apple's on-device model can replace the bridge inside a 15-second Quick window. When it is unavailable and Codex is selected, Quick uses GPT-5.6 Sol at low reasoning effort, requests the fastest service tier advertised by the signed-in catalog, has no repository tools, and returns only one spoken sentence. Turn identity, generation, confidence, and the decision to continue Deep are host-owned rather than model-generated. The coordinator validates word count, speakability, and absence of private-context claims before display.
 
