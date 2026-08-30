@@ -201,7 +201,7 @@ final class MeetingSessionControllerTests: XCTestCase {
                 .result(
                     transcript(
                         .output,
-                        "How should we isolate database access?",
+                        "How would you migrate a large frontend without stopping feature delivery?",
                         stability: .final
                     )
                 )
@@ -229,7 +229,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             .result(
                 transcript(
                     .output,
-                    "How should we isolate database access?",
+                    "How would you migrate a large frontend without stopping feature delivery?",
                     stability: .final
                 )
             )
@@ -252,7 +252,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         )
         let harness = makeHarness(mode: .systemOutputOnly, response: response)
         try await prepareAndStart(harness)
-        let firstQuestion = "How should we isolate database access?"
+        let firstQuestion = "How would you migrate a large frontend without stopping feature delivery?"
 
         await harness.outputTranscriber.emit(
             .result(transcript(.output, firstQuestion, stability: .final))
@@ -305,7 +305,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             .result(
                 transcript(
                     .output,
-                    "How should we isolate database access?",
+                    "How would you migrate a large frontend without stopping feature delivery?",
                     stability: .final
                 )
             )
@@ -370,7 +370,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             .result(
                 transcript(
                     .output,
-                    "How should we isolate database access?",
+                    "How would you migrate a large frontend without stopping feature delivery?",
                     stability: .final
                 )
             )
@@ -882,6 +882,7 @@ final class MeetingSessionControllerTests: XCTestCase {
     }
 
     func testCaptureAndTranscriptStartWhileResponseRuntimeIsStillPreparing() async throws {
+        let question = "How would you migrate a large frontend without stopping feature delivery?"
         let preparationBarrier = AudioOperationBarrier()
         await preparationBarrier.arm()
         let response = FakeMeetingResponseGenerator(prepareBarrier: preparationBarrier)
@@ -901,11 +902,11 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(startingState.brownouts.contains { $0.reason == .providerPreparing })
 
         await harness.outputTranscriber.emit(
-            .result(transcript(.output, "How do we secure the database?", stability: .final))
+            .result(transcript(.output, question, stability: .final))
         )
         let transcriptAndBridgeVisible = await eventually {
             let state = await harness.controller.state()
-            return state.transcript.contains { $0.text == "How do we secure the database?" }
+            return state.transcript.contains { $0.text == question }
                 && state.suggestions.contains { $0.stage == .bridge }
         }
         XCTAssertTrue(transcriptAndBridgeVisible)
@@ -978,7 +979,56 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testReviewedTechnicalAnswerAppearsAsCompletedQuickWhileRuntimeIsPreparing() async throws {
+        let question = "How does the browser event loop work?"
+        let answer = try XCTUnwrap(LocalResponseBridge.reviewedTechnicalResponse(for: question))
+        let preparationBarrier = AudioOperationBarrier()
+        await preparationBarrier.arm()
+        let response = FakeMeetingResponseGenerator(
+            prepareBarrier: preparationBarrier,
+            quickText: answer
+        )
+        let harness = makeHarness(mode: .systemOutputOnly, response: response)
+
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        try await harness.controller.start()
+        await preparationBarrier.waitUntilEntered()
+
+        await harness.outputTranscriber.emit(
+            .result(transcript(.output, question, stability: .final))
+        )
+        let immediateAnswerVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.runtime == nil
+                && state.suggestions.contains { $0.stage == .quick && $0.text == answer }
+                && !state.suggestions.contains { $0.stage == .bridge }
+        }
+        let quickRequestsBeforeRuntime = await response.requestedTurns.count
+
+        XCTAssertTrue(immediateAnswerVisible)
+        XCTAssertEqual(quickRequestsBeforeRuntime, 0)
+
+        await preparationBarrier.release()
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            let matchingQuick = state.suggestions.filter {
+                $0.stage == .quick && $0.text == answer
+            }
+            return state.runtime != nil
+                && matchingQuick.count == 1
+                && state.suggestions.contains { $0.stage == .deep }
+                && !state.brownouts.contains { $0.reason == .providerPreparing }
+        }
+
+        XCTAssertTrue(recovered)
+        _ = await harness.controller.stop()
+    }
+
     func testQuestionsDetectedDuringProviderWarmupResumeAsIndependentThreads() async throws {
+        let firstQuestion = "How would you migrate a large frontend without stopping feature delivery?"
+        let secondQuestion = "What constraints would change that migration plan?"
         let preparationBarrier = AudioOperationBarrier()
         await preparationBarrier.arm()
         let response = FakeMeetingResponseGenerator(prepareBarrier: preparationBarrier)
@@ -991,10 +1041,10 @@ final class MeetingSessionControllerTests: XCTestCase {
         await preparationBarrier.waitUntilEntered()
 
         await harness.outputTranscriber.emit(
-            .result(transcript(.output, "How do we secure the database?", stability: .final))
+            .result(transcript(.output, firstQuestion, stability: .final))
         )
         await harness.outputTranscriber.emit(
-            .result(transcript(.output, "And how does MCP change that plan?", stability: .final))
+            .result(transcript(.output, secondQuestion, stability: .final))
         )
         let bothBridgesVisible = await eventually {
             let bridges = await harness.controller.state().suggestions.filter { $0.stage == .bridge }
@@ -1012,7 +1062,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(bothDeepAnswersVisible)
         XCTAssertEqual(
             Set(requestedQuestions),
-            ["How do we secure the database?", "And how does MCP change that plan?"]
+            [firstQuestion, secondQuestion]
         )
         _ = await harness.controller.stop()
     }
@@ -2598,6 +2648,7 @@ final class MeetingSessionControllerTests: XCTestCase {
     }
 
     func testQuickAndDeepUpgradesWaitUntilFinalLocalSpeechBeforeReplacingCue() async throws {
+        let question = "How would you migrate a large frontend without stopping feature delivery?"
         let clock = LockedMeetingTime(10)
         let quickBarrier = AudioOperationBarrier()
         let deepBarrier = AudioOperationBarrier()
@@ -2616,11 +2667,11 @@ final class MeetingSessionControllerTests: XCTestCase {
             responseQuickDeadline: .seconds(1)
         )
         try await prepareAndStart(harness)
-        try await harness.controller.submitTypedQuestion("How does the browser event loop work?")
+        try await harness.controller.submitTypedQuestion(question)
 
         let bridgeArrived = await eventually {
             await harness.controller.state().suggestions.contains {
-                $0.stage == .bridge && $0.text.contains("runs synchronous JavaScript first")
+                $0.stage == .bridge && $0.text == LocalResponseBridge.response(for: question)
             }
         }
         XCTAssertTrue(bridgeArrived)

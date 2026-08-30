@@ -13,7 +13,8 @@ final class LowLatencyMeetingResponseGeneratorTests: XCTestCase {
             provider: provider,
             quickGenerator: quick,
             planType: "plus",
-            providerName: "codex"
+            providerName: "codex",
+            quickPathDecisionWindow: .seconds(2)
         )
 
         let clock = ContinuousClock()
@@ -32,7 +33,13 @@ final class LowLatencyMeetingResponseGeneratorTests: XCTestCase {
 
         await gate.waitUntilEntered()
         await gate.release()
+        let deepStartedAt = ContinuousClock().now
         _ = try await generator.generateDeep(for: turn)
+        XCTAssertLessThan(
+            deepStartedAt.duration(to: ContinuousClock().now),
+            .milliseconds(200),
+            "Quick cleanup must not erase the local-success decision before Deep consumes it."
+        )
         _ = await generator.shutdown()
     }
 
@@ -197,6 +204,59 @@ final class LowLatencyMeetingResponseGeneratorTests: XCTestCase {
         _ = await generator.shutdown()
     }
 
+    func testHungLocalModelYieldsToProviderQuickAndOpensCircuitForLaterTurns() async throws {
+        let firstTurn = Self.turn(generation: 8)
+        let providerGate = ProviderPreparationGate()
+        let localGate = ControlledQuickSuspension()
+        let deadline = ManualQuickDeadline()
+        let local = SuspendedLocalQuickGenerator(gate: localGate)
+        let bounded = BoundedLocalQuickGenerator(
+            base: local,
+            waitForDeadline: {
+                try await deadline.wait()
+            }
+        )
+        let provider = DeferredMeetingResponseGenerator(gate: providerGate)
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider,
+            quickGenerator: bounded,
+            planType: "plus",
+            providerName: "codex",
+            providerQuickHeadStart: .milliseconds(10),
+            quickPathDecisionWindow: .seconds(1)
+        )
+        _ = try await generator.prepare()
+        await providerGate.waitUntilEntered()
+        await providerGate.release()
+
+        async let firstQuickTask = generator.generateQuick(for: firstTurn)
+        async let firstDeepTask = generator.generateDeep(for: firstTurn)
+        await localGate.waitUntilEntered()
+        await deadline.waitUntilEntered()
+        await deadline.fire()
+
+        let (firstQuick, firstDeep) = try await (firstQuickTask, firstDeepTask)
+        XCTAssertEqual(firstQuick.reason, "provider_sol_low")
+        XCTAssertEqual(firstQuick.sayNow, DeferredMeetingResponseGenerator.quickResponse)
+        XCTAssertEqual(firstDeep.generation, firstTurn.identity.generation)
+        let firstCallOrder = await provider.callOrder()
+        XCTAssertEqual(firstCallOrder, ["quick", "deep"])
+
+        await localGate.release()
+        try await generator.awaitQuickCleanup(for: firstTurn.identity)
+
+        let secondTurn = Self.turn(generation: 9)
+        let secondQuick = try await generator.generateQuick(for: secondTurn)
+        XCTAssertEqual(secondQuick.reason, "provider_sol_low")
+        let localCalls = await local.callCount()
+        let providerCalls = await provider.quickCallCount()
+        XCTAssertEqual(localCalls, 1)
+        XCTAssertEqual(providerCalls, 2)
+
+        try await generator.awaitQuickCleanup(for: secondTurn.identity)
+        _ = await generator.shutdown()
+    }
+
     private static func turn(generation: UInt64) -> ConversationTurn {
         ConversationTurn(
             identity: TurnIdentity(meetingID: UUID(), generation: generation),
@@ -265,6 +325,98 @@ private actor DeterministicLocalQuickGenerator: LocalQuickGenerating {
     }
 
     func cancelActiveWork() {}
+}
+
+private actor SuspendedLocalQuickGenerator: LocalQuickGenerating {
+    private let gate: ControlledQuickSuspension
+    private var calls = 0
+
+    init(gate: ControlledQuickSuspension) {
+        self.gate = gate
+    }
+
+    func prepare() -> CodexModelRoute {
+        CodexModelRoute(model: "test-suspended-local", effort: "fast")
+    }
+
+    func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
+        calls += 1
+        await gate.suspend()
+        try Task.checkCancellation()
+        return QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            sayNow: "This local result should not win after its deadline.",
+            needsDeep: true,
+            confidence: 0.5,
+            reason: "late_local_result"
+        )
+    }
+
+    func cancelActiveWork() {}
+
+    func callCount() -> Int { calls }
+}
+
+private actor ControlledQuickSuspension {
+    private var entered = false
+    private var released = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async {
+        entered = true
+        for waiter in enteredWaiters { waiter.resume() }
+        enteredWaiters.removeAll()
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        for waiter in releaseWaiters { waiter.resume() }
+        releaseWaiters.removeAll()
+    }
+}
+
+private actor ManualQuickDeadline {
+    private var entered = false
+    private var fired = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var fireWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async throws {
+        entered = true
+        for waiter in enteredWaiters { waiter.resume() }
+        enteredWaiters.removeAll()
+        guard !fired else { return }
+        await withCheckedContinuation { continuation in
+            fireWaiters.append(continuation)
+        }
+        try Task.checkCancellation()
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func fire() {
+        fired = true
+        for waiter in fireWaiters { waiter.resume() }
+        fireWaiters.removeAll()
+    }
 }
 
 private actor ProviderPreparationGate {

@@ -4,7 +4,7 @@ import XCTest
 @testable import PaceNoteCore
 
 final class FoundationModelQuickGeneratorTests: XCTestCase {
-    func testSystemModelCanBeBypassedForAProviderFirstQuickLane() async throws {
+    func testSystemModelBypassStillUsesReviewedLocalTechnicalAnswer() async throws {
         let turn = ConversationTurn(
             identity: TurnIdentity(meetingID: UUID(), generation: 1),
             question: "How should MCP access a database securely?",
@@ -16,7 +16,8 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
         let output = try await generator.generateQuick(for: turn)
 
         XCTAssertEqual(route, FoundationModelQuickGenerator.deterministicRoute)
-        XCTAssertEqual(output.reason, "deterministic_safety_bridge")
+        XCTAssertEqual(output.reason, "reviewed_local_technical_answer")
+        XCTAssertTrue(output.sayNow.contains("least-privilege"))
         XCTAssertEqual(output.turnID, turn.identity.turnID)
     }
 
@@ -62,7 +63,7 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
 
         let output = try await generator.generateQuick(for: turn)
 
-        XCTAssertEqual(output.reason, "deterministic_safety_bridge")
+        XCTAssertEqual(output.reason, "reviewed_local_technical_answer")
         XCTAssertTrue(output.sayNow.contains("least-privilege"))
         XCTAssertEqual(output.turnID, turn.identity.turnID)
     }
@@ -110,18 +111,21 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
         XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
     }
 
-    func testAvailableSystemModelProducesLiveQuickInsideDeadline() async throws {
+    func testBoundedSystemModelProducesOrFallsBackInsideProductDeadline() async throws {
         guard ProcessInfo.processInfo.environment["PACENOTE_RUN_APPLE_QUICK_SMOKE"] == "1" else {
             throw XCTSkip("Set PACENOTE_RUN_APPLE_QUICK_SMOKE=1 for the on-device generation smoke.")
         }
-        let generator = FoundationModelQuickGenerator()
+        let generator = BoundedLocalQuickGenerator(
+            base: FoundationModelQuickGenerator(),
+            timeout: .seconds(3)
+        )
         let route = await generator.prepare()
         guard route == FoundationModelQuickGenerator.onDeviceRoute else {
             throw XCTSkip("Apple's on-device model is unavailable on this test host.")
         }
         let turn = ConversationTurn(
             identity: TurnIdentity(meetingID: UUID(), generation: 1),
-            question: "How should MCP access a database securely?",
+            question: "How would you migrate a large frontend without stopping feature delivery?",
             recentTranscript: []
         )
         let clock = ContinuousClock()
@@ -130,12 +134,15 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
         let output = try await generator.generateQuick(for: turn)
         let latency = startedAt.duration(to: clock.now)
 
-        XCTAssertEqual(output.reason, "on_device_foundation_model")
-        XCTAssertLessThanOrEqual(latency, .seconds(15))
+        XCTAssertTrue(
+            ["on_device_foundation_model", "deterministic_safety_bridge"].contains(output.reason)
+        )
+        XCTAssertLessThanOrEqual(latency, .seconds(4))
         XCTAssertLessThanOrEqual(output.sayNow.split(whereSeparator: { $0.isWhitespace }).count, 24)
+        await generator.awaitCleanup(for: turn.identity)
     }
 
-    func testAvailableSystemModelStreamsFirstTextInsideDeadline() async throws {
+    func testAvailableSystemModelReportsRawFirstTextLatencyForDiagnostics() async throws {
         guard ProcessInfo.processInfo.environment["PACENOTE_RUN_APPLE_QUICK_SMOKE"] == "1" else {
             throw XCTSkip("Set PACENOTE_RUN_APPLE_QUICK_SMOKE=1 for the on-device generation smoke.")
         }
@@ -152,7 +159,7 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
         let clock = ContinuousClock()
         let startedAt = clock.now
         let stream = session.streamResponse(
-            to: "How should MCP access a database securely?",
+            to: "How would you migrate a large frontend without stopping feature delivery?",
             options: GenerationOptions(
                 sampling: .greedy,
                 temperature: 0,
@@ -168,7 +175,11 @@ final class FoundationModelQuickGeneratorTests: XCTestCase {
 
         XCTAssertNotNil(firstTextLatency)
         if let firstTextLatency {
-            XCTAssertLessThanOrEqual(firstTextLatency, .seconds(5))
+            let attachment = XCTAttachment(string: "raw_first_text_latency=\(firstTextLatency)")
+            attachment.name = "Apple on-device raw first-text latency"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertLessThanOrEqual(firstTextLatency, .seconds(60))
         }
     }
 }

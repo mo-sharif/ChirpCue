@@ -4,7 +4,7 @@ import XCTest
 @testable import PaceNoteCore
 
 final class ResponseCoordinatorTests: XCTestCase {
-    func testQuestionAwareBridgeIsTheFirstEventWithoutWaitingForEitherModel() async throws {
+    func testReviewedSecurityAnswerIsTheFirstEventWithoutWaitingForEitherModel() async throws {
         let turn = makeTurn(
             generation: 1,
             grounded: false,
@@ -28,13 +28,14 @@ final class ResponseCoordinatorTests: XCTestCase {
         let firstEvent = await iterator.next()
         let first = try XCTUnwrap(firstEvent?.cue)
 
-        XCTAssertTrue(first.isDeterministicBridge)
+        XCTAssertFalse(first.isDeterministicBridge)
+        XCTAssertEqual(first.reason, "reviewed_local_technical_answer")
         XCTAssertTrue(first.text.contains("least-privilege"))
         XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
         await coordinator.invalidate()
     }
 
-    func testReviewedTechnicalPrimerIsTheFirstEventWithoutWaitingForEitherModel() async throws {
+    func testReviewedTechnicalAnswerIsReadyAsQuickWithoutWaitingForEitherModel() async throws {
         let turn = makeTurn(
             generation: 1,
             grounded: false,
@@ -58,7 +59,8 @@ final class ResponseCoordinatorTests: XCTestCase {
         let firstEvent = await iterator.next()
         let first = try XCTUnwrap(firstEvent?.cue)
 
-        XCTAssertTrue(first.isDeterministicBridge)
+        XCTAssertFalse(first.isDeterministicBridge)
+        XCTAssertEqual(first.reason, "reviewed_local_technical_answer")
         XCTAssertTrue(first.text.contains("runs synchronous JavaScript first"))
         XCTAssertTrue(GeneralGuidancePolicy.accepts(first.text))
         XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
@@ -283,7 +285,7 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertEqual(events.compactMap(\.deep).count, 1)
     }
 
-    func testUngroundedTechnicalQuickCannotBypassBridgeWithNeedsDeepFalse() async throws {
+    func testUngroundedTechnicalQuickCannotReplaceReviewedLocalAnswerWithUnsupportedClaim() async throws {
         let turn = makeTurn(
             generation: 1,
             grounded: false,
@@ -305,7 +307,8 @@ final class ResponseCoordinatorTests: XCTestCase {
         let events = await Self.collect(coordinator.suggestions(for: turn))
         let cue = try XCTUnwrap(events.compactMap(\.cue).first)
 
-        XCTAssertTrue(cue.isDeterministicBridge)
+        XCTAssertFalse(cue.isDeterministicBridge)
+        XCTAssertEqual(cue.reason, "reviewed_local_technical_answer")
         XCTAssertFalse(cue.text.contains("password in plaintext"))
         XCTAssertEqual(events.compactMap(\.deep).count, 1)
     }
