@@ -1361,18 +1361,32 @@ public actor MeetingSessionController {
         guard runtime != nil else {
             pendingResponseTurns[identity] = pending
             startResponsePreparationIfNeeded()
-            let bridgeText = responseCoordinatorConfiguration.bridgeText(for: question)
-            cleanupNeedleLedger.register(bridgeText)
-            let bridge = SuggestionCard(identity: identity, stage: .bridge, text: bridgeText)
+            let cue = responseCoordinatorConfiguration.initialCue(
+                for: conversationTurn(for: pending)
+            )
+            cleanupNeedleLedger.register(cue.text)
+            let stage: SuggestionStage = cue.isDeterministicBridge ? .bridge : .quick
+            let card = SuggestionCard(identity: identity, stage: stage, text: cue.text)
             suggestions.removeAll { $0.identity == identity && $0.stage != .deep }
-            suggestions.append(bridge)
+            suggestions.append(card)
             timingLedger.recordBridgeReady(generation: identity.generation, at: time.now())
             phase = .suggesting
-            emit(.suggestionUpserted(bridge))
+            emit(.suggestionUpserted(card))
             emitState()
             return
         }
         await startResponse(for: pending)
+    }
+
+    private func conversationTurn(for pending: PendingResponseTurn) -> ConversationTurn {
+        ConversationTurn(
+            identity: pending.identity,
+            question: pending.question,
+            recentTranscript: pending.recentTranscript,
+            speakerBrief: configuration.speakerBrief,
+            repoAlias: configuration.grounding?.repoAlias,
+            groundingFingerprint: configuration.grounding?.fingerprint
+        )
     }
 
     private func startResponse(for pending: PendingResponseTurn) async {
@@ -1385,16 +1399,11 @@ public actor MeetingSessionController {
             return
         }
         pendingResponseTurns.removeValue(forKey: identity)
-        let turn = ConversationTurn(
-            identity: identity,
-            question: pending.question,
-            recentTranscript: pending.recentTranscript,
-            speakerBrief: configuration.speakerBrief,
-            repoAlias: configuration.grounding?.repoAlias,
-            groundingFingerprint: configuration.grounding?.fingerprint
-        )
-        phase = .thinking
-        emitState()
+        let turn = conversationTurn(for: pending)
+        if !suggestions.contains(where: { $0.identity == identity && $0.stage != .deep }) {
+            phase = .thinking
+            emitState()
+        }
         let responseEvents = await responseCoordinator.suggestions(for: turn)
         guard lifecycle == .running, questionsByIdentity[identity] != nil else {
             await responseCoordinator.invalidate(identity)
@@ -1582,6 +1591,13 @@ public actor MeetingSessionController {
             {
                 responseCleanupFailureGeneration = nil
                 deactivateBrownout(reason: .codexOffline)
+            }
+            if suggestions.contains(where: {
+                $0.identity == identity && $0.stage == stage && $0.text == cue.text
+            }) {
+                phase = .suggesting
+                emitState()
+                return
             }
             let card = SuggestionCard(identity: identity, stage: stage, text: cue.text)
             suggestions.removeAll { $0.identity == identity && $0.stage != .deep }

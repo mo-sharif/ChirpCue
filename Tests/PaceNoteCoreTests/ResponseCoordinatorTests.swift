@@ -34,6 +34,105 @@ final class ResponseCoordinatorTests: XCTestCase {
         await coordinator.invalidate()
     }
 
+    func testSpeakerBriefAnswerIsTheFirstEventWithoutWaitingForEitherModel() async throws {
+        let answer =
+            "I have eight years of experience with React. Lately, I have been building TypeScript AI products and reusable frontend platforms."
+        let turn = makeTurn(
+            generation: 1,
+            grounded: false,
+            technical: false,
+            question:
+                "My first question for you is, what, how many years have you had with React JS, and what kind of applications have you been working on lately?",
+            speakerBrief: answer
+        )
+        let coordinator = ResponseCoordinator(
+            generator: ScriptedGenerator(
+                quickDelay: .seconds(10),
+                deepDelay: .seconds(10),
+                quickText: "This answer should still be pending.",
+                turn: turn
+            ),
+            configuration: .init(quickDeadline: .seconds(1), resultTTL: .seconds(2))
+        )
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let stream = await coordinator.suggestions(for: turn)
+        var iterator = stream.makeAsyncIterator()
+
+        let firstEvent = await iterator.next()
+        let first = try XCTUnwrap(firstEvent?.cue)
+
+        XCTAssertFalse(first.isDeterministicBridge)
+        XCTAssertEqual(first.reason, "speaker_brief_extract")
+        XCTAssertEqual(first.text, answer)
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
+        await coordinator.invalidate()
+    }
+
+    func testMatchingSpeakerBriefQuickIsNotRepeatedAndDeepBindsInitialAnswer() async throws {
+        let turn = makeTurn(
+            generation: 1,
+            grounded: false,
+            technical: false,
+            question:
+                "My first question for you is, what, how many years have you had with React JS, and what kind of applications have you been working on lately?",
+            speakerBrief: MatchingSpeakerBriefGenerator.quickText
+        )
+        let generator = MatchingSpeakerBriefGenerator(gate: QuickHandledGate())
+        let coordinator = ResponseCoordinator(
+            generator: generator,
+            configuration: .init(quickDeadline: .milliseconds(100), resultTTL: .seconds(1))
+        )
+
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+        let cues = events.compactMap(\.cue)
+        let cue = try XCTUnwrap(cues.first)
+        let deep = try XCTUnwrap(events.compactMap(\.deep).first)
+
+        XCTAssertEqual(cues.count, 1)
+        XCTAssertEqual(cue.text, MatchingSpeakerBriefGenerator.quickText)
+        XCTAssertEqual(cue.reason, "speaker_brief_extract")
+        XCTAssertFalse(cue.isDeterministicBridge)
+        XCTAssertEqual(deep.cueID, cue.id)
+        XCTAssertEqual(deep.cueHash, cue.textHash)
+        XCTAssertEqual(deep.transition, "More specifically,")
+        XCTAssertEqual(deep.sayNext, MatchingSpeakerBriefGenerator.deepText)
+    }
+
+    func testCustomBridgeStillOverridesMatchingSpeakerBrief() async throws {
+        let customBridge = "Give me a second to organize that into a concise answer."
+        let turn = makeTurn(
+            generation: 1,
+            grounded: false,
+            technical: false,
+            question: "How many years have you used React?",
+            speakerBrief: "I have eight years of experience with React."
+        )
+        let coordinator = ResponseCoordinator(
+            generator: ScriptedGenerator(
+                quickDelay: .seconds(10),
+                deepDelay: .seconds(10),
+                quickText: "This answer should still be pending.",
+                turn: turn
+            ),
+            configuration: .init(
+                quickDeadline: .seconds(1),
+                resultTTL: .seconds(2),
+                bridgeText: customBridge
+            )
+        )
+        let stream = await coordinator.suggestions(for: turn)
+        var iterator = stream.makeAsyncIterator()
+
+        let firstEvent = await iterator.next()
+        let first = try XCTUnwrap(firstEvent?.cue)
+
+        XCTAssertTrue(first.isDeterministicBridge)
+        XCTAssertEqual(first.reason, "instant_local_bridge")
+        XCTAssertEqual(first.text, customBridge)
+        await coordinator.invalidate()
+    }
+
     func testFastAIAnswerAppearsBeforeDeepAndBindsReconciliation() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
         let generator = QuickBeforeDeepGenerator(gate: QuickHandledGate())
@@ -448,7 +547,8 @@ final class ResponseCoordinatorTests: XCTestCase {
         generation: UInt64,
         grounded: Bool = true,
         technical: Bool = true,
-        question: String? = nil
+        question: String? = nil,
+        speakerBrief: String? = nil
     ) -> ConversationTurn {
         let identity = TurnIdentity(
             meetingID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
@@ -462,6 +562,7 @@ final class ResponseCoordinatorTests: XCTestCase {
             question: question
                 ?? (technical ? "Why is this asynchronous?" : "How would you frame that concern?"),
             recentTranscript: [],
+            speakerBrief: speakerBrief,
             repoAlias: grounded ? "sample" : nil,
             groundingFingerprint: grounded ? "fingerprint-\(generation)" : nil
         )
@@ -640,6 +741,48 @@ private struct QuickBeforeDeepGenerator: ResponseGenerating {
             needsDeep: false,
             confidence: 0.72,
             reason: "general_question"
+        )
+    }
+
+    func awaitQuickCleanup(for identity: TurnIdentity) async throws {
+        _ = identity
+        await gate.release()
+    }
+
+    func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
+        await gate.wait()
+        return DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext: Self.deepText,
+            confidence: 0.91,
+            basis: []
+        )
+    }
+
+    func reconcile(cue: CueEnvelope, draft: DeepDraft) async throws -> Reconciliation {
+        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+    }
+}
+
+private struct MatchingSpeakerBriefGenerator: ResponseGenerating {
+    static let quickText =
+        "I have eight years of experience with React. Lately, I have been building TypeScript AI products and reusable frontend platforms."
+    static let deepText =
+        "Most recently, I have focused on shared component systems, performance, and maintainable frontend architecture."
+
+    let gate: QuickHandledGate
+
+    func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
+        QuickModelOutput(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            sayNow: Self.quickText,
+            needsDeep: true,
+            confidence: 1,
+            reason: "speaker_brief_extract"
         )
     }
 

@@ -160,7 +160,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             .result(
                 transcript(
                     .output,
-                    "How many years have you used React, and what have you built lately?",
+                    "My first question for you is, what, how many years have you had with React JS, and what kind of applications have you been working on lately?",
                     stability: .final
                 )
             )
@@ -912,6 +912,63 @@ final class MeetingSessionControllerTests: XCTestCase {
                 && state.suggestions.contains { $0.stage == .deep }
                 && !state.brownouts.contains { $0.reason == .providerPreparing }
         }
+        XCTAssertTrue(recovered)
+        _ = await harness.controller.stop()
+    }
+
+    func testSpeakerBriefAnswerAppearsWhileResponseRuntimeIsStillPreparing() async throws {
+        let answer =
+            "I have eight years of experience with React. Lately, I have been building TypeScript AI products and reusable frontend platforms."
+        let preparationBarrier = AudioOperationBarrier()
+        await preparationBarrier.arm()
+        let response = FakeMeetingResponseGenerator(
+            prepareBarrier: preparationBarrier,
+            quickText: answer
+        )
+        let harness = makeHarness(
+            mode: .systemOutputOnly,
+            response: response,
+            speakerBrief: answer
+        )
+
+        _ = try await harness.controller.preflight(
+            consent: MeetingConsent(participantDisclosureConfirmed: true)
+        )
+        try await harness.controller.start()
+        await preparationBarrier.waitUntilEntered()
+
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output,
+                    "How many years have you used React, and what have you built lately?",
+                    stability: .final
+                )
+            )
+        )
+        let immediateAnswerVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.runtime == nil
+                && state.suggestions.contains { $0.stage == .quick && $0.text == answer }
+                && !state.suggestions.contains { $0.stage == .bridge }
+        }
+        let quickRequestsBeforeRuntime = await response.requestedTurns.count
+
+        XCTAssertTrue(immediateAnswerVisible)
+        XCTAssertEqual(quickRequestsBeforeRuntime, 0)
+
+        await preparationBarrier.release()
+        let recovered = await eventually {
+            let state = await harness.controller.state()
+            let matchingQuick = state.suggestions.filter {
+                $0.stage == .quick && $0.text == answer
+            }
+            return state.runtime != nil
+                && matchingQuick.count == 1
+                && state.suggestions.contains { $0.stage == .deep }
+                && !state.brownouts.contains { $0.reason == .providerPreparing }
+        }
+
         XCTAssertTrue(recovered)
         _ = await harness.controller.stop()
     }
@@ -2917,6 +2974,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     let slowQuickGenerations: Set<UInt64>
     let slowDeepGenerations: Set<UInt64>
     let deepKind: DeepDraftKind
+    let quickText: String
     let prepareBarrier: AudioOperationBarrier?
     let deepBarrier: AudioOperationBarrier?
     let cancelBarrier: AudioOperationBarrier?
@@ -2939,6 +2997,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         shutdownReport: MeetingResponseCleanupReport = .init(),
         deepKind: DeepDraftKind = .generalAnswer,
         prepareBarrier: AudioOperationBarrier? = nil,
+        quickText: String = "I would separate the boundary before changing it.",
         deepBarrier: AudioOperationBarrier? = nil,
         cancelBarrier: AudioOperationBarrier? = nil,
         prepareFailure: MeetingResponseError? = nil,
@@ -2954,6 +3013,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         self.shutdownReport = shutdownReport
         self.deepKind = deepKind
         self.prepareBarrier = prepareBarrier
+        self.quickText = quickText
         self.deepBarrier = deepBarrier
         self.cancelBarrier = cancelBarrier
         self.prepareFailure = prepareFailure
@@ -3006,7 +3066,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         return QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
-            sayNow: "I would separate the boundary before changing it.",
+            sayNow: quickText,
             needsDeep: true,
             confidence: 0.8,
             reason: "technical"
