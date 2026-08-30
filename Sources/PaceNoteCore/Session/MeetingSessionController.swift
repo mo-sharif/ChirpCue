@@ -9,6 +9,7 @@ public actor MeetingSessionController {
 
     struct BridgeSpeechRetentionSnapshot: Equatable, Sendable {
         let hasActiveHold: Bool
+        let hasQueuedQuick: Bool
         let hasQueuedDeep: Bool
     }
 
@@ -35,6 +36,11 @@ public actor MeetingSessionController {
     private struct QueuedDeepResponse: Sendable {
         let identity: TurnIdentity
         let response: BoundDeep
+    }
+
+    private struct QueuedQuickResponse: Sendable {
+        let identity: TurnIdentity
+        let response: CueEnvelope
     }
 
     private struct PendingResponseTurn: Sendable {
@@ -181,6 +187,7 @@ public actor MeetingSessionController {
     private var pendingMicrophoneObservation: PendingMicrophoneObservation?
     private var latestOutputObservation: TranscriptObservation?
     private var bridgeSpeechHold: BridgeSpeechHold?
+    private var queuedQuickResponse: QueuedQuickResponse?
     private var queuedDeepResponse: QueuedDeepResponse?
     private var responseCleanupFailureGeneration: UInt64?
     private var responseProviderFailureGeneration: UInt64?
@@ -306,6 +313,7 @@ public actor MeetingSessionController {
     func bridgeSpeechRetentionSnapshot() -> BridgeSpeechRetentionSnapshot {
         BridgeSpeechRetentionSnapshot(
             hasActiveHold: bridgeSpeechHold != nil,
+            hasQueuedQuick: queuedQuickResponse != nil,
             hasQueuedDeep: queuedDeepResponse != nil
         )
     }
@@ -604,6 +612,7 @@ public actor MeetingSessionController {
         let dismissedPendingTurn = pendingResponseTurns.removeValue(forKey: expectedIdentity)
         let ownsHeldResponse =
             bridgeSpeechHold?.identity == expectedIdentity
+            || queuedQuickResponse?.identity == expectedIdentity
             || queuedDeepResponse?.identity == expectedIdentity
         let shouldCancelWork =
             dismissedGenerationTask != nil
@@ -625,6 +634,9 @@ public actor MeetingSessionController {
         }
         if bridgeSpeechHold?.identity == expectedIdentity {
             bridgeSpeechHold = nil
+        }
+        if queuedQuickResponse?.identity == expectedIdentity {
+            queuedQuickResponse = nil
         }
         if queuedDeepResponse?.identity == expectedIdentity {
             queuedDeepResponse = nil
@@ -1219,7 +1231,7 @@ public actor MeetingSessionController {
             deactivateBrownout(reason: .speakerUncertain, lane: .microphone)
             emitState()
             if observation.result.stability == .final {
-                releaseQueuedDeepAfterHeldSpeech(completing: suppressedSegmentID)
+                releaseQueuedResponsesAfterHeldSpeech(completing: suppressedSegmentID)
             }
 
         case .attribute(let source, let speakerUncertain):
@@ -1242,13 +1254,13 @@ public actor MeetingSessionController {
                     holdDeepDuringLocalSpeech(segment)
                 }
                 if observation.result.stability == .final {
-                    releaseQueuedDeepAfterHeldSpeech(completing: segment.id)
+                    releaseQueuedResponsesAfterHeldSpeech(completing: segment.id)
                 }
                 return
             }
             let segment = ingest(observation.result, source: attributedSource)
             if observation.result.stability == .final {
-                releaseQueuedDeepAfterHeldSpeech(completing: segment.id)
+                releaseQueuedResponsesAfterHeldSpeech(completing: segment.id)
             }
         }
     }
@@ -1581,7 +1593,6 @@ public actor MeetingSessionController {
                 )
                 return
             }
-            let stage: SuggestionStage = cue.isDeterministicBridge ? .bridge : .quick
             if !cue.isDeterministicBridge {
                 clearProviderCapacityFailure(after: identity)
             }
@@ -1592,23 +1603,11 @@ public actor MeetingSessionController {
                 responseCleanupFailureGeneration = nil
                 deactivateBrownout(reason: .codexOffline)
             }
-            if suggestions.contains(where: {
-                $0.identity == identity && $0.stage == stage && $0.text == cue.text
-            }) {
-                phase = .suggesting
-                emitState()
+            if !cue.isDeterministicBridge, bridgeSpeechHold?.identity == identity {
+                queuedQuickResponse = QueuedQuickResponse(identity: identity, response: cue)
                 return
             }
-            let card = SuggestionCard(identity: identity, stage: stage, text: cue.text)
-            suggestions.removeAll { $0.identity == identity && $0.stage != .deep }
-            suggestions.insert(card, at: 0)
-            timingLedger.recordBridgeReady(
-                generation: identity.generation,
-                at: time.now()
-            )
-            phase = .suggesting
-            emit(.suggestionUpserted(card))
-            emitState()
+            displayCue(cue, identity: identity)
 
         case .deep(let deep):
             guard deep.turnID == identity.turnID, deep.generation == identity.generation else {
@@ -1702,6 +1701,38 @@ public actor MeetingSessionController {
         }
     }
 
+    private func displayCue(_ cue: CueEnvelope, identity: TurnIdentity) {
+        guard lifecycle == .running,
+            questionsByIdentity[identity] != nil,
+            cue.turnID == identity.turnID,
+            cue.generation == identity.generation
+        else {
+            timingLedger.recordStaleDiscard(
+                generation: identity.generation,
+                at: time.now()
+            )
+            return
+        }
+        let stage: SuggestionStage = cue.isDeterministicBridge ? .bridge : .quick
+        if suggestions.contains(where: {
+            $0.identity == identity && $0.stage == stage && $0.text == cue.text
+        }) {
+            phase = .suggesting
+            emitState()
+            return
+        }
+        let card = SuggestionCard(identity: identity, stage: stage, text: cue.text)
+        suggestions.removeAll { $0.identity == identity && $0.stage != .deep }
+        suggestions.insert(card, at: 0)
+        timingLedger.recordBridgeReady(
+            generation: identity.generation,
+            at: time.now()
+        )
+        phase = .suggesting
+        emit(.suggestionUpserted(card))
+        emitState()
+    }
+
     private func holdDeepDuringLocalSpeech(_ segment: TranscriptSegment) {
         guard bridgeSpeechHold == nil,
             let currentIdentity,
@@ -1716,7 +1747,7 @@ public actor MeetingSessionController {
         )
     }
 
-    private func releaseQueuedDeepAfterHeldSpeech(completing sourceSegmentID: UUID?) {
+    private func releaseQueuedResponsesAfterHeldSpeech(completing sourceSegmentID: UUID?) {
         guard let bridgeSpeechHold,
             sourceSegmentID == nil || bridgeSpeechHold.sourceSegmentID == sourceSegmentID
         else {
@@ -1724,16 +1755,29 @@ public actor MeetingSessionController {
         }
         let completedIdentity = bridgeSpeechHold.identity
         self.bridgeSpeechHold = nil
-        guard let queuedDeepResponse else { return }
-        self.queuedDeepResponse = nil
+        let queuedQuick =
+            queuedQuickResponse?.identity == completedIdentity ? queuedQuickResponse : nil
+        let queuedDeep =
+            queuedDeepResponse?.identity == completedIdentity ? queuedDeepResponse : nil
+        if queuedQuick != nil {
+            queuedQuickResponse = nil
+        }
+        if queuedDeep != nil {
+            queuedDeepResponse = nil
+        }
+        guard queuedQuick != nil || queuedDeep != nil else { return }
         guard lifecycle == .running,
-            questionsByIdentity[completedIdentity] != nil,
-            queuedDeepResponse.identity == completedIdentity
+            questionsByIdentity[completedIdentity] != nil
         else {
             return
         }
         let generationAlreadyFinished = generationTasks[completedIdentity] == nil
-        displayDeep(queuedDeepResponse.response, identity: queuedDeepResponse.identity)
+        if let queuedQuick {
+            displayCue(queuedQuick.response, identity: queuedQuick.identity)
+        }
+        if let queuedDeep {
+            displayDeep(queuedDeep.response, identity: queuedDeep.identity)
+        }
         if generationAlreadyFinished {
             emit(.suggestionThreadCompleted(completedIdentity))
         }
@@ -1768,6 +1812,7 @@ public actor MeetingSessionController {
 
     private func clearBridgeSpeechState() {
         bridgeSpeechHold = nil
+        queuedQuickResponse = nil
         queuedDeepResponse = nil
     }
 
@@ -1775,7 +1820,9 @@ public actor MeetingSessionController {
         guard lifecycle == .running,
             generationTasks.removeValue(forKey: identity) != nil
         else { return }
-        if queuedDeepResponse?.identity != identity {
+        if queuedQuickResponse?.identity != identity,
+            queuedDeepResponse?.identity != identity
+        {
             emit(.suggestionThreadCompleted(identity))
         }
         updateOperationalPhase()
@@ -2051,6 +2098,9 @@ public actor MeetingSessionController {
         }
         if let bridgeSpeechHold {
             cleanupNeedleLedger.register(bridgeSpeechHold.bridgeText)
+        }
+        if let queuedQuickResponse {
+            cleanupNeedleLedger.register(queuedQuickResponse.response.text)
         }
         if let queuedDeepResponse {
             registerCleanupContent(queuedDeepResponse.response)

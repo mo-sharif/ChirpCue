@@ -2458,6 +2458,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             retentionAfterDismiss,
             MeetingSessionController.BridgeSpeechRetentionSnapshot(
                 hasActiveHold: false,
+                hasQueuedQuick: false,
                 hasQueuedDeep: false
             )
         )
@@ -2588,6 +2589,96 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(finalSpeechReleasedDeep)
         XCTAssertFalse(finalRetention.hasActiveHold)
         XCTAssertFalse(finalRetention.hasQueuedDeep)
+        _ = await harness.controller.stop()
+    }
+
+    func testQuickAndDeepUpgradesWaitUntilFinalLocalSpeechBeforeReplacingCue() async throws {
+        let clock = LockedMeetingTime(10)
+        let quickBarrier = AudioOperationBarrier()
+        let deepBarrier = AudioOperationBarrier()
+        await quickBarrier.arm()
+        await deepBarrier.arm()
+        let response = FakeMeetingResponseGenerator(
+            quickBarrier: quickBarrier,
+            deepBarrier: deepBarrier
+        )
+        let harness = makeHarness(
+            mode: .microphoneAndSystemOutput,
+            response: response,
+            time: clock,
+            microphoneAttributionDelay: .milliseconds(5),
+            soleNearbySpeakerConfirmed: true,
+            responseQuickDeadline: .seconds(1)
+        )
+        try await prepareAndStart(harness)
+        try await harness.controller.submitTypedQuestion("How does the browser event loop work?")
+
+        let bridgeArrived = await eventually {
+            await harness.controller.state().suggestions.contains {
+                $0.stage == .bridge && $0.text.contains("runs synchronous JavaScript first")
+            }
+        }
+        XCTAssertTrue(bridgeArrived)
+        let stateWithBridge = await harness.controller.state()
+        let originalCue = try XCTUnwrap(stateWithBridge.suggestions.first { $0.stage == .bridge })
+        await quickBarrier.waitUntilEntered()
+        await deepBarrier.waitUntilEntered()
+
+        clock.set(12)
+        await harness.microphoneTranscriber.emit(
+            .result(
+                transcript(
+                    .microphone,
+                    originalCue.text,
+                    stability: .volatile,
+                    confidence: 0.94,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+        let holdActivated = await eventually {
+            await harness.controller.bridgeSpeechRetentionSnapshot().hasActiveHold
+        }
+        XCTAssertTrue(holdActivated)
+
+        await quickBarrier.release()
+        let quickQueued = await eventually {
+            await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedQuick
+        }
+        let stateWhileSpeaking = await harness.controller.state()
+
+        XCTAssertTrue(quickQueued)
+        XCTAssertTrue(stateWhileSpeaking.suggestions.contains(originalCue))
+        XCTAssertFalse(stateWhileSpeaking.suggestions.contains { $0.stage == .quick })
+
+        await deepBarrier.release()
+        let bothUpgradesQueued = await eventually {
+            let retention = await harness.controller.bridgeSpeechRetentionSnapshot()
+            return retention.hasQueuedQuick && retention.hasQueuedDeep
+        }
+        XCTAssertTrue(bothUpgradesQueued)
+
+        await harness.microphoneTranscriber.emit(
+            .result(
+                transcript(
+                    .microphone,
+                    originalCue.text,
+                    confidence: 0.94,
+                    hostTimeRange: hostTimeRange(start: 12)
+                )
+            )
+        )
+        let upgradesReleased = await eventually {
+            let state = await harness.controller.state()
+            let retention = await harness.controller.bridgeSpeechRetentionSnapshot()
+            return state.suggestions.contains { $0.stage == .quick }
+                && state.suggestions.contains { $0.stage == .deep }
+                && !retention.hasActiveHold
+                && !retention.hasQueuedQuick
+                && !retention.hasQueuedDeep
+        }
+
+        XCTAssertTrue(upgradesReleased)
         _ = await harness.controller.stop()
     }
 
@@ -2871,6 +2962,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         systemOutputScope: MeetingSystemOutputScope = .meetingApplication,
         soleNearbySpeakerConfirmed: Bool = false,
         speakerBrief: String? = nil,
+        responseQuickDeadline: Duration = .milliseconds(50),
         outputStartError: AudioCaptureError? = nil,
         outputStartBarrier: AudioOperationBarrier? = nil,
         outputStopBarrier: AudioOperationBarrier? = nil,
@@ -2931,7 +3023,7 @@ final class MeetingSessionControllerTests: XCTestCase {
             microphonePermission: permission,
             responseGenerator: response,
             responseCoordinatorConfiguration: .init(
-                quickDeadline: .milliseconds(50),
+                quickDeadline: responseQuickDeadline,
                 resultTTL: .seconds(1)
             ),
             resourceCleaner: cleaner,
@@ -2976,6 +3068,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     let deepKind: DeepDraftKind
     let quickText: String
     let prepareBarrier: AudioOperationBarrier?
+    let quickBarrier: AudioOperationBarrier?
     let deepBarrier: AudioOperationBarrier?
     let cancelBarrier: AudioOperationBarrier?
     let prepareFailure: MeetingResponseError?
@@ -2998,6 +3091,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         deepKind: DeepDraftKind = .generalAnswer,
         prepareBarrier: AudioOperationBarrier? = nil,
         quickText: String = "I would separate the boundary before changing it.",
+        quickBarrier: AudioOperationBarrier? = nil,
         deepBarrier: AudioOperationBarrier? = nil,
         cancelBarrier: AudioOperationBarrier? = nil,
         prepareFailure: MeetingResponseError? = nil,
@@ -3014,6 +3108,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
         self.deepKind = deepKind
         self.prepareBarrier = prepareBarrier
         self.quickText = quickText
+        self.quickBarrier = quickBarrier
         self.deepBarrier = deepBarrier
         self.cancelBarrier = cancelBarrier
         self.prepareFailure = prepareFailure
@@ -3057,6 +3152,7 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
             quickFailuresRemaining -= 1
             throw quickFailure
         }
+        if let quickBarrier { await quickBarrier.suspendIfArmed() }
         if slowQuickGenerations.contains(turn.identity.generation) {
             try await Task.sleep(for: .seconds(30))
         } else {

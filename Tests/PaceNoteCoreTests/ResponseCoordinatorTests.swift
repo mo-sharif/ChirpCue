@@ -34,6 +34,37 @@ final class ResponseCoordinatorTests: XCTestCase {
         await coordinator.invalidate()
     }
 
+    func testReviewedTechnicalPrimerIsTheFirstEventWithoutWaitingForEitherModel() async throws {
+        let turn = makeTurn(
+            generation: 1,
+            grounded: false,
+            technical: false,
+            question: "How does the browser event loop work?"
+        )
+        let coordinator = ResponseCoordinator(
+            generator: ScriptedGenerator(
+                quickDelay: .seconds(10),
+                deepDelay: .seconds(10),
+                quickText: "This answer should still be pending.",
+                turn: turn
+            ),
+            configuration: .init(quickDeadline: .seconds(1), resultTTL: .seconds(2))
+        )
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let stream = await coordinator.suggestions(for: turn)
+        var iterator = stream.makeAsyncIterator()
+
+        let firstEvent = await iterator.next()
+        let first = try XCTUnwrap(firstEvent?.cue)
+
+        XCTAssertTrue(first.isDeterministicBridge)
+        XCTAssertTrue(first.text.contains("runs synchronous JavaScript first"))
+        XCTAssertTrue(GeneralGuidancePolicy.accepts(first.text))
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(100))
+        await coordinator.invalidate()
+    }
+
     func testSpeakerBriefAnswerIsTheFirstEventWithoutWaitingForEitherModel() async throws {
         let answer =
             "I have eight years of experience with React. Lately, I have been building TypeScript AI products and reusable frontend platforms."

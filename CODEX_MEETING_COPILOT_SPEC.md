@@ -312,7 +312,7 @@ Local deterministic reconciliation relates the verified Deep answer to the exact
 
 Purpose: give the user a useful, natural first answer while Deep works.
 
-The coordinator first emits a deterministic, question-aware local answer without waiting for any provider. For a personal-background question, it may select up to two relevant, already-speakable sentences verbatim from the optional user-written speaker brief, including while provider preparation is still in progress. It never paraphrases, completes, or invents a personal fact. When no safe brief match exists, the bridge selects only from reviewed staff-level response patterns, never claims private facts, and gives the user a concrete sentence to say while generated work continues. If generated Quick later returns the same text, the coordinator retains the existing cue instead of replacing or repeating it.
+The coordinator first emits a deterministic, question-aware local answer without waiting for any provider. Common frontend and systems concepts use reviewed direct primers that explain a core mechanism or practical tradeoff in at most 24 words. Classification matches normalized complete words and phrases rather than substrings, and ambiguous everyday uses fail back to generic safe guidance. For a personal-background question, the bridge may select up to two relevant, already-speakable sentences verbatim from the optional user-written speaker brief, including while provider preparation is still in progress. It never paraphrases, completes, invents a personal fact, or claims private repository or production context. When no safe brief or concept match exists, the bridge selects only from reviewed staff-level response patterns and gives the user a concrete sentence to say while generated work continues. If generated Quick later returns the same text, the coordinator retains the existing cue instead of replacing or repeating it.
 
 Apple's on-device model can replace the bridge inside a 15-second Quick window. When it is unavailable and Codex is selected, Quick uses GPT-5.6 Sol at low reasoning effort, requests the fastest service tier advertised by the signed-in catalog, has no repository tools, and returns only one spoken sentence. Turn identity, generation, confidence, and the decision to continue Deep are host-owned rather than model-generated. The coordinator validates word count, speakability, and absence of private-context claims before display.
 
@@ -762,7 +762,7 @@ All latency begins at the locally detected end of the meeting-output turn. These
 | Rejected or stale Quick output displayed | 0 |
 | Invalid path or line citation shown | 0 |
 
-The verified card metric is the only user-facing Deep latency target. No draft or uncited stream is shown early to improve a benchmark. The app also freezes a useful card while the user is speaking instead of replacing words underneath the user's eyes.
+The verified card metric is the only user-facing Deep latency target. No draft or uncited stream is shown early to improve a benchmark. The app freezes the useful current card while the user is speaking, queues both completed Quick and Deep upgrades, and releases them in that order after final local speech instead of replacing words underneath the user's eyes.
 
 ## 14. Quality targets
 
@@ -899,7 +899,7 @@ They must:
 2. prove an empty general context cannot read repository files, then build, secret-scan, seal, and fingerprint a repo and skill snapshot;
 3. activate and verify the deny-by-default named permission profile;
 4. create immutable turn identities and prove punctuation-only finalization does not duplicate work while a meaningfully expanded final question starts a parallel follow-up thread;
-5. emit the reviewed question-aware local bridge immediately, start generated Quick and high-reasoning Deep independently, and never consult model-controlled `needsDeep` to decide whether Deep runs;
+5. emit the reviewed question-aware local bridge immediately, including a direct primer for supported technical concepts, start generated Quick and high-reasoning Deep independently, and never consult model-controlled `needsDeep` to decide whether Deep runs;
 6. prove Quick, fallback, and reconciliation completion orderings remain bound to their own turn and cue while two question threads complete out of order, and prove a validated Quick can display before tracked fork cleanup finishes while cleanup failure remains visible and fail-closed;
 7. bind Deep to that cue's ID and hash under every completion ordering;
 8. preserve an earlier Deep result after a synthetic follow-up turn, but reject it after dismissal, gap, pause, TTL, and repo-change events;
