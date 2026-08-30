@@ -655,8 +655,11 @@ final class MeetingSessionControllerTests: XCTestCase {
         )
 
         let correctedResponseStarted = await eventually {
-            await harness.response.requestedTurns.map(\.question)
-                == [partialQuestion, finalQuestion]
+            let requestedQuestions = await harness.response.requestedTurns.map(\.question)
+            let suggestions = await harness.controller.state().suggestions
+            return requestedQuestions == [partialQuestion, finalQuestion]
+                && suggestions.contains { $0.identity.generation == 1 }
+                && suggestions.contains { $0.identity.generation == 2 }
         }
         let state = await harness.controller.state()
         let cancelCount = await harness.response.cancelCount
