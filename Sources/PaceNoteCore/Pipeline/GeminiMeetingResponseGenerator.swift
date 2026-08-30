@@ -223,10 +223,19 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             throw MeetingResponseError.invalidOutput
         }
         return switch draft.kind {
-        case .answer: Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
-        case .generalAnswer: Reconciliation(relationship: .continueAnswer, transition: "")
-        case .clarification: Reconciliation(relationship: .clarify, transition: "The detail I need is:")
-        case .abstention: Reconciliation(relationship: .abstain, transition: "I cannot verify that yet.")
+        case .answer:
+            Reconciliation(relationship: .continueAnswer, transition: "Here’s the concrete detail.")
+        case .generalAnswer:
+            Reconciliation(
+                relationship: .continueAnswer,
+                transition: cue.isDeterministicBridge
+                    ? "Here’s the direct answer."
+                    : "The part I’d add is this."
+            )
+        case .clarification:
+            Reconciliation(relationship: .clarify, transition: "One thing I’d ask first.")
+        case .abstention:
+            Reconciliation(relationship: .abstain, transition: "I’d be careful here.")
         }
     }
 

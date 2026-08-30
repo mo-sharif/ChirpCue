@@ -1009,20 +1009,20 @@ private final class DeepBenchmarkFixture: @unchecked Sendable {
         switch benchmarkCase.expectedKind {
         case .answer:
             expectedRelationship = .continueAnswer
-            expectedTransition = "More specifically,"
+            expectedTransition = "Here’s the concrete detail."
             expectedSayNext = draft.candidateSayNext
         case .generalAnswer:
             expectedRelationship = .continueAnswer
-            expectedTransition = ""
+            expectedTransition = "Here’s the direct answer."
             expectedSayNext = draft.candidateSayNext
         case .clarification:
             expectedRelationship = .clarify
-            expectedTransition = "The detail I need is:"
-            expectedSayNext = "I need one more detail before I can verify that."
+            expectedTransition = "One thing I’d ask first."
+            expectedSayNext = "Can you share the missing detail so I can verify it?"
         case .abstention:
             expectedRelationship = .abstain
-            expectedTransition = "I cannot verify that yet."
-            expectedSayNext = "I cannot verify that from the available repository evidence."
+            expectedTransition = "I’d be careful here."
+            expectedSayNext = "I can’t verify that from what I have here yet."
         }
 
         guard card.cue.turnID == benchmarkCase.turn.identity.turnID,

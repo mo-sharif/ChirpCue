@@ -69,6 +69,113 @@ final class LowLatencyMeetingResponseGeneratorTests: XCTestCase {
         _ = await generator.shutdown()
     }
 
+    func testProviderQuickCleanupFailureRecoversOnceAndAllowsNextTurn() async throws {
+        let firstTurn = Self.turn(generation: 10)
+        let secondTurn = Self.turn(generation: 11)
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(
+            gate: gate,
+            quickCleanupFailures: 1
+        )
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider,
+            quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus",
+            providerName: "codex",
+            providerQuickHeadStart: .milliseconds(0)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+
+        let first = try await generator.generateQuick(for: firstTurn)
+        XCTAssertEqual(first.reason, "provider_sol_low")
+        try await generator.awaitQuickCleanup(for: firstTurn.identity)
+
+        let second = try await generator.generateQuick(for: secondTurn)
+        XCTAssertEqual(second.reason, "provider_sol_low")
+        try await generator.awaitQuickCleanup(for: secondTurn.identity)
+
+        let recoveries = await provider.recoveryCount()
+        let preparations = await provider.prepareCallCount()
+        XCTAssertEqual(recoveries, 1)
+        XCTAssertEqual(preparations, 2)
+        _ = await generator.shutdown()
+    }
+
+    func testFailedCleanupRecoveryRemainsFailClosedWithoutRetryLoop() async throws {
+        let turn = Self.turn(generation: 12)
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(
+            gate: gate,
+            quickCleanupFailures: 1,
+            recoveryFailures: 1
+        )
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider,
+            quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus",
+            providerName: "codex",
+            providerQuickHeadStart: .milliseconds(0)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+        _ = try await generator.generateQuick(for: turn)
+
+        do {
+            try await generator.awaitQuickCleanup(for: turn.identity)
+            XCTFail("Expected cleanup recovery to remain fail closed.")
+        } catch let error as MeetingResponseError {
+            XCTAssertEqual(error, .cleanupFailed)
+        }
+
+        do {
+            _ = try await generator.generateDeep(for: Self.turn(generation: 13))
+            XCTFail("Expected later provider work to remain blocked.")
+        } catch let error as MeetingResponseError {
+            XCTAssertEqual(error, .cleanupFailed)
+        }
+
+        let recoveries = await provider.recoveryCount()
+        XCTAssertEqual(recoveries, 1)
+        _ = await generator.shutdown()
+    }
+
+    func testCleanupRecoveryRetriesDeepWorkCancelledByProviderReplacement() async throws {
+        let turn = Self.turn(generation: 14)
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(
+            gate: gate,
+            quickCleanupFailures: 1,
+            suspendFirstDeepUntilRecovery: true
+        )
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider,
+            quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus",
+            providerName: "codex",
+            providerQuickHeadStart: .milliseconds(0)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+
+        _ = try await generator.generateQuick(for: turn)
+        let deepTask = Task { try await generator.generateDeep(for: turn) }
+        await provider.waitUntilDeepSuspended()
+
+        try await generator.awaitQuickCleanup(for: turn.identity)
+        let deep = try await deepTask.value
+
+        XCTAssertEqual(deep.generation, turn.identity.generation)
+        let deepCalls = await provider.deepCallCount()
+        let recoveries = await provider.recoveryCount()
+        XCTAssertEqual(deepCalls, 2)
+        XCTAssertEqual(recoveries, 1)
+        _ = await generator.shutdown()
+    }
+
     func testDeepWaitsForSharedPreparationThenUsesProvider() async throws {
         let turn = Self.turn(generation: 2)
         let gate = ProviderPreparationGate()
@@ -455,16 +562,32 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
 
     private let gate: ProviderPreparationGate
     private var preparationFailures: Int
+    private var quickCleanupFailures: Int
+    private var recoveryFailures: Int
+    private let suspendFirstDeepUntilRecovery: Bool
     private var prepared = false
     private var preparationCalls = 0
     private var deepCalls = 0
     private var quickCalls = 0
     private var cancellations = 0
+    private var recoveries = 0
     private var calls: [String] = []
+    private var deepSuspended = false
+    private var deepSuspensionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var deepRecoveryWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(gate: ProviderPreparationGate, preparationFailures: Int = 0) {
+    init(
+        gate: ProviderPreparationGate,
+        preparationFailures: Int = 0,
+        quickCleanupFailures: Int = 0,
+        recoveryFailures: Int = 0,
+        suspendFirstDeepUntilRecovery: Bool = false
+    ) {
         self.gate = gate
         self.preparationFailures = preparationFailures
+        self.quickCleanupFailures = quickCleanupFailures
+        self.recoveryFailures = recoveryFailures
+        self.suspendFirstDeepUntilRecovery = suspendFirstDeepUntilRecovery
     }
 
     func prepare() async throws -> MeetingResponseRuntime {
@@ -498,10 +621,19 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
         )
     }
 
-    func generateDeep(for turn: ConversationTurn) throws -> DeepDraft {
+    func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
         guard prepared else { throw MeetingResponseError.notPrepared }
         deepCalls += 1
         calls.append("deep")
+        if suspendFirstDeepUntilRecovery, deepCalls == 1 {
+            deepSuspended = true
+            for waiter in deepSuspensionWaiters { waiter.resume() }
+            deepSuspensionWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                deepRecoveryWaiters.append(continuation)
+            }
+            throw CancellationError()
+        }
         return DeepDraft(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
@@ -514,7 +646,24 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     func reconcile(cue: CueEnvelope, draft: DeepDraft) throws -> Reconciliation {
-        Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+        Reconciliation(relationship: .continueAnswer, transition: "The part I’d add is this.")
+    }
+
+    func awaitQuickCleanup(for _: TurnIdentity) throws {
+        guard quickCleanupFailures > 0 else { return }
+        quickCleanupFailures -= 1
+        throw MeetingResponseError.cleanupFailed
+    }
+
+    func recoverAfterCleanupFailure() async throws -> MeetingResponseRuntime {
+        recoveries += 1
+        for waiter in deepRecoveryWaiters { waiter.resume() }
+        deepRecoveryWaiters.removeAll()
+        if recoveryFailures > 0 {
+            recoveryFailures -= 1
+            throw MeetingResponseError.cleanupFailed
+        }
+        return try await prepare()
     }
 
     func cancelActiveWork() {
@@ -525,9 +674,17 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
         MeetingResponseCleanupReport()
     }
 
+    func waitUntilDeepSuspended() async {
+        guard !deepSuspended else { return }
+        await withCheckedContinuation { continuation in
+            deepSuspensionWaiters.append(continuation)
+        }
+    }
+
     func deepCallCount() -> Int { deepCalls }
     func quickCallCount() -> Int { quickCalls }
     func cancelCount() -> Int { cancellations }
+    func recoveryCount() -> Int { recoveries }
     func prepareCallCount() -> Int { preparationCalls }
     func callOrder() -> [String] { calls }
 }

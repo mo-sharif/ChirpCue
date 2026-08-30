@@ -28,6 +28,9 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     private var providerRuntime: MeetingResponseRuntime?
     private var providerFailure: MeetingResponseError?
     private var providerPreparationTask: Task<Void, Never>?
+    private var providerRecoveryTask: Task<Void, Never>?
+    private var providerRecoveryRevision: UInt64 = 0
+    private var cleanupRecoveryFailed = false
     private var preparationWaiters: [UUID: AsyncThrowingStream<MeetingResponseRuntime, Error>.Continuation] = [:]
     private var activeProviderCalls = 0
     private var providerQuickIdentities: Set<TurnIdentity> = []
@@ -60,6 +63,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
 
     deinit {
         providerPreparationTask?.cancel()
+        providerRecoveryTask?.cancel()
     }
 
     public func prepare() async throws -> MeetingResponseRuntime {
@@ -103,6 +107,9 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
             } catch {
                 activeProviderCalls -= 1
                 if error is CancellationError { throw CancellationError() }
+                if Self.isCleanupFailure(error) {
+                    startProviderRecoveryIfNeeded()
+                }
                 return local
             }
         } catch is CancellationError {
@@ -115,7 +122,11 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     public func awaitQuickCleanup(for identity: TurnIdentity) async throws {
         await quickGenerator.awaitCleanup(for: identity)
         guard providerQuickIdentities.remove(identity) != nil else { return }
-        try await provider.awaitQuickCleanup(for: identity)
+        do {
+            try await provider.awaitQuickCleanup(for: identity)
+        } catch  where Self.isCleanupFailure(error) {
+            _ = try await recoverProviderAfterCleanupFailure()
+        }
     }
 
     public func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
@@ -129,13 +140,23 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
             }
         }
         try Task.checkCancellation()
-        activeProviderCalls += 1
+        let recoveryRevision = providerRecoveryRevision
         do {
-            let draft = try await provider.generateDeep(for: turn)
-            activeProviderCalls -= 1
-            return draft
+            return try await callProviderDeep(for: turn)
         } catch {
-            activeProviderCalls -= 1
+            if Self.isCleanupFailure(error) {
+                _ = try await recoverProviderAfterCleanupFailure()
+                try Task.checkCancellation()
+                return try await callProviderDeep(for: turn)
+            }
+            if error is CancellationError,
+                !Task.isCancelled,
+                providerRecoveryRevision > recoveryRevision
+            {
+                _ = try await waitForProviderRuntime()
+                try Task.checkCancellation()
+                return try await callProviderDeep(for: turn)
+            }
             throw error
         }
     }
@@ -155,8 +176,23 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         }
     }
 
+    public func recoverAfterCleanupFailure() async throws -> MeetingResponseRuntime {
+        try requireOpen()
+        let recovered = try await recoverProviderAfterCleanupFailure()
+        return MeetingResponseRuntime(
+            planType: planType,
+            quickRoute: quickRoute,
+            deepRoute: recovered.deepRoute,
+            usesRealtimeQuick: false
+        )
+    }
+
     public func cancelActiveWork() async {
         await quickGenerator.cancelActiveWork()
+        if let providerRecoveryTask {
+            await providerRecoveryTask.value
+            return
+        }
         if activeProviderCalls > 0 {
             await provider.cancelActiveWork()
         }
@@ -170,13 +206,19 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         providerPreparationTask?.cancel()
         await quickGenerator.cancelActiveWork()
 
+        if let providerRecoveryTask {
+            await providerRecoveryTask.value
+        }
+
         let provider = provider
         let task = Task { await provider.shutdown() }
         shutdownTask = task
         let report = await task.value
         providerPreparationTask = nil
+        providerRecoveryTask = nil
         providerRuntime = nil
         providerFailure = nil
+        cleanupRecoveryFailed = false
         providerQuickIdentities.removeAll()
         quickPathDecisions.removeAll()
         finishQuickPathDecisionWaiters()
@@ -190,7 +232,9 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     private func startProviderPreparationIfNeeded() {
         guard lifecycle == .open,
             providerRuntime == nil,
-            providerPreparationTask == nil
+            providerPreparationTask == nil,
+            providerRecoveryTask == nil,
+            !cleanupRecoveryFailed
         else { return }
 
         providerFailure = nil
@@ -251,6 +295,9 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
 
     private func waitForProviderRuntime() async throws -> MeetingResponseRuntime {
         if let providerRuntime { return providerRuntime }
+        if cleanupRecoveryFailed {
+            throw providerFailure ?? MeetingResponseError.cleanupFailed
+        }
         if let providerFailure {
             self.providerFailure = nil
             throw providerFailure
@@ -268,6 +315,69 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
             return runtime
         }
         throw CancellationError()
+    }
+
+    private func callProviderDeep(for turn: ConversationTurn) async throws -> DeepDraft {
+        activeProviderCalls += 1
+        defer { activeProviderCalls -= 1 }
+        return try await provider.generateDeep(for: turn)
+    }
+
+    private func recoverProviderAfterCleanupFailure() async throws -> MeetingResponseRuntime {
+        startProviderRecoveryIfNeeded()
+        return try await waitForProviderRuntime()
+    }
+
+    private func startProviderRecoveryIfNeeded() {
+        guard lifecycle == .open,
+            providerRecoveryTask == nil,
+            !cleanupRecoveryFailed
+        else { return }
+
+        providerRuntime = nil
+        providerFailure = nil
+        providerRecoveryRevision &+= 1
+        let provider = provider
+        providerRecoveryTask = Task {
+            let outcome: Result<MeetingResponseRuntime, MeetingResponseError>
+            do {
+                outcome = .success(try await provider.recoverAfterCleanupFailure())
+            } catch is CancellationError {
+                outcome = .failure(.cleanupFailed)
+            } catch let error as MeetingResponseError {
+                outcome = .failure(error)
+            } catch {
+                outcome = .failure(.cleanupFailed)
+            }
+            completeProviderRecovery(outcome)
+        }
+    }
+
+    private func completeProviderRecovery(
+        _ outcome: Result<MeetingResponseRuntime, MeetingResponseError>
+    ) {
+        providerRecoveryTask = nil
+        guard lifecycle == .open else {
+            finishWaiters(throwing: CancellationError())
+            return
+        }
+        switch outcome {
+        case .success(let runtime):
+            providerRuntime = runtime
+            providerFailure = nil
+            cleanupRecoveryFailed = false
+            let waiters = preparationWaiters.values
+            preparationWaiters.removeAll()
+            for waiter in waiters {
+                waiter.yield(runtime)
+                waiter.finish()
+            }
+        case .failure(let error):
+            providerRuntime = nil
+            providerFailure = error
+            cleanupRecoveryFailed = true
+            finishWaiters(throwing: error)
+        }
     }
 
     private func removeWaiter(_ id: UUID) {
@@ -370,5 +480,9 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         default:
             true
         }
+    }
+
+    private static func isCleanupFailure(_ error: any Error) -> Bool {
+        (error as? MeetingResponseError) == .cleanupFailed
     }
 }

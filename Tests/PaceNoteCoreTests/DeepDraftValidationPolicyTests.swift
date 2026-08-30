@@ -11,7 +11,7 @@ final class DeepDraftValidationPolicyTests: XCTestCase {
             groundingFingerprint: nil,
             kind: .generalAnswer,
             candidateSayNext:
-                "I’ve worked with React for eight years across production web applications. Lately, I’ve focused on TypeScript AI products, internal platforms, and reusable frontend architecture.",
+                "I’ve worked with React for eight years across production web applications. Lately, I’ve focused on TypeScript AI products and frontend platforms.",
             confidence: 0.84,
             basis: []
         )

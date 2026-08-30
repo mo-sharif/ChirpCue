@@ -563,11 +563,11 @@ private struct SuggestionThreadView: View {
 
             if let quick = thread.quick {
                 SuggestionCardView(
-                    title: quick.stage == .bridge ? "Say now" : "Quick answer",
+                    title: "Start here",
                     subtitle: quick.stage == .bridge
-                        ? "Instant opener • smarter answer is running"
+                        ? "Say this first • the next part is coming"
                         : (thread.deep == nil && thread.deepFailure == nil
-                            ? "Fast AI • detailed answer is running" : "Fast AI"),
+                            ? "Fast answer • the next part is coming" : "Fast answer"),
                     card: quick,
                     tint: .blue,
                     systemImage: "bolt.fill",
@@ -581,7 +581,7 @@ private struct SuggestionThreadView: View {
             if let deep = thread.deep {
                 let presentation = deepPresentation(for: deep)
                 SuggestionCardView(
-                    title: "Detailed answer",
+                    title: "Then add this",
                     subtitle: presentation.subtitle,
                     card: deep,
                     tint: presentation.tint,
@@ -593,12 +593,12 @@ private struct SuggestionThreadView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Label(failure.suggestionFailureTitle, systemImage: "exclamationmark.circle")
                         .font(.caption.weight(.semibold))
-                    Text("The quick answer stays available; no detailed answer arrived.")
+                    Text("The first answer stays available; the next part didn’t arrive.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if canRetry {
                         Button(action: retry) {
-                            Label("Retry Deep Answer", systemImage: "arrow.clockwise")
+                            Label("Retry Next Part", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.glass)
                         .controlSize(.small)
@@ -608,7 +608,7 @@ private struct SuggestionThreadView: View {
                     }
                 }
             } else {
-                progressRow("Building the detailed answer in parallel…")
+                progressRow("Writing the next part in parallel…")
             }
 
             if let failure = thread.quickFailure, thread.quick?.stage == .bridge {
@@ -727,6 +727,7 @@ private struct SuggestionCardView: View {
             }
             Text(card.text)
                 .font(.title3.weight(.medium))
+                .lineSpacing(5)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
 

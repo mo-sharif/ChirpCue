@@ -440,17 +440,44 @@ public actor ResponseCoordinator {
     private static func reconciliation(cue: CueEnvelope, draft: DeepDraft) -> Reconciliation {
         switch draft.kind {
         case .answer:
-            Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+            Reconciliation(relationship: .continueAnswer, transition: "Here’s the concrete detail.")
         case .generalAnswer:
             Reconciliation(
                 relationship: .continueAnswer,
-                transition: cue.isDeterministicBridge ? "" : "More specifically,"
+                transition: cue.isDeterministicBridge
+                    ? "Here’s the direct answer."
+                    : (substantiallyRestates(cue.text, draft.candidateSayNext)
+                        ? "Put another way,"
+                        : "The part I’d add is this.")
             )
         case .clarification:
-            Reconciliation(relationship: .clarify, transition: "The detail I need is:")
+            Reconciliation(relationship: .clarify, transition: "One thing I’d ask first.")
         case .abstention:
-            Reconciliation(relationship: .abstain, transition: "I cannot verify that yet.")
+            Reconciliation(relationship: .abstain, transition: "I’d be careful here.")
         }
+    }
+
+    private static let handoffStopWords: Set<String> = [
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "i", "i'd",
+        "i’d", "in", "is", "it", "of", "on", "or", "that", "the", "then", "this", "to",
+        "we", "with", "would", "you",
+    ]
+
+    private static func substantiallyRestates(_ cue: String, _ candidate: String) -> Bool {
+        let cueWords = significantWords(in: cue)
+        let candidateWords = significantWords(in: candidate)
+        let smallerCount = min(cueWords.count, candidateWords.count)
+        guard smallerCount >= 3 else { return false }
+        let sharedCount = cueWords.intersection(candidateWords).count
+        return sharedCount >= 3 && Double(sharedCount) / Double(smallerCount) >= 0.7
+    }
+
+    private static func significantWords(in text: String) -> Set<String> {
+        Set(
+            text.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.count > 1 && !handoffStopWords.contains($0) }
+        )
     }
 
     private nonisolated static func startOperation<Value: Sendable>(
@@ -517,12 +544,12 @@ public actor ResponseCoordinator {
             limitWords(draft.candidateSayNext, maximum: 33)
         case .clarification:
             draft.groundingFingerprint == nil
-                ? "Could you clarify which system or constraint you mean?"
-                : "I need one more detail before I can verify that."
+                ? "Which system or constraint do you mean?"
+                : "Can you share the missing detail so I can verify it?"
         case .abstention:
             draft.groundingFingerprint == nil
-                ? "I do not have enough context to answer that safely."
-                : "I cannot verify that from the available repository evidence."
+                ? "I don’t have enough context to answer that well yet."
+                : "I can’t verify that from what I have here yet."
         }
     }
 

@@ -1405,7 +1405,10 @@ final class MeetingSessionControllerTests: XCTestCase {
 
         let report = await harness.controller.stop()
         let auditedNeedles = await cleaner.sensitiveNeedles()
-        let expectedFragment = Data(dismissedDeep.text.utf8.prefix(128))
+        let normalizedDeep = dismissedDeep.text
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        let expectedFragment = Data(normalizedDeep.utf8.prefix(128))
         XCTAssertTrue(report.cleanupSucceeded)
         XCTAssertTrue(auditedNeedles.contains(expectedFragment))
     }
@@ -1601,7 +1604,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         let clarificationVisible = await eventually {
             let state = await clarificationHarness.controller.state()
             return state.suggestions.contains {
-                $0.stage == .deep && $0.text.hasPrefix("The detail I need is:")
+                $0.stage == .deep && $0.text.hasPrefix("One thing I’d ask first.")
             }
         }
         XCTAssertTrue(clarificationVisible)
@@ -1614,7 +1617,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         let abstentionVisible = await eventually {
             let state = await abstentionHarness.controller.state()
             return state.suggestions.contains {
-                $0.stage == .deep && $0.text.hasPrefix("I cannot verify that yet.")
+                $0.stage == .deep && $0.text.hasPrefix("I’d be careful here.")
             }
         }
         XCTAssertTrue(abstentionVisible)
@@ -3258,13 +3261,13 @@ private actor FakeMeetingResponseGenerator: MeetingResponseGenerating {
     func reconcile(cue: CueEnvelope, draft: DeepDraft) -> Reconciliation {
         switch draft.kind {
         case .answer:
-            Reconciliation(relationship: .continueAnswer, transition: "More specifically,")
+            Reconciliation(relationship: .continueAnswer, transition: "Here’s the concrete detail.")
         case .generalAnswer:
-            Reconciliation(relationship: .continueAnswer, transition: "")
+            Reconciliation(relationship: .continueAnswer, transition: "The part I’d add is this.")
         case .clarification:
-            Reconciliation(relationship: .clarify, transition: "The detail I need is:")
+            Reconciliation(relationship: .clarify, transition: "One thing I’d ask first.")
         case .abstention:
-            Reconciliation(relationship: .abstain, transition: "I cannot verify that yet.")
+            Reconciliation(relationship: .abstain, transition: "I’d be careful here.")
         }
     }
 

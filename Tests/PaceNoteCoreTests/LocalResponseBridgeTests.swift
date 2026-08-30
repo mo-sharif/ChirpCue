@@ -65,7 +65,7 @@ final class LocalResponseBridgeTests: XCTestCase {
         let expected: [(String, String)] = [
             (
                 "Tell me about a time you influenced without authority.",
-                "I’ll anchor this in one concrete example, then make the decision, my role, and the outcome clear."
+                "I’ll use one real example. I’ll cover the decision, my role, and the result."
             ),
             (
                 "What is your greatest strength?",
@@ -89,11 +89,11 @@ final class LocalResponseBridgeTests: XCTestCase {
         let fixtures: [(question: String, expectedText: String)] = [
             (
                 "Can you explain how React reconciliation and the virtual DOM work?",
-                "commits only the DOM updates that changed"
+                "updates only the DOM parts that changed"
             ),
             (
                 "What causes a React component to re-render?",
-                "state, consumed context, or parent-driven inputs"
+                "state, context, or parent inputs"
             ),
             (
                 "What’s the difference between state and props in React?",
@@ -109,7 +109,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "What problem do promises and async/await solve?",
-                "represents a future result"
+                "holds a future result"
             ),
             (
                 "Compare SSR and CSR.",
@@ -117,7 +117,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "What is hydration in a server-rendered React app?",
-                "attaches client-side behavior to server-rendered HTML"
+                "attaches client behavior to server-rendered HTML"
             ),
             (
                 "Why do you use TypeScript?",
@@ -125,7 +125,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "What is eventual consistency?",
-                "lets replicas diverge temporarily"
+                "lets replicas differ for a while"
             ),
             (
                 "Why does idempotency matter?",
@@ -141,7 +141,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "How does MCP work?",
-                "exposes approved tools and context to a model"
+                "share approved tools and context with a model"
             ),
             (
                 "How do you make a web app accessible?",
@@ -153,7 +153,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "How would you improve frontend performance and Core Web Vitals?",
-                "measure LCP, INP, and CLS"
+                "real-user LCP, INP, and CLS data"
             ),
             (
                 "Why do React list items need stable keys?",
@@ -165,7 +165,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "When should I use useMemo versus useCallback?",
-                "avoided work outweighs their overhead"
+                "saved work is worth the extra complexity"
             ),
             (
                 "What tradeoff comes with React Context?",
@@ -193,7 +193,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "Walk through the browser rendering pipeline.",
-                "paints and composites pixels"
+                "Compositing puts the final layers"
             ),
             (
                 "How does code splitting improve a web application?",
@@ -205,7 +205,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "How would you investigate a browser memory leak?",
-                "heap snapshots reveal the retaining path"
+                "Heap snapshots show"
             ),
             (
                 "Explain the CAP theorem.",
@@ -217,11 +217,11 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "What does ACID mean for database transactions?",
-                "do not leave partial state"
+                "succeed or fail together"
             ),
             (
                 "Compare optimistic locking and pessimistic locking.",
-                "detects conflicts at write time"
+                "checks for conflicts when you write"
             ),
             (
                 "What does a load balancer do?",
@@ -229,7 +229,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "Why would you put work on a message queue?",
-                "decouples producers from consumers"
+                "separates producers from consumers"
             ),
             (
                 "How would you design rate limiting?",
@@ -237,19 +237,19 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "Compare REST and GraphQL.",
-                "cache-friendly semantics"
+                "simple caching"
             ),
             (
                 "Compare offset pagination and cursor pagination.",
-                "drifts under writes"
+                "can drift during writes"
             ),
             (
                 "When would you use WebSockets versus server-sent events?",
-                "only the server streams updates"
+                "only the server needs to stream updates"
             ),
             (
                 "Compare microservices with a modular monolith.",
-                "cost of distributed coordination"
+                "make coordination harder"
             ),
             (
                 "How does a CDN improve web performance?",
@@ -257,7 +257,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "What makes a design system successful?",
-                "tokens, accessibility rules, documentation, and governance"
+                "shared design rules"
             ),
             (
                 "What are the tradeoffs of microfrontends?",
@@ -273,7 +273,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "What should a strong CI/CD pipeline provide?",
-                "makes rollback fast and observable"
+                "rollout and rollback fast"
             ),
             (
                 "What is dependency injection?",
@@ -281,7 +281,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "What is the difference between authentication and authorization?",
-                "decides what that identity may do"
+                "decides what that identity can do"
             ),
             (
                 "How does OAuth delegate access?",
@@ -289,7 +289,7 @@ final class LocalResponseBridgeTests: XCTestCase {
             ),
             (
                 "How do encryption at rest and encryption in transit differ?",
-                "TLS protects data in transit"
+                "TLS protects data while it moves"
             ),
             (
                 "How should an application store and rotate secrets?",
@@ -333,11 +333,11 @@ final class LocalResponseBridgeTests: XCTestCase {
 
         XCTAssertTrue(accessibility.contains("semantic HTML"), accessibility)
         XCTAssertFalse(accessibility.contains("least-privilege"), accessibility)
-        XCTAssertTrue(eventualConsistency.contains("replicas diverge temporarily"))
+        XCTAssertTrue(eventualConsistency.contains("replicas differ for a while"))
         XCTAssertFalse(eventualConsistency.contains("reversible boundary"))
         XCTAssertTrue(databaseIndex.contains("separate lookup structure"))
         XCTAssertFalse(databaseIndex.contains("read-only access"))
-        XCTAssertTrue(mcpDataFlow.contains("defined protocol"))
+        XCTAssertTrue(mcpDataFlow.contains("standard way"))
         XCTAssertFalse(mcpDataFlow.contains("least-privilege"))
     }
 

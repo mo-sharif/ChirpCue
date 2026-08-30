@@ -101,8 +101,16 @@ public enum MeetingResponseError: Error, Equatable, LocalizedError, Sendable {
 
 public protocol MeetingResponseGenerating: ResponseGenerating {
     func prepare() async throws -> MeetingResponseRuntime
+    func recoverAfterCleanupFailure() async throws -> MeetingResponseRuntime
     func cancelActiveWork() async
     func shutdown() async -> MeetingResponseCleanupReport
+}
+
+public extension MeetingResponseGenerating {
+    func recoverAfterCleanupFailure() async throws -> MeetingResponseRuntime {
+        await cancelActiveWork()
+        return try await prepare()
+    }
 }
 
 public protocol MeetingSubscriptionManaging: Sendable {

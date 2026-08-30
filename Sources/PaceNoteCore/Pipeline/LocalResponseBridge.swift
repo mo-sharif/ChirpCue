@@ -36,7 +36,7 @@ public enum LocalResponseBridge {
                 ]
             ) {
                 return
-                    "I’ll anchor this in one concrete example, then make the decision, my role, and the outcome clear."
+                    "I’ll use one real example. I’ll cover the decision, my role, and the result."
             }
             if containsAny(
                 normalized,
@@ -84,7 +84,7 @@ public enum LocalResponseBridge {
             ]
         ) {
             return
-                "Are we optimizing throughput, tail latency, or cost? I’d measure the actual bottleneck first, then isolate and scale that path."
+                "Are we trying to improve throughput, tail latency, or cost? I’d find the real bottleneck first and scale only that path."
         }
 
         if containsAny(
@@ -115,7 +115,7 @@ public enum LocalResponseBridge {
             ["tell me about a time", "example", "experience", "challenging", "mistake", "learned"]
         ) {
             return
-                "I’ll anchor this in one concrete example, then make the decision, my role, and the outcome clear."
+                "I’ll use one real example. I’ll cover the decision, my role, and the result."
         }
 
         if containsAny(
@@ -159,7 +159,7 @@ public enum LocalResponseBridge {
     private static func directTechnicalAnswer(for normalized: String) -> String? {
         if containsAny(normalized, ["react reconciliation", "react reconcile", "virtual dom"]) {
             return
-                "At a high level, React builds a new element tree, compares it with the previous one, and commits only the DOM updates that changed."
+                "React builds a new element tree and compares it with the last one. Then it updates only the DOM parts that changed."
         }
 
         let asksAboutReactRendering =
@@ -170,7 +170,7 @@ public enum LocalResponseBridge {
             )
         if asksAboutReactRendering {
             return
-                "A React component re-renders when its state, consumed context, or parent-driven inputs change; memoization only skips work when identities stay stable."
+                "A React component re-renders when state, context, or parent inputs change. Memoization can skip work when those values stay stable."
         }
 
         if containsAny(normalized, ["state"]) && containsAny(normalized, ["prop", "props"]) {
@@ -199,12 +199,12 @@ public enum LocalResponseBridge {
                 && containsAny(normalized, ["react", "input", "component", "components"]))
         {
             return
-                "A controlled input keeps its value in React state; an uncontrolled input lets the DOM own it and reads through a ref."
+                "A controlled input keeps its value in React state. An uncontrolled input lets the DOM own it and reads the value through a ref."
         }
 
         if containsAny(normalized, ["usememo", "usecallback", "use memo", "use callback"]) {
             return
-                "useMemo caches a computed value and useCallback caches a function identity; both help only when avoided work outweighs their overhead."
+                "useMemo caches a value, while useCallback caches a function. I use either only when the saved work is worth the extra complexity."
         }
 
         let asksAboutReactContext =
@@ -231,7 +231,7 @@ public enum LocalResponseBridge {
 
         if containsAny(normalized, ["event loop", "javascript event loop", "browser event loop"]) {
             return
-                "At a high level, the event loop runs synchronous JavaScript first, then schedules queued work when the call stack becomes clear."
+                "The event loop runs synchronous JavaScript first. When the call stack clears, it starts the next queued work."
         }
 
         let asksAboutJavaScriptAsync =
@@ -240,7 +240,7 @@ public enum LocalResponseBridge {
                 && containsAny(normalized, ["javascript", "js", "typescript", "async", "await"]))
         if asksAboutJavaScriptAsync {
             return
-                "A promise represents a future result; async and await make its success and failure paths read like synchronous control flow."
+                "A promise holds a future result. Async and await make its success and failure paths read like normal step-by-step code."
         }
 
         if containsAny(normalized, ["hoisting", "hoisted"]) {
@@ -252,7 +252,7 @@ public enum LocalResponseBridge {
             && containsAny(normalized, ["throttle", "throttling"])
         {
             return
-                "Debouncing waits for activity to stop; throttling limits execution frequency while activity continues."
+                "Debouncing waits for activity to stop. Throttling limits how often work runs while activity continues."
         }
 
         if containsAny(normalized, ["event delegation"]) {
@@ -281,7 +281,7 @@ public enum LocalResponseBridge {
             )
         if asksAboutWebHydration {
             return
-                "At a high level, hydration attaches client-side behavior to server-rendered HTML so the existing page becomes interactive without rebuilding it."
+                "Hydration attaches client behavior to server-rendered HTML. That makes the existing page interactive without rebuilding it."
         }
 
         if containsAny(normalized, ["cors", "cross origin resource sharing"]) {
@@ -291,7 +291,7 @@ public enum LocalResponseBridge {
 
         if containsAny(normalized, ["critical rendering path", "browser rendering pipeline"]) {
             return
-                "The browser parses HTML and CSS, builds render structures, lays out geometry, then paints and composites pixels."
+                "The browser reads HTML and CSS, builds the page layout, then paints it. Compositing puts the final layers on screen."
         }
 
         if containsAny(normalized, ["code splitting", "lazy loading", "lazy load"]) {
@@ -309,7 +309,7 @@ public enum LocalResponseBridge {
             && containsAny(normalized, ["browser", "frontend", "front end", "javascript", "react"])
         if asksAboutBrowserMemoryLeak {
             return
-                "Browser memory leaks usually come from retained listeners, timers, closures, or caches; heap snapshots reveal the retaining path."
+                "Browser memory leaks often come from listeners, timers, or caches that stay alive. Heap snapshots show what is still holding them."
         }
 
         if containsAny(normalized, ["what is typescript", "explain typescript"]) {
@@ -330,7 +330,7 @@ public enum LocalResponseBridge {
 
         if containsAny(normalized, ["eventual consistency", "eventually consistent"]) {
             return
-                "At a high level, eventual consistency lets replicas diverge temporarily, provided they converge after updates stop."
+                "Eventual consistency lets replicas differ for a while. They should agree again after updates stop."
         }
 
         if containsAny(normalized, ["cap theorem", "consistency availability partition tolerance"]) {
@@ -356,17 +356,17 @@ public enum LocalResponseBridge {
             && containsAny(normalized, ["inner join", "left join", "joins"])
         if asksAboutSQLJoins {
             return
-                "An inner join returns matching rows; a left join keeps every left-side row and fills missing right-side values with null."
+                "An inner join returns only matching rows. A left join keeps every left-side row and uses null when the right side is missing."
         }
 
         if containsAny(normalized, ["acid", "database transaction", "database transactions"]) {
             return
-                "A transaction groups changes atomically; ACID adds consistency, isolation, and durability so concurrent failures do not leave partial state."
+                "A transaction makes a group of changes succeed or fail together. ACID also protects consistency, isolation, and durability."
         }
 
         if containsAny(normalized, ["optimistic locking", "pessimistic locking"]) {
             return
-                "Optimistic locking detects conflicts at write time; pessimistic locking blocks competing access earlier when conflicts are frequent or expensive."
+                "Optimistic locking checks for conflicts when you write. Pessimistic locking blocks other access earlier when conflicts are common or costly."
         }
 
         if containsAny(normalized, ["cache", "caches", "caching"]) {
@@ -381,7 +381,7 @@ public enum LocalResponseBridge {
 
         if containsAny(normalized, ["message queue", "job queue", "work queue"]) {
             return
-                "A queue decouples producers from consumers and absorbs bursts, but delivery, ordering, retries, and poison messages need explicit handling."
+                "A queue separates producers from consumers and absorbs traffic spikes. I’d define delivery, retries, and poison-message handling up front."
         }
 
         if containsAny(normalized, ["rate limiting", "rate limiter", "rate limit algorithm"]) {
@@ -394,12 +394,12 @@ public enum LocalResponseBridge {
             && containsAny(normalized, ["graphql", "graph ql"])
         if comparesRESTAndGraphQL {
             return
-                "REST exposes resource-shaped endpoints and cache-friendly semantics; GraphQL lets clients select fields but adds schema and query-cost complexity."
+                "REST gives you resource-based endpoints and simple caching. GraphQL lets clients choose fields, but adds schema and query-cost work."
         }
 
         if containsAny(normalized, ["cursor pagination", "offset pagination"]) {
             return
-                "Offset pagination is simple but drifts under writes; cursor pagination stays stable and efficient when ordered by an immutable key."
+                "Offset pagination is simple but can drift during writes. Cursor pagination stays stable when it uses an unchanging sort key."
         }
 
         let comparesStreamingTransports =
@@ -407,7 +407,7 @@ public enum LocalResponseBridge {
             && containsAny(normalized, ["server sent events", "sse"])
         if comparesStreamingTransports {
             return
-                "WebSockets are bidirectional; server-sent events are one-way over HTTP and simpler when only the server streams updates."
+                "WebSockets send data both ways. Server-sent events are simpler when only the server needs to stream updates."
         }
 
         let comparesServiceBoundaries =
@@ -415,7 +415,7 @@ public enum LocalResponseBridge {
             && containsAny(normalized, ["monolith", "modular monolith"])
         if comparesServiceBoundaries {
             return
-                "A modular monolith keeps deployment simple; microservices buy independent scaling and ownership at the cost of distributed coordination."
+                "A modular monolith keeps deployment simple. Microservices add independent scaling and ownership, but make coordination harder."
         }
 
         if containsAny(normalized, ["cdn", "content delivery network"]) {
@@ -425,7 +425,7 @@ public enum LocalResponseBridge {
 
         if containsAny(normalized, ["design system", "component library"]) {
             return
-                "A design system pairs reusable components with tokens, accessibility rules, documentation, and governance so teams ship consistent behavior."
+                "A design system combines reusable components with shared design rules. It helps teams ship accessible, consistent behavior."
         }
 
         if containsAny(normalized, ["microfrontend", "microfrontends", "micro frontend", "micro frontends"]) {
@@ -435,7 +435,7 @@ public enum LocalResponseBridge {
 
         if containsAny(normalized, ["feature flag", "feature flags", "feature toggle", "feature toggles"]) {
             return
-                "Feature flags decouple deployment from release, but they need ownership, telemetry, safe defaults, and a removal date."
+                "Feature flags separate deployment from release. Each flag still needs an owner, a safe default, and a removal date."
         }
 
         if containsAny(normalized, ["observability", "distributed tracing"]) {
@@ -445,7 +445,7 @@ public enum LocalResponseBridge {
 
         if containsAny(normalized, ["continuous integration", "continuous delivery", "ci cd", "cicd"]) {
             return
-                "A strong CI/CD path keeps builds reproducible, gates risky changes, deploys incrementally, and makes rollback fast and observable."
+                "A strong CI/CD path keeps builds repeatable and gates risky changes. It should also make rollout and rollback fast."
         }
 
         if containsAny(normalized, ["dependency injection", "inject dependencies"]) {
@@ -462,7 +462,7 @@ public enum LocalResponseBridge {
             ]
         ) {
             return
-                "At a high level, MCP standardizes how a host exposes approved tools and context to a model through a defined protocol."
+                "MCP gives hosts a standard way to share approved tools and context with a model. The host still controls what is available."
         }
 
         return nil
@@ -496,7 +496,7 @@ public enum LocalResponseBridge {
             )
         if hasSensitiveAccessPair || hasSecuredDataSystem {
             return
-                "Which data and actions does this actually require? I’d default to least-privilege, read-only access with scoped credentials, query limits, and audit logs."
+                "Which data and actions does this need? I’d start with read-only, least-privilege access and full audit logs."
         }
 
         let comparesAuthenticationAndAuthorization =
@@ -504,7 +504,7 @@ public enum LocalResponseBridge {
             && containsAny(normalized, ["authorization", "authz"])
         if comparesAuthenticationAndAuthorization {
             return
-                "Authentication verifies who a caller is; authorization decides what that identity may do at each protected resource boundary."
+                "Authentication checks who a caller is. Authorization decides what that identity can do at each protected boundary."
         }
 
         if containsAny(normalized, ["oauth", "oauth 2", "oauth2"]) {
@@ -520,7 +520,7 @@ public enum LocalResponseBridge {
         )
         if asksAboutEncryption {
             return
-                "TLS protects data in transit; storage encryption protects data at rest, with keys separated, rotated, and access-controlled."
+                "TLS protects data while it moves. Storage encryption protects saved data, with keys kept separate and access tightly limited."
         }
 
         let asksAboutSecretManagement =
@@ -535,7 +535,7 @@ public enum LocalResponseBridge {
             )
         if asksAboutSecretManagement {
             return
-                "I’d keep secrets out of code, store them in a managed vault, scope access, rotate them, and audit every retrieval."
+                "I’d keep secrets out of code and store them in a managed vault. Then I’d limit access, rotate them, and audit every read."
         }
 
         if containsAny(
@@ -547,7 +547,7 @@ public enum LocalResponseBridge {
             ]
         ) {
             return
-                "I’d start with the threat model, then layer least privilege, strong authentication, encryption, safe defaults, and auditable controls."
+                "I’d start with the threat model. Then I’d add least privilege, strong authentication, and audit logs."
         }
 
         if let directAnswer = directTechnicalAnswer(for: normalized) {
@@ -571,7 +571,7 @@ public enum LocalResponseBridge {
                 && containsAny(normalized, ["performance", "latency", "slow", "rendering"]))
         if isFrontendPerformance {
             return
-                "I’d protect interaction and rendering budgets first, then measure LCP, INP, and CLS with real-user data before optimizing."
+                "I’d set clear speed budgets first. Then I’d use real-user LCP, INP, and CLS data to find the slow path."
         }
 
         return nil
