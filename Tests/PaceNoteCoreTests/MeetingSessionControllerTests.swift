@@ -346,8 +346,9 @@ final class MeetingSessionControllerTests: XCTestCase {
         )
         let recovered = await eventually {
             let state = await harness.controller.state()
-            return state.suggestions.contains { $0.stage == .quick }
-                && state.suggestions.contains { $0.stage == .deep }
+            return state.suggestions.contains {
+                $0.identity.generation == 3 && $0.stage == .deep
+            }
                 && !state.brownouts.contains { $0.reason == .providerLimited }
         }
         XCTAssertTrue(recovered)
@@ -401,8 +402,9 @@ final class MeetingSessionControllerTests: XCTestCase {
         )
         let laterGenerationRecovered = await eventually {
             let state = await harness.controller.state()
-            return state.suggestions.contains { $0.stage == .quick }
-                && state.suggestions.contains { $0.stage == .deep }
+            return state.suggestions.contains {
+                $0.identity.generation == 2 && $0.stage == .deep
+            }
                 && !state.brownouts.contains { $0.reason == .providerLimited }
         }
         XCTAssertTrue(laterGenerationRecovered)
