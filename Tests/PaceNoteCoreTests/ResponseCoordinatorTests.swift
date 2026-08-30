@@ -36,12 +36,7 @@ final class ResponseCoordinatorTests: XCTestCase {
 
     func testFastAIAnswerAppearsBeforeDeepAndBindsReconciliation() async throws {
         let turn = makeTurn(generation: 1, grounded: false, technical: false)
-        let generator = ScriptedGenerator(
-            quickDelay: .milliseconds(10),
-            deepDelay: .milliseconds(25),
-            quickText: "I would decouple the caller from downstream latency, then make retries explicit.",
-            turn: turn
-        )
+        let generator = QuickBeforeDeepGenerator(gate: QuickHandledGate())
         let coordinator = ResponseCoordinator(
             generator: generator,
             configuration: .init(quickDeadline: .milliseconds(100), resultTTL: .seconds(1))
@@ -55,16 +50,13 @@ final class ResponseCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(bridge.isDeterministicBridge)
         XCTAssertFalse(cue.isDeterministicBridge)
-        XCTAssertEqual(
-            cue.text,
-            "I would decouple the caller from downstream latency, then make retries explicit."
-        )
+        XCTAssertEqual(cue.text, QuickBeforeDeepGenerator.quickText)
         XCTAssertEqual(deep.cueID, cue.id)
         XCTAssertEqual(deep.cueHash, cue.textHash)
         XCTAssertEqual(deep.kind, .generalAnswer)
         XCTAssertTrue(deep.basis.isEmpty)
         XCTAssertEqual(deep.transition, "More specifically,")
-        XCTAssertEqual(deep.sayNext, generator.deepText)
+        XCTAssertEqual(deep.sayNext, QuickBeforeDeepGenerator.deepText)
         XCTAssertLessThanOrEqual(deep.composedText.split(separator: " ").count, 40)
     }
 
@@ -633,13 +625,18 @@ private struct ScriptedGenerator: ResponseGenerating {
 /// Deep waits until the coordinator has consumed Quick and begun its cleanup step, avoiding a
 /// scheduler-dependent race between two short sleeps on loaded CI hosts.
 private struct QuickBeforeDeepGenerator: ResponseGenerating {
+    static let quickText =
+        "I would frame the decision around reversibility and the cost of being wrong."
+    static let deepText =
+        "I would isolate callers from retries and downstream outages with a queued boundary."
+
     let gate: QuickHandledGate
 
     func generateQuick(for turn: ConversationTurn) async throws -> QuickModelOutput {
         QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
-            sayNow: "I would frame the decision around reversibility and the cost of being wrong.",
+            sayNow: Self.quickText,
             needsDeep: false,
             confidence: 0.72,
             reason: "general_question"
@@ -658,8 +655,7 @@ private struct QuickBeforeDeepGenerator: ResponseGenerating {
             generation: turn.identity.generation,
             groundingFingerprint: nil,
             kind: .generalAnswer,
-            candidateSayNext:
-                "I would isolate callers from retries and downstream outages with a queued boundary.",
+            candidateSayNext: Self.deepText,
             confidence: 0.91,
             basis: []
         )
