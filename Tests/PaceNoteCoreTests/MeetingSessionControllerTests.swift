@@ -1654,6 +1654,27 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testGroundingSetupFailureIsNotMislabeledAsContentValidationFailure() async throws {
+        let response = FakeMeetingResponseGenerator(
+            deepFailuresRemaining: 1,
+            deepFailure: .groundingUnavailable
+        )
+        let harness = makeHarness(mode: .manualOnly, response: response)
+        try await prepareAndStart(harness)
+        try await harness.controller.submitTypedQuestion(
+            "How should I explain the repository boundary?"
+        )
+
+        let failureVisible = await eventually {
+            let state = await harness.controller.state()
+            return state.brownouts.contains { $0.reason == .deepUnavailable }
+                && !state.brownouts.contains { $0.reason == .deepRejected }
+        }
+
+        XCTAssertTrue(failureVisible)
+        _ = await harness.controller.stop()
+    }
+
     func testStopOrdersCleanupClearsEphemeralStateAndRemovesJournalOnSuccess() async throws {
         let response = FakeMeetingResponseGenerator(
             shutdownReport: MeetingResponseCleanupReport(deletedThreadCount: 3)

@@ -137,6 +137,10 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
             let quickDecision = await quickPathDecision(for: turn.identity)
             if quickDecision == .providerNeeded {
                 try await Task.sleep(for: providerQuickHeadStart)
+                // Quick cleanup can replace the provider while Deep yields its brief head start.
+                // Rejoin the shared runtime after the wait so the first Deep turn never enters a
+                // client that is already being cancelled or replaced.
+                _ = try await waitForProviderRuntime()
             }
         }
         try Task.checkCancellation()

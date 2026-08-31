@@ -64,8 +64,8 @@ final class GeneralGuidancePolicyTests: XCTestCase {
         }
     }
 
-    func testRejectsCannedAIOpenings() {
-        let rejected = [
+    func testAcceptsSafeCannedOpeningsBecauseToneIsNotATrustBoundary() {
+        let accepted = [
             "Broadly speaking, I would use a read-only database identity.",
             "Generally speaking, I would start with least privilege.",
             "I'm open to MCP connectors provided we add controls.",
@@ -74,21 +74,22 @@ final class GeneralGuidancePolicyTests: XCTestCase {
             "At a high level, I would start with least privilege.",
         ]
 
-        for candidate in rejected {
-            XCTAssertFalse(GeneralGuidancePolicy.accepts(candidate), candidate)
+        for candidate in accepted {
+            XCTAssertTrue(GeneralGuidancePolicy.accepts(candidate), candidate)
         }
     }
 
-    func testRejectsWrittenOrDenseStyle() {
-        let rejected = [
+    func testAcceptsImperfectButSafePresentationBecauseStyleIsNotATrustBoundary() {
+        let accepted = [
             "I would utilize a bounded queue to facilitate reliable processing.",
             "I would start with authentication; authorization can follow at each boundary.",
             "I would add logging, metrics, traces, retries, and alerts.",
             "I would leverage caching (with a short TTL) to reduce latency.",
+            "I’ve built large React and TypeScript applications, improved shared platforms, and helped teams ship reliable software faster. Lately, I’ve focused on AI products and developer tools.",
         ]
 
-        for candidate in rejected {
-            XCTAssertFalse(GeneralGuidancePolicy.accepts(candidate), candidate)
+        for candidate in accepted {
+            XCTAssertTrue(GeneralGuidancePolicy.accepts(candidate), candidate)
         }
     }
 

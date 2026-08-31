@@ -1670,8 +1670,8 @@ public actor MeetingSessionController {
                 case .cleanupUnavailable: .codexOffline
                 case .busy: .deepBusy
                 case .timedOut: .deepTimedOut
-                case .providerUnavailable: .deepUnavailable
-                case .responseRejected, .groundingUnavailable: .deepRejected
+                case .providerUnavailable, .groundingUnavailable: .deepUnavailable
+                case .responseRejected: .deepRejected
                 }
             emit(.suggestionStageFailed(identity: identity, stage: .deep, reason: reason))
             activateBrownout(.init(reason: reason))
