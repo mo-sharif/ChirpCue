@@ -34,6 +34,24 @@ final class SpeakerBriefQuickAnswerTests: XCTestCase {
         XCTAssertNil(response)
     }
 
+    func testTellMeAboutYourselfUsesFirstSpeakableAboutMeFactWithoutTermOverlap() throws {
+        let response = try XCTUnwrap(
+            SpeakerBriefQuickAnswer.response(
+                question: "Tell me about yourself.",
+                brief: """
+                    I’m a staff-level software engineer focused on frontend architecture and product engineering.
+                    I’ve spent much of my career building large React and TypeScript applications.
+                    """
+            )
+        )
+
+        XCTAssertEqual(
+            response,
+            "I’m a staff-level software engineer focused on frontend architecture and product engineering. I’ve spent much of my career building large React and TypeScript applications."
+        )
+        XCTAssertLessThanOrEqual(response.split(whereSeparator: \Character.isWhitespace).count, 24)
+    }
+
     func testDoesNotRewriteFragmentsOrTreatBriefInstructionsAsFacts() {
         let response = SpeakerBriefQuickAnswer.response(
             question: reactQuestion,

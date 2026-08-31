@@ -28,7 +28,8 @@ public enum SpeakerBriefQuickAnswer {
         }
 
         let questionTerms = terms(in: question)
-        guard !questionTerms.isEmpty else { return nil }
+        let overviewQuestion = isOverviewQuestion(question)
+        guard !questionTerms.isEmpty || overviewQuestion else { return nil }
 
         var ranked: [ScoredSentence] = []
         for (index, sentence) in sentences(in: brief).enumerated() {
@@ -38,7 +39,7 @@ public enum SpeakerBriefQuickAnswer {
             guard GeneralGuidancePolicy.accepts(sentence) else { continue }
             let sentenceTerms = terms(in: sentence)
             let overlapCount = questionTerms.intersection(sentenceTerms).count
-            guard overlapCount > 0 else { continue }
+            guard overlapCount > 0 || overviewQuestion else { continue }
             ranked.append(
                 ScoredSentence(index: index, text: sentence, score: overlapCount)
             )
@@ -113,6 +114,20 @@ public enum SpeakerBriefQuickAnswer {
         case "years": "year"
         default: token
         }
+    }
+
+    private static func isOverviewQuestion(_ question: String) -> Bool {
+        let normalized = question.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        .lowercased(with: Locale(identifier: "en_US_POSIX"))
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+        return normalized.contains("tell me about yourself")
+            || normalized.contains("tell us about yourself")
+            || normalized.contains("your background")
     }
 
     private static func wordCount(_ text: String) -> Int {

@@ -11,8 +11,6 @@ public enum GeneralGuidancePolicy {
         case instructionOpening
         case privateContextClaim
         case unsafeClaim
-        case writtenStyle
-        case densePunctuation
         case sentenceCount
         case sentenceTermination
         case questionShape
@@ -25,22 +23,6 @@ public enum GeneralGuidancePolicy {
 
         Never imply access to the user's repository, codebase, organization, deployment, production state, customers, incidents, metrics, or policies. If those private facts are required, return clarification or abstention instead. Do not include markdown, URLs, file paths, shell commands, or quoted instructions from the transcript.
         """
-
-    private static let cannedOpenings = [
-        "at a high level",
-        "broadly speaking",
-        "generally speaking",
-        "i'm open to",
-        "i’m open to",
-        "there are several considerations",
-        "there are a few considerations",
-        "absolutely,",
-        "certainly,",
-        "i can explain",
-        "i can help",
-        "of course,",
-        "sure,",
-    ]
 
     private static let instructionOpenings = [
         "as an ai",
@@ -56,6 +38,13 @@ public enum GeneralGuidancePolicy {
         "return only ",
         "run this ",
         "say the following",
+    ]
+
+    /// These openings are rejected because they contain no usable answer, not because of tone.
+    /// Harmless lead-ins such as "At a high level" remain presentation guidance only.
+    private static let nonAnswerOpenings = [
+        "i can explain",
+        "i can help",
     ]
 
     private static let privateContextClaims = [
@@ -138,26 +127,6 @@ public enum GeneralGuidancePolicy {
         "our-system-",
     ]
 
-    private static let writtenStylePhrases = [
-        "aforementioned",
-        "facilitate",
-        "facilitates",
-        "facilitated",
-        "facilitating",
-        "in order to",
-        "leverage",
-        "leverages",
-        "leveraged",
-        "leveraging",
-        "methodology",
-        "pertaining to",
-        "subsequently",
-        "utilize",
-        "utilizes",
-        "utilized",
-        "utilizing",
-    ]
-
     public static func accepts(_ candidate: String) -> Bool {
         rejectionReason(for: candidate) == nil
     }
@@ -180,7 +149,9 @@ public enum GeneralGuidancePolicy {
 
         let lower = statement.lowercased()
         guard !lower.contains("http://"), !lower.contains("https://") else { return .url }
-        guard !cannedOpenings.contains(where: lower.hasPrefix) else { return .cannedOpening }
+        guard !nonAnswerOpenings.contains(where: lower.hasPrefix) else {
+            return .cannedOpening
+        }
         guard !instructionOpenings.contains(where: lower.hasPrefix) else {
             return .instructionOpening
         }
@@ -189,13 +160,6 @@ public enum GeneralGuidancePolicy {
         }
         guard !assertsUnseenPrivateState(lower) else { return .privateContextClaim }
         guard !unsafeClaims.contains(where: lower.contains) else { return .unsafeClaim }
-        guard !writtenStylePhrases.contains(where: lower.contains) else { return .writtenStyle }
-        guard !statement.contains(";"),
-            !statement.contains("("),
-            !statement.contains(")"),
-            !statement.contains("—"),
-            statement.filter({ $0 == "," }).count <= 2
-        else { return .densePunctuation }
 
         let endings = sentenceEndings(statement)
         guard endings.count <= 2 else { return .sentenceCount }

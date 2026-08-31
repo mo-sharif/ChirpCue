@@ -19,6 +19,22 @@ final class DeepDraftValidationPolicyTests: XCTestCase {
         XCTAssertTrue(DeepDraftValidationPolicy.accepts(draft, for: turn))
     }
 
+    func testSafeAboutMeContinuationWithNaturalListPunctuationPasses() {
+        let turn = makeTurn(grounded: false)
+        let draft = DeepDraft(
+            turnID: turn.identity.turnID,
+            generation: turn.identity.generation,
+            groundingFingerprint: nil,
+            kind: .generalAnswer,
+            candidateSayNext:
+                "I’ve built large React and TypeScript applications, improved shared platforms, and helped teams ship reliable software faster. Lately, I’ve focused on AI products and developer tools.",
+            confidence: 0.84,
+            basis: []
+        )
+
+        XCTAssertEqual(DeepDraftValidationPolicy.normalized(draft, for: turn), draft)
+    }
+
     func testGroundedTurnAcceptsGeneralAnswerOnlyAsExplicitlyUngrounded() throws {
         let turn = makeTurn(grounded: true)
         let draft = DeepDraft(
