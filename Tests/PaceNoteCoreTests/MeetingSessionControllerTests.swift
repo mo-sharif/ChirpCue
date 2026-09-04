@@ -180,6 +180,33 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
+    func testDeepReceivesEarlierTopicWithoutAddingItToQuickContext() async throws {
+        let clock = LockedMeetingTime(10)
+        let harness = makeHarness(mode: .systemOutputOnly, time: clock)
+        try await prepareAndStart(harness)
+        let earlier = "The migration used feature flags and a small pilot group."
+        await harness.outputTranscriber.emit(
+            .result(
+                transcript(
+                    .output, earlier, hostTimeRange: hostTimeRange(start: 10)
+                )))
+        let received = await eventually {
+            await harness.controller.state().transcript.contains { $0.text == earlier }
+        }
+        XCTAssertTrue(received)
+        clock.set(100)
+        try await harness.controller.submitTypedQuestion("Can you give me an example of that migration?")
+        let generated = await eventually { await harness.response.deepRequestedTurns.count == 1 }
+        XCTAssertTrue(generated)
+        let requested = await harness.response.deepRequestedTurns.first
+        let turn = try XCTUnwrap(requested)
+        XCTAssertFalse(turn.recentTranscript.contains { $0.text == earlier })
+        XCTAssertTrue(turn.deepConversation.contains { $0.text == earlier })
+        _ = await harness.controller.stop()
+        let state = await harness.controller.state()
+        XCTAssertTrue(state.transcript.isEmpty)
+    }
+
     func testQuickFailuresUseAccurateTransientBrownouts() async throws {
         let cases: [(MeetingResponseError, BrownoutReason)] = [
             (.quickRateLimited, .quickLimited),
@@ -2328,7 +2355,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         }
     }
 
-    func testDeepArrivingDuringBridgeSpeechIsHeldUntilFinalTranscript() async throws {
+    func testDeepAppearsBesideQuickBeforeLocalSpeechFinishes() async throws {
         let clock = LockedMeetingTime(10)
         let deepBarrier = AudioOperationBarrier()
         await deepBarrier.arm()
@@ -2387,17 +2414,17 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(holdActivated)
 
         await deepBarrier.release()
-        let deepWasQueued = await eventually {
-            await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+        let deepWasDisplayed = await eventually {
+            await harness.controller.state().suggestions.contains { $0.stage == .deep }
         }
         let stateWhileSpeaking = await harness.controller.state()
         let heldTiming = await harness.controller.timingSnapshot()
-        XCTAssertTrue(deepWasQueued)
+        XCTAssertTrue(deepWasDisplayed)
         XCTAssertTrue(stateWhileSpeaking.suggestions.contains { $0.stage == .quick })
-        XCTAssertFalse(stateWhileSpeaking.suggestions.contains { $0.stage == .deep })
+        XCTAssertTrue(stateWhileSpeaking.suggestions.contains { $0.stage == .deep })
         XCTAssertEqual(heldTiming.samples.first?.bridgeToConfirmedLocalSpeechMarginSeconds, 2)
-        XCTAssertNil(heldTiming.samples.first?.turnStableToVerifiedDeepReadySeconds)
-        XCTAssertEqual(heldTiming.samples.first?.deepOutcome, .pending)
+        XCTAssertNotNil(heldTiming.samples.first?.turnStableToVerifiedDeepReadySeconds)
+        XCTAssertEqual(heldTiming.samples.first?.deepOutcome, .ready)
 
         let finalBridge = "I would separate the boundary before changing it."
         await harness.microphoneTranscriber.emit(
@@ -2487,7 +2514,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testDismissDropsDeepQueuedWhileTheBridgeIsBeingSpoken() async throws {
+    func testDismissDropsDeepDisplayedWhileQuickIsBeingSpoken() async throws {
         let clock = LockedMeetingTime(10)
         let deepBarrier = AudioOperationBarrier()
         await deepBarrier.arm()
@@ -2526,10 +2553,10 @@ final class MeetingSessionControllerTests: XCTestCase {
         }
         XCTAssertTrue(holdActivated)
         await deepBarrier.release()
-        let deepQueued = await eventually {
-            await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+        let deepDisplayed = await eventually {
+            await harness.controller.state().suggestions.contains { $0.stage == .deep }
         }
-        XCTAssertTrue(deepQueued)
+        XCTAssertTrue(deepDisplayed)
 
         await harness.controller.dismissSuggestion(identity: identity)
         let retentionAfterDismiss = await harness.controller.bridgeSpeechRetentionSnapshot()
@@ -2572,7 +2599,7 @@ final class MeetingSessionControllerTests: XCTestCase {
         _ = await harness.controller.stop()
     }
 
-    func testClearlyAttributedUserSpeechHoldsDeepUntilFinalTranscript() async throws {
+    func testClearlyAttributedSpeechDoesNotHideDeepOrReplaceQuick() async throws {
         let clock = LockedMeetingTime(10)
         let deepBarrier = AudioOperationBarrier()
         await deepBarrier.arm()
@@ -2637,12 +2664,13 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(holdAfterVolatile.hasActiveHold)
 
         await deepBarrier.release()
-        let deepQueued = await eventually {
-            await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+        let deepDisplayed = await eventually {
+            await harness.controller.state().suggestions.contains { $0.stage == .deep }
         }
-        let stateWithQueuedDeep = await harness.controller.state()
-        XCTAssertTrue(deepQueued)
-        XCTAssertFalse(stateWithQueuedDeep.suggestions.contains { $0.stage == .deep })
+        let stateWithDeep = await harness.controller.state()
+        XCTAssertTrue(deepDisplayed)
+        XCTAssertEqual(stateWithDeep.suggestions.first { $0.stage == .quick }, cue)
+        XCTAssertTrue(stateWithDeep.suggestions.contains { $0.stage == .deep })
 
         await harness.microphoneTranscriber.emit(
             .result(
@@ -2825,10 +2853,10 @@ final class MeetingSessionControllerTests: XCTestCase {
             XCTAssertTrue(holdActivated)
 
             await deepBarrier.release()
-            let deepQueued = await eventually {
-                await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+            let deepDisplayed = await eventually {
+                await harness.controller.state().suggestions.contains { $0.stage == .deep }
             }
-            XCTAssertTrue(deepQueued)
+            XCTAssertTrue(deepDisplayed)
 
             await harness.outputTranscriber.emit(
                 .result(
@@ -2939,10 +2967,10 @@ final class MeetingSessionControllerTests: XCTestCase {
         XCTAssertTrue(holdActivated)
 
         await deepBarrier.release()
-        let deepQueued = await eventually {
-            await harness.controller.bridgeSpeechRetentionSnapshot().hasQueuedDeep
+        let deepDisplayed = await eventually {
+            await harness.controller.state().suggestions.contains { $0.stage == .deep }
         }
-        XCTAssertTrue(deepQueued)
+        XCTAssertTrue(deepDisplayed)
 
         await harness.outputTranscriber.emit(
             .result(
@@ -2973,8 +3001,8 @@ final class MeetingSessionControllerTests: XCTestCase {
                 $0.source == .you && $0.text == localSpeech
             }
                 && retention.hasActiveHold
-                && retention.hasQueuedDeep
-                && !state.suggestions.contains { $0.stage == .deep }
+                && !retention.hasQueuedDeep
+                && state.suggestions.contains { $0.stage == .deep }
         }
         XCTAssertTrue(volatileEchoSuppressed)
 

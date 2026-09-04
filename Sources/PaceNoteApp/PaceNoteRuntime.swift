@@ -994,13 +994,15 @@ actor PaceNoteRuntime {
                     provider: providerResponseGenerator,
                     quickGenerator: BoundedLocalQuickGenerator(
                         base: FoundationModelQuickGenerator(
-                            speakingStyle: Self.speakingStyle
+                            speakingStyle: Self.speakingStyle,
+                            systemModelEnabled: request.provider != .codex
                         ),
                         timeout: .seconds(3)
                     ),
                     planType: verifiedSubscription.planType,
                     providerName: request.provider.rawValue,
-                    quickPathDecisionWindow: .milliseconds(3_250)
+                    quickPathDecisionWindow: request.provider == .codex
+                        ? .milliseconds(25) : .milliseconds(3_250)
                 )
             let cleaner = DefaultMeetingSessionResourceCleaner(
                 privateRoot: context.privateRoot,

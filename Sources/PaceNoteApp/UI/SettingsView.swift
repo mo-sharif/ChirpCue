@@ -60,7 +60,7 @@ struct SettingsView: View {
                     .accessibilityLabel("Speaking Style")
                     .accessibilityIdentifier("settings.speaking-style")
                     HStack {
-                        Text("About you")
+                        Text("About you and your examples")
                             .font(.subheadline.weight(.medium))
                         Spacer()
                         if !speakerBrief.isEmpty {
@@ -71,7 +71,7 @@ struct SettingsView: View {
                         }
                     }
                     TextEditor(text: $speakerBrief)
-                        .frame(minHeight: 92)
+                        .frame(minHeight: 140)
                         .accessibilityLabel("About You")
                         .accessibilityIdentifier("settings.speaker-brief")
                         .onChange(of: speakerBrief) { _, newValue in
@@ -83,7 +83,7 @@ struct SettingsView: View {
                         }
                     HStack(alignment: .firstTextBaseline) {
                         Text(
-                            "Write short first-person facts you would naturally say, such as your React experience, recent work, and role. A relevant sentence can appear immediately as your Quick answer. Stored locally on this Mac and sent only with meeting inference."
+                            "Start with a short summary, then add real project stories: the situation, your role, what you did, and the result. Quick uses a small context; Deep can use the fuller profile. Used when you start a meeting. Saved locally until cleared and sent with meeting inference. ChatGPT memories are not imported."
                         )
                         Spacer()
                         Text("\(speakerBrief.count)/\(SpeakerBriefPolicy.maximumCharacters)")

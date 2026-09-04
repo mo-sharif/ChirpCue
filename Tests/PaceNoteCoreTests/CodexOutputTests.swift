@@ -114,17 +114,97 @@ final class CodexOutputTests: XCTestCase {
         XCTAssertEqual(try router.route(for: .hardTechnical), .init(model: "gpt-5.6-sol", effort: "high"))
     }
 
+    func testLiveCoachingPrefersInstantQuickWhenAdvertised() throws {
+        let router = CodexModelRouter(
+            models: [model(id: "gpt-5.6-sol", efforts: ["none", "low", "medium"])],
+            policy: .liveCoaching
+        )
+        XCTAssertEqual(try router.route(for: .quick), .init(model: "gpt-5.6-sol", effort: "none"))
+    }
+
+    func testLiveCoachingPrefersSparkButSkipsHiddenSpark() throws {
+        for hidden in [false, true] {
+            let router = CodexModelRouter(
+                models: [
+                    model(id: "gpt-5.3-codex-spark", efforts: ["low", "medium", "high"], hidden: hidden),
+                    model(id: "gpt-5.6-sol", efforts: ["none", "low", "medium"]),
+                ],
+                policy: .liveCoaching
+            )
+            XCTAssertEqual(
+                try router.route(for: .quick),
+                hidden
+                    ? .init(model: "gpt-5.6-sol", effort: "none")
+                    : .init(model: "gpt-5.3-codex-spark", effort: "low")
+            )
+        }
+    }
+
+    func testLiveCoachingKeepsQuickOnSolAndBothDeepRoutesOnAstraMedium() throws {
+        let router = CodexModelRouter(
+            models: [
+                model(id: "gpt-6-astra", efforts: ["low", "medium", "high"], isDefault: true),
+                model(id: "gpt-5.6-sol", efforts: ["low", "medium", "high"], serviceTiers: ["priority"]),
+            ], policy: .liveCoaching)
+
+        XCTAssertEqual(
+            try router.route(for: .quick), .init(model: "gpt-5.6-sol", effort: "low", serviceTier: "priority"))
+        XCTAssertEqual(try router.route(for: .narrowTechnical), .init(model: "gpt-6-astra", effort: "medium"))
+        XCTAssertEqual(try router.route(for: .hardTechnical), .init(model: "gpt-6-astra", effort: "medium"))
+    }
+
+    func testUnavailableHiddenOrIneligibleAstraFallsBackToSol() throws {
+        let unavailableCatalogs: [[CodexModel]] = [
+            [],
+            [model(id: "gpt-6-astra", efforts: ["medium"], hidden: true)],
+            [model(id: "gpt-6-astra", efforts: ["high", "xhigh"])],
+            [model(id: "gpt-6-astra", efforts: [])],
+        ]
+        for catalog in unavailableCatalogs {
+            let router = CodexModelRouter(
+                models: catalog + [model(id: "gpt-5.6-sol", efforts: ["low", "medium", "high"])],
+                policy: .liveCoaching
+            )
+            XCTAssertEqual(try router.route(for: .narrowTechnical), .init(model: "gpt-5.6-sol", effort: "medium"))
+            XCTAssertEqual(try router.route(for: .hardTechnical), .init(model: "gpt-5.6-sol", effort: "high"))
+        }
+    }
+
+    func testLiveCoachingRetainsTerraFallbackAndRejectsUnknownModels() throws {
+        let router = CodexModelRouter(
+            models: [model(id: "gpt-5.6-terra", efforts: ["medium", "high"])],
+            policy: .liveCoaching
+        )
+        XCTAssertEqual(try router.route(for: .narrowTechnical), .init(model: "gpt-5.6-terra", effort: "medium"))
+        let unknownOnly = CodexModelRouter(
+            models: [model(id: "unknown-model", efforts: ["medium"], isDefault: true)],
+            policy: .liveCoaching
+        )
+        XCTAssertThrowsError(try unknownOnly.route(for: .narrowTechnical))
+    }
+
+    func testNewMeetingsDefaultToAstraCoachingPolicy() {
+        let configuration = MeetingResponseConfiguration(
+            meetingID: UUID(),
+            meetingPrivateRoot: URL(fileURLWithPath: "/tmp/chirpcue-routing-test/meeting"),
+            codexProfileRoot: URL(fileURLWithPath: "/tmp/chirpcue-routing-test/profile"),
+            clientVersion: "test", groundingSnapshot: nil
+        )
+        XCTAssertEqual(configuration.routingPolicy, .liveCoaching)
+    }
+
     private func model(
         id: String,
         efforts: [String],
         serviceTiers: [String] = [],
-        isDefault: Bool = false
+        isDefault: Bool = false,
+        hidden: Bool = false
     ) -> CodexModel {
         CodexModel(
             id: id,
             model: id,
             displayName: id,
-            hidden: false,
+            hidden: hidden,
             supportedReasoningEfforts: efforts.map {
                 CodexReasoningEffortOption(reasoningEffort: $0, description: "")
             },

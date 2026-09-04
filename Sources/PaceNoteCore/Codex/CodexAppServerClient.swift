@@ -902,6 +902,7 @@ public actor CodexAppServerClient {
             realtimePrompt: realtimePrompt,
             model: model,
             serviceTier: nil,
+            effort: "low",
             outputSchema: outputSchema,
             skills: skills
         )
@@ -913,6 +914,7 @@ public actor CodexAppServerClient {
         realtimePrompt: String,
         model: String? = nil,
         serviceTier: String? = nil,
+        effort: String? = "low",
         outputSchema: JSONValue? = nil,
         skills: [CodexSkillInvocation] = []
     ) async throws -> CodexQuickSession {
@@ -954,7 +956,7 @@ public actor CodexAppServerClient {
                 threadID: threadID,
                 text: text,
                 model: model,
-                effort: "low",
+                effort: effort,
                 serviceTier: serviceTier,
                 outputSchema: outputSchema,
                 skills: skills

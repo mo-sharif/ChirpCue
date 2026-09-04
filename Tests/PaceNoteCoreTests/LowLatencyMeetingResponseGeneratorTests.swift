@@ -4,6 +4,126 @@ import XCTest
 @testable import PaceNoteCore
 
 final class LowLatencyMeetingResponseGeneratorTests: XCTestCase {
+    func testCancellingBusyDeepStopsAdmissionRetries() async throws {
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(
+            gate: gate, deepFailures: Array(repeating: .deepAlreadyActive, count: 100)
+        )
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider, quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus", providerName: "codex", quickPathDecisionWindow: .zero,
+            deepAdmissionPollInterval: .seconds(10)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+        let turn = Self.turn(generation: 24)
+        let pending = Task { try await generator.generateDeep(for: turn) }
+        await provider.waitUntilDeepCalled()
+        pending.cancel()
+        do {
+            _ = try await pending.value
+            XCTFail("Cancelled admission must not generate an answer.")
+        } catch is CancellationError {
+            // Expected; neither the retry delay nor an earlier answer needs to finish.
+        }
+        let attempts = await provider.deepCallCount()
+        XCTAssertEqual(attempts, 1)
+        _ = await generator.shutdown()
+    }
+
+    func testBusyDeepWaitsForAdmissionWithoutBlockingQuick() async throws {
+        let turn = Self.turn(generation: 20)
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(
+            gate: gate, deepFailures: [.deepAlreadyActive, .deepAlreadyActive]
+        )
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider, quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus", providerName: "codex", providerQuickHeadStart: .zero,
+            quickPathDecisionWindow: .zero, deepAdmissionWait: .seconds(1),
+            deepAdmissionPollInterval: .milliseconds(10)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+        async let deep = generator.generateDeep(for: turn)
+        let quick = try await generator.generateQuick(for: turn)
+        XCTAssertEqual(quick.reason, "provider_sol_low")
+        let draft = try await deep
+        XCTAssertEqual(draft.turnID, turn.identity.turnID)
+        let attempts = await provider.deepCallCount()
+        XCTAssertEqual(attempts, 3)
+        try await generator.awaitQuickCleanup(for: turn.identity)
+        _ = await generator.shutdown()
+    }
+
+    func testDeepAdmissionDoesNotRetrySubscriptionCapacityOrLocalRateLimits() async throws {
+        for failure in [MeetingResponseError.providerCapacityUnavailable, .deepRateLimited, .invalidOutput] {
+            let gate = ProviderPreparationGate()
+            let provider = DeferredMeetingResponseGenerator(gate: gate, deepFailures: [failure])
+            let generator = LowLatencyMeetingResponseGenerator(
+                provider: provider, quickGenerator: DeterministicLocalQuickGenerator(),
+                planType: "plus", providerName: "codex", quickPathDecisionWindow: .zero
+            )
+            _ = try await generator.prepare()
+            await gate.waitUntilEntered()
+            await gate.release()
+            do {
+                _ = try await generator.generateDeep(for: Self.turn(generation: 21))
+                XCTFail("Expected the original failure.")
+            } catch let actual as MeetingResponseError {
+                XCTAssertEqual(actual, failure)
+            }
+            let attempts = await provider.deepCallCount()
+            XCTAssertEqual(attempts, 1)
+            _ = await generator.shutdown()
+        }
+    }
+
+    func testBusyDeepWaitIsBounded() async throws {
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(
+            gate: gate, deepFailures: Array(repeating: .deepAlreadyActive, count: 100)
+        )
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider, quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus", providerName: "codex", quickPathDecisionWindow: .zero,
+            deepAdmissionWait: .milliseconds(30), deepAdmissionPollInterval: .seconds(1)
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+        do {
+            _ = try await generator.generateDeep(for: Self.turn(generation: 22))
+            XCTFail("Busy admission must eventually finish.")
+        } catch let error as MeetingResponseError {
+            XCTAssertEqual(error, .deepAlreadyActive)
+        }
+        let attempts = await provider.deepCallCount()
+        XCTAssertEqual(attempts, 1)
+        _ = await generator.shutdown()
+    }
+
+    func testProviderQuickFailureIsNotDisguisedAsSuccessfulFallback() async throws {
+        let gate = ProviderPreparationGate()
+        let provider = DeferredMeetingResponseGenerator(gate: gate, quickFailure: .providerCapacityUnavailable)
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider, quickGenerator: DeterministicLocalQuickGenerator(),
+            planType: "plus", providerName: "codex"
+        )
+        _ = try await generator.prepare()
+        await gate.waitUntilEntered()
+        await gate.release()
+        do {
+            _ = try await generator.generateQuick(for: Self.turn(generation: 23))
+            XCTFail("Capacity failure must remain visible while the coordinator keeps its initial cue.")
+        } catch let error as MeetingResponseError {
+            XCTAssertEqual(error, .providerCapacityUnavailable)
+        }
+        _ = await generator.shutdown()
+    }
+
     func testPrepareAndQuickDoNotWaitForSubscriptionProviderPreparation() async throws {
         let turn = Self.turn(generation: 1)
         let gate = ProviderPreparationGate()
@@ -563,11 +683,14 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     private let gate: ProviderPreparationGate
     private var preparationFailures: Int
     private var quickCleanupFailures: Int
+    private var deepFailures: [MeetingResponseError]
+    private let quickFailure: MeetingResponseError?
     private var recoveryFailures: Int
     private let suspendFirstDeepUntilRecovery: Bool
     private var prepared = false
     private var preparationCalls = 0
     private var deepCalls = 0
+    private var deepCallWaiters: [CheckedContinuation<Void, Never>] = []
     private var quickCalls = 0
     private var cancellations = 0
     private var recoveries = 0
@@ -581,13 +704,17 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
         preparationFailures: Int = 0,
         quickCleanupFailures: Int = 0,
         recoveryFailures: Int = 0,
-        suspendFirstDeepUntilRecovery: Bool = false
+        suspendFirstDeepUntilRecovery: Bool = false,
+        deepFailures: [MeetingResponseError] = [],
+        quickFailure: MeetingResponseError? = nil
     ) {
         self.gate = gate
         self.preparationFailures = preparationFailures
         self.quickCleanupFailures = quickCleanupFailures
         self.recoveryFailures = recoveryFailures
         self.suspendFirstDeepUntilRecovery = suspendFirstDeepUntilRecovery
+        self.deepFailures = deepFailures
+        self.quickFailure = quickFailure
     }
 
     func prepare() async throws -> MeetingResponseRuntime {
@@ -611,6 +738,7 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
         guard prepared else { throw MeetingResponseError.notPrepared }
         quickCalls += 1
         calls.append("quick")
+        if let quickFailure { throw quickFailure }
         return QuickModelOutput(
             turnID: turn.identity.turnID,
             generation: turn.identity.generation,
@@ -624,7 +752,10 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     func generateDeep(for turn: ConversationTurn) async throws -> DeepDraft {
         guard prepared else { throw MeetingResponseError.notPrepared }
         deepCalls += 1
+        for waiter in deepCallWaiters { waiter.resume() }
+        deepCallWaiters.removeAll()
         calls.append("deep")
+        if !deepFailures.isEmpty { throw deepFailures.removeFirst() }
         if suspendFirstDeepUntilRecovery, deepCalls == 1 {
             deepSuspended = true
             for waiter in deepSuspensionWaiters { waiter.resume() }
@@ -682,6 +813,10 @@ private actor DeferredMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     func deepCallCount() -> Int { deepCalls }
+    func waitUntilDeepCalled() async {
+        guard deepCalls == 0 else { return }
+        await withCheckedContinuation { deepCallWaiters.append($0) }
+    }
     func quickCallCount() -> Int { quickCalls }
     func cancelCount() -> Int { cancellations }
     func recoveryCount() -> Int { recoveries }

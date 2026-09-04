@@ -22,6 +22,8 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     private let providerRetryDelay: Duration
     private let providerQuickHeadStart: Duration
     private let quickPathDecisionWindow: Duration
+    private let deepAdmissionWait: Duration
+    private let deepAdmissionPollInterval: Duration
 
     private var lifecycle = Lifecycle.open
     private var quickRoute = FoundationModelQuickGenerator.deterministicRoute
@@ -47,7 +49,9 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         providerName: String,
         providerRetryDelay: Duration = .seconds(1),
         providerQuickHeadStart: Duration = .seconds(1),
-        quickPathDecisionWindow: Duration = .milliseconds(25)
+        quickPathDecisionWindow: Duration = .milliseconds(25),
+        deepAdmissionWait: Duration = .seconds(15),
+        deepAdmissionPollInterval: Duration = .milliseconds(250)
     ) {
         self.provider = provider
         self.quickGenerator = quickGenerator
@@ -59,6 +63,8 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         self.providerRetryDelay = providerRetryDelay
         self.providerQuickHeadStart = providerQuickHeadStart
         self.quickPathDecisionWindow = quickPathDecisionWindow
+        self.deepAdmissionWait = max(.zero, deepAdmissionWait)
+        self.deepAdmissionPollInterval = max(.milliseconds(1), deepAdmissionPollInterval)
     }
 
     deinit {
@@ -93,29 +99,24 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         )
         guard local.reason == "deterministic_safety_bridge" else { return local }
 
-        do {
-            let runtime = try await waitForProviderRuntime()
-            try Task.checkCancellation()
-            guard Self.supportsGeneratedQuick(runtime) else { return local }
+        let runtime = try await waitForProviderRuntime()
+        try Task.checkCancellation()
+        guard Self.supportsGeneratedQuick(runtime) else { return local }
 
-            activeProviderCalls += 1
-            do {
-                let generated = try await provider.generateQuick(for: turn)
-                activeProviderCalls -= 1
-                providerQuickIdentities.insert(turn.identity)
-                return generated
-            } catch {
-                activeProviderCalls -= 1
-                if error is CancellationError { throw CancellationError() }
-                if Self.isCleanupFailure(error) {
-                    startProviderRecoveryIfNeeded()
-                }
-                return local
-            }
-        } catch is CancellationError {
-            throw CancellationError()
+        activeProviderCalls += 1
+        do {
+            let generated = try await provider.generateQuick(for: turn)
+            activeProviderCalls -= 1
+            providerQuickIdentities.insert(turn.identity)
+            return generated
         } catch {
-            return local
+            activeProviderCalls -= 1
+            if Self.isCleanupFailure(error) {
+                startProviderRecoveryIfNeeded()
+            }
+            // The coordinator already displayed the local cue. Preserve the actual failure so
+            // capacity, validation, and connectivity problems cannot masquerade as a success.
+            throw error
         }
     }
 
@@ -146,12 +147,12 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         try Task.checkCancellation()
         let recoveryRevision = providerRecoveryRevision
         do {
-            return try await callProviderDeep(for: turn)
+            return try await callProviderDeepWhenAvailable(for: turn)
         } catch {
             if Self.isCleanupFailure(error) {
                 _ = try await recoverProviderAfterCleanupFailure()
                 try Task.checkCancellation()
-                return try await callProviderDeep(for: turn)
+                return try await callProviderDeepWhenAvailable(for: turn)
             }
             if error is CancellationError,
                 !Task.isCancelled,
@@ -159,7 +160,7 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
             {
                 _ = try await waitForProviderRuntime()
                 try Task.checkCancellation()
-                return try await callProviderDeep(for: turn)
+                return try await callProviderDeepWhenAvailable(for: turn)
             }
             throw error
         }
@@ -177,6 +178,30 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
         } catch {
             activeProviderCalls -= 1
             throw error
+        }
+    }
+
+    private func callProviderDeepWhenAvailable(for turn: ConversationTurn) async throws -> DeepDraft {
+        let deadline = ContinuousClock().now.advanced(by: deepAdmissionWait)
+        while true {
+            try requireOpen()
+            try Task.checkCancellation()
+            do {
+                return try await callProviderDeep(for: turn)
+            } catch MeetingResponseError.deepAlreadyActive {
+                // A rejected local admission never starts model work or spends subscription
+                // capacity. Wait briefly for an earlier answer without cancelling that answer.
+                guard ContinuousClock().now < deadline else {
+                    throw MeetingResponseError.deepAlreadyActive
+                }
+                try await ContinuousClock().sleep(
+                    until: min(ContinuousClock().now.advanced(by: deepAdmissionPollInterval), deadline)
+                )
+                guard ContinuousClock().now < deadline else {
+                    throw MeetingResponseError.deepAlreadyActive
+                }
+                _ = try await waitForProviderRuntime()
+            }
         }
     }
 
@@ -298,6 +323,8 @@ public actor LowLatencyMeetingResponseGenerator: MeetingResponseGenerating {
     }
 
     private func waitForProviderRuntime() async throws -> MeetingResponseRuntime {
+        try requireOpen()
+        try Task.checkCancellation()
         if let providerRuntime { return providerRuntime }
         if cleanupRecoveryFailed {
             throw providerFailure ?? MeetingResponseError.cleanupFailed

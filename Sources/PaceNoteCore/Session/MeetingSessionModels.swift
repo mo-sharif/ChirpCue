@@ -53,6 +53,7 @@ public struct MeetingSessionConfiguration: Sendable {
     public let speakerBrief: String?
     public let transcriptRetention: Duration
     public let transcriptContextSeconds: TimeInterval
+    public let deepTranscriptContextSeconds: TimeInterval
     public let turnBoundaryDelay: Duration
     public let microphoneAttributionDelay: Duration
     public let systemOutputScope: MeetingSystemOutputScope
@@ -66,12 +67,14 @@ public struct MeetingSessionConfiguration: Sendable {
         speakerBrief: String? = nil,
         transcriptRetention: Duration = .seconds(180),
         transcriptContextSeconds: TimeInterval = 45,
+        deepTranscriptContextSeconds: TimeInterval = 180,
         turnBoundaryDelay: Duration = .milliseconds(450),
         microphoneAttributionDelay: Duration = .milliseconds(250),
         systemOutputScope: MeetingSystemOutputScope = .meetingApplication,
         soleNearbySpeakerConfirmed: Bool = false
     ) {
         precondition(transcriptContextSeconds > 0)
+        precondition(deepTranscriptContextSeconds > 0)
         self.meetingID = meetingID
         self.captureMode = captureMode
         self.localeIdentifier = localeIdentifier
@@ -79,6 +82,7 @@ public struct MeetingSessionConfiguration: Sendable {
         self.speakerBrief = SpeakerBriefPolicy.normalized(speakerBrief)
         self.transcriptRetention = transcriptRetention
         self.transcriptContextSeconds = transcriptContextSeconds
+        self.deepTranscriptContextSeconds = deepTranscriptContextSeconds
         self.turnBoundaryDelay = turnBoundaryDelay
         self.microphoneAttributionDelay = microphoneAttributionDelay
         self.systemOutputScope = systemOutputScope

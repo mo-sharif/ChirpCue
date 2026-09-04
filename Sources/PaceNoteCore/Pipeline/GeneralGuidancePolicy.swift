@@ -1,6 +1,17 @@
 import Foundation
 
 public enum GeneralGuidancePolicy {
+    static let detailedMaximumWords = 220
+    static let detailedMaximumBytes = 3_000
+
+    static var detailedModelInstructions: String {
+        modelInstructions.replacingOccurrences(
+            of: "Answer in one or two short speakable sentences totaling at most 33 words.",
+            with:
+                "For a substantive question, aim for 120 to 180 words across six to ten short sentences, never more than 220 words. Give a direct answer, explain why, and include one concrete example and the tradeoff when useful. When asked for an example, prefer a relevant personal story explicitly supplied in the speaker brief or the speaker's own transcript. Explain the situation, action, and outcome only as supported by those facts. If no matching story is supplied, clearly frame the example as hypothetical; never invent personal experience or private facts. Simple questions can be shorter. Do not pad the answer. Keep Quick's short opening in mind, but make this answer understandable on its own."
+        )
+    }
+
     enum RejectionReason: String, Sendable {
         case empty
         case size
@@ -131,11 +142,25 @@ public enum GeneralGuidancePolicy {
         rejectionReason(for: candidate) == nil
     }
 
-    static func rejectionReason(for candidate: String) -> RejectionReason? {
+    static func acceptsDetailed(_ candidate: String) -> Bool {
+        rejectionReason(
+            for: candidate,
+            maximumWords: detailedMaximumWords,
+            maximumBytes: detailedMaximumBytes,
+            maximumSentences: 12
+        ) == nil
+    }
+
+    static func rejectionReason(
+        for candidate: String,
+        maximumWords: Int = 33,
+        maximumBytes: Int = 320,
+        maximumSentences: Int = 2
+    ) -> RejectionReason? {
         let statement = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !statement.isEmpty else { return .empty }
-        guard statement.utf8.count <= 320,
-            statement.split(whereSeparator: { $0.isWhitespace }).count <= 33
+        guard statement.utf8.count <= maximumBytes,
+            statement.split(whereSeparator: { $0.isWhitespace }).count <= maximumWords
         else { return .size }
         guard
             !candidate.unicodeScalars.contains(where: {
@@ -162,7 +187,19 @@ public enum GeneralGuidancePolicy {
         guard !unsafeClaims.contains(where: lower.contains) else { return .unsafeClaim }
 
         let endings = sentenceEndings(statement)
-        guard endings.count <= 2 else { return .sentenceCount }
+        guard endings.count <= maximumSentences else { return .sentenceCount }
+        if maximumSentences > 2 {
+            // Longer answers must not hide a private-state assertion or injected instruction
+            // after an otherwise safe opening sentence.
+            let sentences = lower.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+            for sentence in sentences {
+                let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+                if assertsUnseenPrivateState(trimmed) { return .privateContextClaim }
+                if instructionOpenings.contains(where: trimmed.hasPrefix) {
+                    return .instructionOpening
+                }
+            }
+        }
         guard endings.isEmpty || ".!?".contains(statement.last ?? " ") else {
             return .sentenceTermination
         }

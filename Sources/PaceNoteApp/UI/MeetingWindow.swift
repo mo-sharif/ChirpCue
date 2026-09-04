@@ -725,7 +725,7 @@ private struct SuggestionCardView: View {
                     .foregroundStyle(tint)
                     .accessibilityLabel(symbolAccessibilityLabel)
             }
-            Text(card.text)
+            Text(prompterText)
                 .font(.title3.weight(.medium))
                 .lineSpacing(5)
                 .textSelection(.enabled)
@@ -767,6 +767,25 @@ private struct SuggestionCardView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title). \(subtitle). \(card.text)")
+    }
+
+    private var prompterText: String {
+        guard card.stage == .deep,
+            card.text.split(whereSeparator: \.isWhitespace).count > 40
+        else { return card.text }
+        var sentences: [String] = []
+        card.text.enumerateSubstrings(
+            in: card.text.startIndex..<card.text.endIndex,
+            options: .bySentences
+        ) { sentence, _, _, _ in
+            if let sentence {
+                sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        guard !sentences.isEmpty else { return card.text }
+        return stride(from: 0, to: sentences.count, by: 2).map { index in
+            sentences[index..<min(index + 2, sentences.count)].joined(separator: " ")
+        }.joined(separator: "\n\n")
     }
 }
 

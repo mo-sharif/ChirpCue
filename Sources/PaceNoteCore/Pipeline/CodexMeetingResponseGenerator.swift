@@ -1107,6 +1107,7 @@ public actor CodexMeetingResponseGenerator: MeetingResponseGenerating {
                     realtimePrompt: Self.realtimeQuickInstructions,
                     model: runtime.quickRoute.model,
                     serviceTier: runtime.quickRoute.serviceTier,
+                    effort: runtime.quickRoute.effort,
                     outputSchema: usesCompactQuickOutput
                         ? CodexOutputSchema.quickCandidate
                         : CodexOutputSchema.quick,

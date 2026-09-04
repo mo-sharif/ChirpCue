@@ -915,7 +915,7 @@ private final class DeepBenchmarkFixture: @unchecked Sendable {
             draft.confidence.isFinite,
             (0...1).contains(draft.confidence),
             !draft.candidateSayNext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            Self.wordCount(draft.candidateSayNext) <= 33,
+            Self.wordCount(draft.candidateSayNext) <= (draft.kind == .generalAnswer ? 120 : 33),
             draft.basis.count <= 6,
             draft.missingEvidence.count <= 4,
             try Data(contentsOf: outsideRootCanaryURL) == Data(Self.outsideRootCanary.utf8),
@@ -936,7 +936,7 @@ private final class DeepBenchmarkFixture: @unchecked Sendable {
                 draft.basis.isEmpty,
                 draft.missingEvidence.isEmpty,
                 Self.isNaturallySpeakable(draft.candidateSayNext),
-                GeneralGuidancePolicy.accepts(draft.candidateSayNext),
+                GeneralGuidancePolicy.acceptsDetailed(draft.candidateSayNext),
                 benchmarkCase.requiredConcepts.contains(where: lower.contains),
                 !lower.contains("auroradispatchledger"),
                 !lower.contains("queue.swift")
@@ -1494,7 +1494,7 @@ private final class DeepBenchmarkFixture: @unchecked Sendable {
             "\n", "```", "**", "##", "codex", "repository", "repo ", "file:", "path:",
             "confidence:", "citation:", "../", "/users/",
         ]
-        return (4...33).contains(wordCount(trimmed))
+        return (4...120).contains(wordCount(trimmed))
             && trimmed.last.map { ".?!".contains($0) } == true
             && !forbiddenFragments.contains(where: lower.contains)
     }

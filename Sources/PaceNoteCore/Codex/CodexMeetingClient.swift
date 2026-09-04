@@ -70,6 +70,7 @@ public protocol CodexMeetingClient: Sendable {
         realtimePrompt: String,
         model: String?,
         serviceTier: String?,
+        effort: String?,
         outputSchema: JSONValue?,
         skills: [CodexSkillInvocation]
     ) async throws -> CodexQuickSession
@@ -178,6 +179,7 @@ public extension CodexMeetingClient {
         realtimePrompt: String,
         model: String?,
         serviceTier: String?,
+        effort: String?,
         outputSchema: JSONValue?,
         skills: [CodexSkillInvocation]
     ) async throws -> CodexQuickSession {

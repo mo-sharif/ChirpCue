@@ -99,7 +99,7 @@ public struct TurnDetector: Sendable {
 
     private static func looksActionable(_ text: String) -> Bool {
         if text.hasSuffix("?") { return true }
-        let lowercased = text.lowercased()
+        let lowercased = actionableText(text)
         let prefixes = [
             "why ", "how ", "what ", "when ", "where ", "which ", "who ",
             "why's ", "how's ", "what's ", "when's ", "where's ", "who's ",
@@ -118,6 +118,34 @@ public struct TurnDetector: Sendable {
         ]
         return Self.looksLikeShortPrompt(lowercased)
             || prefixes.contains { lowercased.hasPrefix($0) }
+    }
+
+    /// Speech recognition often omits punctuation around conversational lead-ins. Strip only
+    /// known lead-ins at the start; an embedded question in a statement is not a new request.
+    private static func actionableText(_ text: String) -> String {
+        var remainder = text.lowercased()
+        let leadIns = [
+            "my first question is", "my next question is", "my question is",
+            "the first question is", "the next question is", "the question is",
+            "i was wondering", "i'm wondering", "i am wondering",
+            "okay", "ok", "so", "well", "um", "uh", "and", "also", "then",
+        ]
+        let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+        for _ in 0..<8 {
+            remainder = remainder.trimmingCharacters(in: separators)
+            guard
+                let leadIn = leadIns.first(where: { phrase in
+                    guard remainder.hasPrefix(phrase) else { return false }
+                    let suffix = remainder.dropFirst(phrase.count)
+                    return suffix.isEmpty
+                        || suffix.first.map {
+                            $0.isWhitespace || $0.isPunctuation
+                        } == true
+                })
+            else { break }
+            remainder.removeFirst(leadIn.count)
+        }
+        return remainder.trimmingCharacters(in: separators)
     }
 
     private static func looksLikeShortPrompt(_ text: String) -> Bool {

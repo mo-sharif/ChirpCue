@@ -151,7 +151,7 @@ public struct MeetingResponseConfiguration: Sendable {
         groundingSnapshot: GroundingSnapshot?,
         selectedDomainSkillName: String? = nil,
         deepComplexity: CodexResponseComplexity = .narrowTechnical,
-        routingPolicy: CodexRoutingPolicy = .codex_0_147,
+        routingPolicy: CodexRoutingPolicy = .liveCoaching,
         subscriptionQuickEnabled: Bool = true,
         realtimeQuickEnabled: Bool = true,
         quickPerMinute: Int = 8,

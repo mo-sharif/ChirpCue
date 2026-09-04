@@ -383,7 +383,10 @@ public actor ResponseCoordinator {
                     sayNext: Self.safeSayNext(for: draft),
                     basis: draft.basis
                 )
-                guard Self.wordCount(bound.composedText) <= 40 else {
+                let maximumWords =
+                    draft.kind == .generalAnswer
+                    ? GeneralGuidancePolicy.detailedMaximumWords + 7 : 40
+                guard Self.wordCount(bound.composedText) <= maximumWords else {
                     continuation.yield(.deepUnavailable(.responseRejected))
                     return false
                 }
@@ -539,15 +542,21 @@ public actor ResponseCoordinator {
     private static func safeSayNext(for draft: DeepDraft) -> String {
         switch draft.kind {
         case .answer:
-            limitWords(draft.candidateSayNext, maximum: 33)
+            return limitWords(draft.candidateSayNext, maximum: 33)
         case .generalAnswer:
-            limitWords(draft.candidateSayNext, maximum: 33)
+            return draft.candidateSayNext
         case .clarification:
-            draft.groundingFingerprint == nil
+            if GeneralGuidancePolicy.acceptsDetailed(draft.candidateSayNext) {
+                return draft.candidateSayNext
+            }
+            return draft.groundingFingerprint == nil
                 ? "Which system or constraint do you mean?"
                 : "Can you share the missing detail so I can verify it?"
         case .abstention:
-            draft.groundingFingerprint == nil
+            if GeneralGuidancePolicy.acceptsDetailed(draft.candidateSayNext) {
+                return draft.candidateSayNext
+            }
+            return draft.groundingFingerprint == nil
                 ? "I don’t have enough context to answer that well yet."
                 : "I can’t verify that from what I have here yet."
         }

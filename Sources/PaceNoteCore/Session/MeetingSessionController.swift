@@ -48,6 +48,7 @@ public actor MeetingSessionController {
         let question: String
         let stableAt: TimeInterval
         let recentTranscript: [TranscriptSegment]
+        let deepTranscript: [TranscriptSegment]
     }
 
     private struct ResponseCancellationOperation: Sendable {
@@ -1364,7 +1365,12 @@ public actor MeetingSessionController {
             recentTranscript: timeline.recent(
                 endingAt: stableAt,
                 seconds: configuration.transcriptContextSeconds
-            )
+            ),
+            deepTranscript: Array(
+                timeline.recent(
+                    endingAt: stableAt,
+                    seconds: configuration.deepTranscriptContextSeconds
+                ).suffix(32))
         )
         emit(.suggestionThreadStarted(identity: identity, question: question))
         phase = .candidateQuestion
@@ -1395,6 +1401,7 @@ public actor MeetingSessionController {
             identity: pending.identity,
             question: pending.question,
             recentTranscript: pending.recentTranscript,
+            deepTranscript: pending.deepTranscript,
             speakerBrief: configuration.speakerBrief,
             repoAlias: configuration.grounding?.repoAlias,
             groundingFingerprint: configuration.grounding?.fingerprint
@@ -1625,7 +1632,11 @@ public actor MeetingSessionController {
                 responseCleanupFailureGeneration = nil
                 deactivateBrownout(reason: .codexOffline)
             }
-            if bridgeSpeechHold?.identity == identity {
+            // Keep an in-flight replacement of the spoken cue stable until a speech boundary.
+            // Once Quick is already displayed, Deep is additive and must not wait for silence.
+            if bridgeSpeechHold?.identity == identity,
+                queuedQuickResponse?.identity == identity
+            {
                 queuedDeepResponse = QueuedDeepResponse(identity: identity, response: deep)
             } else {
                 displayDeep(deep, identity: identity)

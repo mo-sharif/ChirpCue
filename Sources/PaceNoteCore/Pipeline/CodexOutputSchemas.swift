@@ -39,7 +39,7 @@ public enum CodexOutputSchema {
                 "type": "string",
                 "enum": ["answer", "general_answer", "clarification", "abstention"],
             ],
-            "candidateSayNext": ["type": "string", "minLength": 1, "maxLength": 320],
+            "candidateSayNext": ["type": "string", "minLength": 1, "maxLength": 3000],
             "confidence": ["type": "number", "minimum": 0, "maximum": 1],
             "basis": [
                 "type": "array",

@@ -473,12 +473,12 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
         guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             !turn.question.contains("\0")
         else { throw MeetingResponseError.invalidOutput }
-        let transcript = turn.recentTranscript.suffix(6).map {
+        let transcript = turn.deepConversation.suffix(pack == nil ? 16 : 6).map {
             DeepInput.TranscriptLine(
                 source: $0.source.rawValue,
                 text: boundedText(
                     $0.text.replacingOccurrences(of: "\0", with: ""),
-                    maximumBytes: 768
+                    maximumBytes: 512
                 )
             )
         }
@@ -492,11 +492,11 @@ public actor GeminiMeetingResponseGenerator: MeetingResponseGenerating {
             ),
             speakingStyle: boundedText(speakingStyle, maximumBytes: 256),
             speakerBrief: turn.speakerBrief.map {
-                boundedText($0, maximumBytes: 2_048)
+                boundedText($0, maximumBytes: pack == nil ? 8_192 : 4_096)
             },
             meetingQuestion: question,
             recentTranscript: transcript,
-            generalGuidancePolicy: GeneralGuidancePolicy.modelInstructions,
+            generalGuidancePolicy: GeneralGuidancePolicy.detailedModelInstructions,
             sealedEvidence: pack
         )
         let encoder = JSONEncoder()

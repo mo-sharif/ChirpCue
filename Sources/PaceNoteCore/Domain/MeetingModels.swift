@@ -62,6 +62,8 @@ public struct ConversationTurn: Codable, Equatable, Sendable {
     public let identity: TurnIdentity
     public let question: String
     public let recentTranscript: [TranscriptSegment]
+    public let deepTranscript: [TranscriptSegment]?
+    public var deepConversation: [TranscriptSegment] { deepTranscript ?? recentTranscript }
     public let speakerBrief: String?
     public let repoAlias: String?
     public let groundingFingerprint: String?
@@ -70,6 +72,7 @@ public struct ConversationTurn: Codable, Equatable, Sendable {
         identity: TurnIdentity,
         question: String,
         recentTranscript: [TranscriptSegment],
+        deepTranscript: [TranscriptSegment]? = nil,
         speakerBrief: String? = nil,
         repoAlias: String? = nil,
         groundingFingerprint: String? = nil
@@ -77,6 +80,7 @@ public struct ConversationTurn: Codable, Equatable, Sendable {
         self.identity = identity
         self.question = question
         self.recentTranscript = recentTranscript
+        self.deepTranscript = deepTranscript.map { Array($0.suffix(32)) }
         self.speakerBrief = SpeakerBriefPolicy.normalized(speakerBrief)
         self.repoAlias = repoAlias
         self.groundingFingerprint = groundingFingerprint

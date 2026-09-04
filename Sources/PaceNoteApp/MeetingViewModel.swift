@@ -1744,7 +1744,7 @@ final class MeetingViewModel {
             let model = MeetingViewModel(hasCompletedFirstRun: true)
             model.didBootstrap = true
             model.phase = .suggesting
-            model.statusDetail = "A repository-grounded response is ready."
+            model.statusDetail = "A detailed speaking response is ready."
             model.microphonePermission = .authorized
             model.systemAudioPermission = .authorized
             model.codexState = .ready(
@@ -1797,8 +1797,8 @@ final class MeetingViewModel {
             let quick = SuggestionCard(
                 id: UUID(uuidString: "66666666-6666-6666-6666-666666666666") ?? UUID(),
                 identity: identity,
-                stage: .bridge,
-                text: ResponseCoordinatorConfiguration.deterministicFallback,
+                stage: .quick,
+                text: "I’d start with read-only access and only the data the connector actually needs.",
                 confidence: 1
             )
             let deep = SuggestionCard(
@@ -1806,19 +1806,10 @@ final class MeetingViewModel {
                 identity: identity,
                 stage: .deep,
                 text:
-                    "Which datasets does the MCP actually need, and is access strictly read-only? My default is a dedicated least-privilege identity, short-lived credentials, query limits, and full audit logs.",
+                    "The part I’d add is this. I’d give the connector its own read-only account and limit it to approved views. For example, a reporting assistant could see order totals without seeing customer contact details. I’d also cap query duration and record which user requested each query. If writes become necessary later, I’d put them behind a separate approval step. That takes a little more setup, but it keeps a bad request from turning into a database-wide problem.",
                 confidence: 0.93,
-                evidence: [
-                    EvidenceReference(
-                        repoAlias: "ChirpCue",
-                        relativePath: "Sources/PaceNoteCore/Grounding/GroundingManager.swift",
-                        startLine: 35,
-                        endLine: 46,
-                        fileHash: String(repeating: "a", count: 64),
-                        claim: "The MCP uses a dedicated read-only identity with bounded query access."
-                    )
-                ],
-                deepKind: .answer
+                evidence: [],
+                deepKind: .generalAnswer
             )
             model.suggestionThreads = [
                 MeetingSuggestionThread(

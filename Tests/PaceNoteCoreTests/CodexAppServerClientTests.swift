@@ -807,6 +807,41 @@ final class CodexAppServerClientTests: XCTestCase {
         await client.shutdown()
     }
 
+    func testQuickForwardsSelectedInstantEffortAndFastTier() async throws {
+        let transport = FixtureTransport(exchanges: [
+            initializeExchange,
+            .init(
+                method: "turn/start",
+                params: [
+                    "threadId": "fork-thread",
+                    "input": [["type": "text", "text": "A synthetic question", "text_elements": []]],
+                    "approvalPolicy": "never",
+                    "model": "gpt-5.6-sol",
+                    "effort": "none",
+                    "serviceTierForTurn": "priority",
+                ],
+                result: CodexFixtures.value(CodexFixtures.turnStartResult),
+                eventsBeforeResult: [
+                    .notification(CodexFixtures.inbound(CodexFixtures.turnCompletedNotification))
+                ]
+            ),
+        ])
+        let client = makeClient(transport: transport)
+        try await client.initialize()
+        let result = try await client.startQuick(
+            threadID: "fork-thread", text: "A synthetic question", realtimePrompt: "Quick",
+            model: "gpt-5.6-sol", serviceTier: "priority", effort: "none"
+        )
+        guard case .turn(let turn) = result else {
+            await client.shutdown()
+            return XCTFail("Expected subscription text turn.")
+        }
+        for try await _ in turn.events {}
+        let exhausted = await transport.isExhausted()
+        XCTAssertTrue(exhausted)
+        await client.shutdown()
+    }
+
     func testTurnCollectsNotificationsAroundResponseAndInterruptsExactly() async throws {
         let outputSchema: JSONValue = [
             "type": "object",

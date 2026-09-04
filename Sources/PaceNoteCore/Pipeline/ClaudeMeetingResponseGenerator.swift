@@ -561,10 +561,10 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
         else {
             throw MeetingResponseError.invalidOutput
         }
-        let transcript = turn.recentTranscript.suffix(6).map { segment in
+        let transcript = turn.deepConversation.suffix(pack == nil ? 16 : 6).map { segment in
             DeepInput.TranscriptLine(
                 source: segment.source.rawValue,
-                text: boundedText(segment.text.replacingOccurrences(of: "\0", with: ""), maximumBytes: 768)
+                text: boundedText(segment.text.replacingOccurrences(of: "\0", with: ""), maximumBytes: 512)
             )
         }
         let input = DeepInput(
@@ -577,7 +577,7 @@ public actor ClaudeMeetingResponseGenerator: MeetingResponseGenerating {
             ),
             speakingStyle: boundedText(speakingStyle, maximumBytes: 256),
             speakerBrief: turn.speakerBrief.map {
-                boundedText($0, maximumBytes: 2_048)
+                boundedText($0, maximumBytes: pack == nil ? 8_192 : 4_096)
             },
             meetingQuestion: question,
             recentTranscript: transcript,

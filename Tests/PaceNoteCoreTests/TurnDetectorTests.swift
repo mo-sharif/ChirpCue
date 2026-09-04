@@ -4,6 +4,43 @@ import XCTest
 @testable import PaceNoteCore
 
 final class TurnDetectorTests: XCTestCase {
+    func testConversationalLeadInsDoNotHideUnpunctuatedQuestions() {
+        for question in [
+            "Okay, so how would you diagnose a slow database query",
+            "My first question is, how many years have you worked with React",
+            "Well um could you explain that tradeoff",
+            "And what if two clients update the same row",
+            "I was wondering how you would test the migration",
+        ] {
+            var detector = TurnDetector()
+            detector.observe(
+                TranscriptSegment(
+                    source: .them, text: question, startedAt: 1, endedAt: 2,
+                    isFinal: true, confidence: 0.9
+                ))
+            XCTAssertEqual(detector.candidate(at: 2)?.text, question)
+            XCTAssertNil(detector.candidate(at: 3), "A lead-in must not cause duplicate work.")
+        }
+    }
+
+    func testLeadInRecognitionDoesNotTurnStatementsIntoQuestions() {
+        for statement in [
+            "Okay, so the migration finished yesterday",
+            "Someone explained how the cache works",
+            "We discussed what the rollout should look like",
+            "The question is already answered",
+            "Wellness is important for the team",
+        ] {
+            var detector = TurnDetector()
+            detector.observe(
+                TranscriptSegment(
+                    source: .them, text: statement, startedAt: 1, endedAt: 2,
+                    isFinal: true, confidence: 0.9
+                ))
+            XCTAssertNil(detector.candidate(at: 2), statement)
+        }
+    }
+
     func testOutputQuestionTriggersAfterStablePause() {
         var detector = TurnDetector(configuration: .init(minimumSilence: 0.45))
         let segment = TranscriptSegment(

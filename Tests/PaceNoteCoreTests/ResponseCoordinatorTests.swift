@@ -4,6 +4,23 @@ import XCTest
 @testable import PaceNoteCore
 
 final class ResponseCoordinatorTests: XCTestCase {
+    func testDetailedExampleReachesThePrompterWithoutWordTruncation() async throws {
+        let turn = makeTurn(generation: 1, grounded: false, technical: false)
+        let answer =
+            "I’d use an idempotency key so a retry can’t create the same order twice. For example, the client could generate a key before sending an order and reuse it if the connection drops. The server would save the result against that key and return it again for a retry. I’d make saving the key and creating the order one transaction. The tradeoff is storing those results long enough to cover the retry window."
+        let coordinator = ResponseCoordinator(
+            generator: ScriptedGenerator(
+                quickDelay: .milliseconds(1), deepDelay: .milliseconds(5),
+                quickText: "I’d make retries safe before adding more of them.", turn: turn,
+                deepKind: .generalAnswer, deepText: answer
+            ))
+        let events = await Self.collect(coordinator.suggestions(for: turn))
+        let deep = try XCTUnwrap(events.compactMap(\.deep).first)
+        XCTAssertEqual(deep.sayNext, answer)
+        XCTAssertTrue(deep.composedText.hasSuffix("the retry window."))
+        XCTAssertTrue(events.compactMap(\.deepUnavailable).isEmpty)
+    }
+
     func testReviewedSecurityAnswerIsTheFirstEventWithoutWaitingForEitherModel() async throws {
         let turn = makeTurn(
             generation: 1,
@@ -378,6 +395,30 @@ final class ResponseCoordinatorTests: XCTestCase {
         XCTAssertEqual(deep.transition, "One thing I’d ask first.")
         XCTAssertEqual(deep.sayNext, "Can you share the missing detail so I can verify it?")
         XCTAssertFalse(deep.composedText.contains("retries three times"))
+    }
+
+    func testSpecificSafeClarificationAndAbstentionSurviveTheHandoff() async throws {
+        let candidates: [(DeepDraftKind, String)] = [
+            (
+                .clarification,
+                "Does the connector need to write data? I’d keep it read-only unless there’s a clear reason."
+            ),
+            (.abstention, "I’d need the query plan to say where the bottleneck is. I’d check the slowest step first."),
+        ]
+        for grounded in [false, true] {
+            for (kind, candidate) in candidates {
+                let turn = makeTurn(generation: 1, grounded: grounded)
+                let coordinator = ResponseCoordinator(
+                    generator: ScriptedGenerator(
+                        quickDelay: .milliseconds(1), deepDelay: .milliseconds(5),
+                        quickText: "I’d start with the simplest safe option.", turn: turn,
+                        deepKind: kind, deepText: candidate
+                    ))
+                let events = await Self.collect(coordinator.suggestions(for: turn))
+                let deep = try XCTUnwrap(events.compactMap(\.deep).first)
+                XCTAssertEqual(deep.sayNext, candidate)
+            }
+        }
     }
 
     func testGroundedTurnCanDisplayExplicitlyUngroundedGeneralAnswer() async throws {

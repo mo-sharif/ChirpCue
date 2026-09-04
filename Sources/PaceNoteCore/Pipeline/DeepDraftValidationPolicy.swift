@@ -12,7 +12,7 @@ enum DeepDraftValidationPolicy {
         case .generalAnswer:
             return draft.groundingFingerprint == nil
                 && draft.basis.isEmpty
-                && GeneralGuidancePolicy.accepts(draft.candidateSayNext)
+                && GeneralGuidancePolicy.acceptsDetailed(draft.candidateSayNext)
         case .clarification, .abstention:
             return draft.groundingFingerprint == turn.groundingFingerprint && draft.basis.isEmpty
         }
@@ -25,7 +25,7 @@ enum DeepDraftValidationPolicy {
         guard hasValidShape(draft, for: turn),
             draft.basis.isEmpty,
             draft.kind == .answer || draft.kind == .generalAnswer,
-            GeneralGuidancePolicy.accepts(draft.candidateSayNext)
+            GeneralGuidancePolicy.acceptsDetailed(draft.candidateSayNext)
         else {
             return nil
         }
@@ -46,8 +46,12 @@ enum DeepDraftValidationPolicy {
             && draft.generation == turn.identity.generation
             && !draft.candidateSayNext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !draft.candidateSayNext.contains("\0")
-            && draft.candidateSayNext.utf8.count <= 320
-            && wordCount(draft.candidateSayNext) <= 33
+            && draft.candidateSayNext.utf8.count
+                <= (draft.kind == .generalAnswer || (draft.kind == .answer && draft.basis.isEmpty)
+                    ? GeneralGuidancePolicy.detailedMaximumBytes : 320)
+            && wordCount(draft.candidateSayNext)
+                <= (draft.kind == .generalAnswer || (draft.kind == .answer && draft.basis.isEmpty)
+                    ? GeneralGuidancePolicy.detailedMaximumWords : 33)
             && draft.confidence.isFinite
             && (0...1).contains(draft.confidence)
             && draft.basis.count <= 6

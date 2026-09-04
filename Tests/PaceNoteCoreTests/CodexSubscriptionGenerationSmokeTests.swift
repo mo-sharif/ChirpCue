@@ -125,14 +125,23 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
                 deepComplexity: .narrowTechnical
             )
             generator = preparedGenerator
-            _ = try await Self.withTimeout(.seconds(90)) {
+            let runtime = try await Self.withTimeout(.seconds(90)) {
                 try await preparedGenerator.prepare()
             }
+            if let expectedModel = ProcessInfo.processInfo.environment["PACENOTE_EXPECT_DEEP_MODEL"] {
+                XCTAssertEqual(runtime.deepRoute.model, expectedModel)
+            }
+            print("ChirpCue live Deep route: model=\(runtime.deepRoute.model) effort=\(runtime.deepRoute.effort)")
+            let startedAt = ContinuousClock().now
             let deep = try await Self.withTimeout(.seconds(180)) {
                 try await preparedGenerator.generateDeep(for: fixture.generalTurn)
             }
             generatedDeep = deep
             try fixture.assertValidGeneral(deep: deep)
+            let wordCount = deep.candidateSayNext.split(whereSeparator: \.isWhitespace).count
+            XCTAssertGreaterThan(wordCount, 33, "A multipart comparison needs room for an example and tradeoff.")
+            let elapsed = Self.milliseconds(startedAt.duration(to: ContinuousClock().now))
+            print("ChirpCue live Deep: validated_words=\(wordCount) generation_ms=\(elapsed)")
             try fixture.assertStrictRawOutputs(await recorder.rawOutputs())
             let generationCounts = await recorder.generationCounts()
             XCTAssertEqual(generationCounts.quick, 0)
@@ -257,6 +266,161 @@ final class CodexSubscriptionGenerationSmokeTests: XCTestCase {
         let confirmedAbsentThreads = await recorder.confirmedAbsentThreadCount()
         XCTAssertEqual(successfulDeletes, 2)
         XCTAssertEqual(confirmedAbsentThreads, 0)
+    }
+
+    func testLiveQuickAndDeepOverlapThroughCoordinatorThenZeroize() async throws {
+        try await exerciseLiveParallelHandoff(
+            question: "What is the difference between a mutex and a semaphore, and when would you choose each?"
+        )
+    }
+
+    func testLiveParallelBloomFilterExplanationThenZeroize() async throws {
+        try await exerciseLiveParallelHandoff(
+            question: "How do Bloom filters work, and what tradeoff would you accept when using one?"
+        )
+    }
+
+    func testLiveLongPersonalExampleUsesSavedFactsThenZeroize() async throws {
+        // Synthetic persona only. No user profile or actual meeting data is read by this probe.
+        try await exerciseLiveParallelHandoff(
+            question: "Can you give me an example of how you handled a risky frontend migration?",
+            speakerBrief:
+                "I led a frontend migration by putting the new pages behind feature flags and inviting a small pilot group first, while keeping the old pages available so I could roll back quickly if problems appeared. I checked error reports with the team after each small rollout and expanded access only after those checks passed, which helped us finish the migration without forcing everyone through a single risky launch day.",
+            minimumDeepWords: 100,
+            expectedStoryTerms: ["flag", "pilot"]
+        )
+    }
+
+    private func exerciseLiveParallelHandoff(
+        question: String, speakerBrief: String? = nil, minimumDeepWords: Int = 34,
+        expectedStoryTerms: [String] = []
+    ) async throws {
+        guard ProcessInfo.processInfo.environment[Self.optInEnvironmentKey] == "1" else {
+            throw XCTSkip("Opt in to spend one Quick and one Deep ChatGPT-subscription response.")
+        }
+        let profileRoot = try Self.stableProfileRoot()
+        let lease = try CodexProfileLease.acquire(profileRoot: profileRoot)
+        defer { withExtendedLifetime(lease) {} }
+        try await Self.requireNoPendingCleanup(profileRoot: profileRoot)
+        let fixture = try await LiveSubscriptionFixture(
+            profileRoot: profileRoot, generalQuestion: question, speakerBrief: speakerBrief
+        )
+        let recorder = LiveGenerationRecorder()
+        let provider = fixture.makeGenerator(recorder: recorder, grounded: false)
+        // Exercise the real subscription Quick path, independent of Apple Intelligence availability.
+        let generator = LowLatencyMeetingResponseGenerator(
+            provider: provider,
+            quickGenerator: FoundationModelQuickGenerator(systemModelEnabled: false),
+            planType: nil,
+            providerName: "codex"
+        )
+        let sensitiveOutput = ResponseSensitiveOutputBuffer()
+        let coordinator = ResponseCoordinator(
+            generator: generator,
+            configuration: .init(quickDeadline: .seconds(15), resultTTL: .seconds(90)),
+            sensitiveOutputBuffer: sensitiveOutput
+        )
+        var shownText: [String] = []
+        var primaryError: (any Error)?
+        do {
+            let runtime = try await Self.withTimeout(.seconds(120)) {
+                try await provider.prepare()
+            }
+            _ = try await generator.prepare()
+            if let expected = ProcessInfo.processInfo.environment["PACENOTE_EXPECT_DEEP_MODEL"] {
+                XCTAssertEqual(runtime.deepRoute.model, expected)
+            }
+            print(
+                "ChirpCue parallel routes: quick=\(runtime.quickRoute.model)/\(runtime.quickRoute.effort) deep=\(runtime.deepRoute.model)/\(runtime.deepRoute.effort)"
+            )
+            let startedAt = ContinuousClock().now
+            var modelCue: CueEnvelope?
+            var quickShownAt: ContinuousClock.Instant?
+            var deepShownAt: ContinuousClock.Instant?
+            for await event in await coordinator.suggestions(for: fixture.generalTurn) {
+                switch event {
+                case .cue(let cue):
+                    shownText.append(cue.text)
+                    if !cue.isDeterministicBridge {
+                        modelCue = cue
+                        quickShownAt = ContinuousClock().now
+                        XCTAssertLessThanOrEqual(cue.text.split(whereSeparator: \.isWhitespace).count, 24)
+                        print(
+                            "ChirpCue parallel Quick visible: ms=\(Self.milliseconds(startedAt.duration(to: ContinuousClock().now)))"
+                        )
+                    }
+                case .deep(let deep):
+                    deepShownAt = ContinuousClock().now
+                    shownText.append(deep.composedText)
+                    let cue = try XCTUnwrap(modelCue, "Quick must be readable before Deep arrives.")
+                    XCTAssertEqual(deep.cueID, cue.id)
+                    XCTAssertEqual(deep.cueHash, cue.textHash)
+                    XCTAssertEqual(deep.turnID, fixture.generalTurn.identity.turnID)
+                    XCTAssertEqual(deep.generation, fixture.generalTurn.identity.generation)
+                    XCTAssertEqual(deep.kind, .generalAnswer)
+                    XCTAssertGreaterThanOrEqual(
+                        deep.sayNext.split(whereSeparator: \.isWhitespace).count, minimumDeepWords)
+                    for term in expectedStoryTerms {
+                        XCTAssertTrue(
+                            deep.sayNext.lowercased().contains(term),
+                            "The personal example must use supplied story details.")
+                    }
+                    XCTAssertTrue(GeneralGuidancePolicy.acceptsDetailed(deep.sayNext))
+                    print(
+                        "ChirpCue parallel Deep visible: ms=\(Self.milliseconds(startedAt.duration(to: ContinuousClock().now))) words=\(deep.sayNext.split(whereSeparator: \.isWhitespace).count)"
+                    )
+                case .quickUnavailable(let failure):
+                    let stage = await recorder.stageTrace()
+                    XCTFail("Parallel live Quick unavailable: \(failure.rawValue); safe stage \(stage).")
+                case .quickCleanupUnavailable(let failure):
+                    let stage = await recorder.stageTrace()
+                    XCTFail("Parallel live Quick cleanup unavailable: \(failure.rawValue); safe stage \(stage).")
+                case .deepUnavailable(let failure):
+                    let stage = await recorder.stageTrace()
+                    XCTFail("Parallel live Deep unavailable: \(failure.rawValue); safe stage \(stage).")
+                case .discardedStale:
+                    XCTFail("Current live turn must not be discarded.")
+                }
+            }
+            let starts = await recorder.dispatchTimes()
+            let quickStart = try XCTUnwrap(starts.quick)
+            let deepStart = try XCTUnwrap(starts.deep)
+            let quickShown = try XCTUnwrap(quickShownAt)
+            let deepShown = try XCTUnwrap(deepShownAt)
+            // These timestamps are recorded at the real app-server calls, not at task creation.
+            XCTAssertLessThan(quickStart, deepStart)
+            XCTAssertLessThan(deepStart, quickShown, "Deep must run while Quick is still generating.")
+            XCTAssertLessThan(quickShown, deepShown)
+            XCTAssertLessThanOrEqual(startedAt.duration(to: quickShown), .seconds(8))
+            print(
+                "ChirpCue parallel dispatch: quick_ms=\(Self.milliseconds(startedAt.duration(to: quickStart))) deep_ms=\(Self.milliseconds(startedAt.duration(to: deepStart))) overlap_verified=\(deepStart < quickShown)"
+            )
+            let counts = await recorder.generationCounts()
+            XCTAssertEqual(counts.quick, 1)
+            XCTAssertEqual(counts.deep, 1)
+        } catch {
+            primaryError = error
+            let stage = await recorder.stageTrace()
+            XCTFail("Parallel subscription smoke failed at safe stage \(stage).")
+        }
+        await coordinator.invalidate()
+        let shutdown = await generator.shutdown()
+        XCTAssertTrue(shutdown.failures.isEmpty)
+        let captured = await sensitiveOutput.takeSnapshotAndClear()
+        XCTAssertFalse(captured.overflowed)
+        let raw = await recorder.rawOutputs()
+        let needles =
+            fixture.residualSensitiveNeedles(
+                turn: fixture.generalTurn, deep: nil, rawOutputs: raw
+            ) + (shownText + captured.values + raw.quick + [speakerBrief].compactMap { $0 }).map { Data($0.utf8) }
+        let cleanup = await fixture.cleanupAndVerify(generator: nil, sensitiveNeedles: needles)
+        for failure in cleanup.failures {
+            XCTFail("Parallel subscription cleanup failed during \(failure.rawValue).")
+        }
+        if let primaryError { throw primaryError }
+        guard cleanup.failures.isEmpty else { throw LiveSubscriptionSmokeError.cleanupFailed }
+        let deletes = await recorder.successfulThreadDeleteCount()
+        XCTAssertEqual(deletes, 2)
     }
 
     func testRecoveryPlanRetainsEveryKnownIDWhenRemoteVerificationFails() {
@@ -458,7 +622,12 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
     private let rootEscapeCanaryURL: URL
     private let snapshotEscapeCanaryURL: URL
 
-    init(profileRoot expectedProfileRoot: URL) async throws {
+    init(
+        profileRoot expectedProfileRoot: URL,
+        generalQuestion: String =
+            "What is the difference between a mutex and a semaphore, and when would you choose each?",
+        speakerBrief: String? = nil
+    ) async throws {
         guard
             let supportRoot = FileManager.default.urls(
                 for: .applicationSupportDirectory,
@@ -587,8 +756,6 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
             repoAlias: snapshot.repoAlias,
             groundingFingerprint: snapshot.groundingFingerprint
         )
-        let generalQuestion =
-            "What is the difference between a mutex and a semaphore, and when would you choose each?"
         generalTurn = ConversationTurn(
             identity: .init(meetingID: meetingID, generation: 2),
             question: generalQuestion,
@@ -602,6 +769,7 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
                     confidence: 1
                 )
             ],
+            speakerBrief: speakerBrief,
             repoAlias: nil,
             groundingFingerprint: nil
         )
@@ -624,13 +792,15 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
         recorder: LiveGenerationRecorder,
         grounded: Bool = true,
         subscriptionQuickEnabled: Bool = true,
-        deepComplexity: CodexResponseComplexity = .hardTechnical
+        deepComplexity: CodexResponseComplexity = .hardTechnical,
+        routingPolicy: CodexRoutingPolicy = .liveCoaching
     ) -> CodexMeetingResponseGenerator {
         CodexMeetingResponseGenerator(
             configuration: responseConfiguration(
                 grounded: grounded,
                 subscriptionQuickEnabled: subscriptionQuickEnabled,
-                deepComplexity: deepComplexity
+                deepComplexity: deepComplexity,
+                routingPolicy: routingPolicy
             ),
             journal: journal,
             evidenceVerifier: LiveRecordingEvidenceVerifier(recorder: recorder),
@@ -735,7 +905,7 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
         XCTAssertEqual(deep.kind, .generalAnswer)
         XCTAssertTrue(deep.basis.isEmpty)
         XCTAssertTrue(deep.missingEvidence.isEmpty)
-        guard GeneralGuidancePolicy.accepts(deep.candidateSayNext) else {
+        guard GeneralGuidancePolicy.acceptsDetailed(deep.candidateSayNext) else {
             throw LiveSubscriptionSmokeError.invalidEvidence
         }
     }
@@ -1053,7 +1223,8 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
     private func responseConfiguration(
         grounded: Bool,
         subscriptionQuickEnabled: Bool = true,
-        deepComplexity: CodexResponseComplexity = .hardTechnical
+        deepComplexity: CodexResponseComplexity = .hardTechnical,
+        routingPolicy: CodexRoutingPolicy = .liveCoaching
     ) -> MeetingResponseConfiguration {
         .init(
             meetingID: meetingID,
@@ -1062,6 +1233,7 @@ private final class LiveSubscriptionFixture: @unchecked Sendable {
             clientVersion: "0.1.0",
             groundingSnapshot: grounded ? snapshot : nil,
             deepComplexity: deepComplexity,
+            routingPolicy: routingPolicy,
             subscriptionQuickEnabled: subscriptionQuickEnabled,
             realtimeQuickEnabled: false,
             quickPerMinute: 1,
@@ -1213,9 +1385,20 @@ private actor LiveGenerationRecorder {
     private var rawQuickOutputs: [String] = []
     private var rawDeepOutputs: [String] = []
     private var safeStages: [String] = []
+    private var quickDispatchedAt: ContinuousClock.Instant?
+    private var deepDispatchedAt: ContinuousClock.Instant?
 
-    func recordQuickStart() { quickStarts += 1 }
-    func recordDeepStart() { deepStarts += 1 }
+    func recordQuickStart() {
+        quickStarts += 1
+        quickDispatchedAt = ContinuousClock().now
+    }
+    func recordDeepStart() {
+        deepStarts += 1
+        deepDispatchedAt = ContinuousClock().now
+    }
+    func dispatchTimes() -> (quick: ContinuousClock.Instant?, deep: ContinuousClock.Instant?) {
+        (quickDispatchedAt, deepDispatchedAt)
+    }
     func recordSuccessfulThreadDelete() { successfulThreadDeletes += 1 }
     func recordConfirmedAbsentThread() { confirmedAbsentThreads += 1 }
     func recordRawOutput(_ text: String, lane: LiveGenerationLane) {
@@ -1235,7 +1418,7 @@ private actor LiveGenerationRecorder {
     }
 
     func stageTrace() -> String {
-        safeStages.suffix(10).joined(separator: " > ")
+        safeStages.suffix(24).joined(separator: " > ")
     }
 
     func generationCounts() -> (quick: Int, deep: Int) {
@@ -1542,6 +1725,7 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
         realtimePrompt: String,
         model: String?,
         serviceTier: String?,
+        effort: String?,
         outputSchema: JSONValue?,
         skills: [CodexSkillInvocation]
     ) async throws -> CodexQuickSession {
@@ -1555,6 +1739,7 @@ private actor LiveCountingCodexClient: CodexMeetingClient {
                 realtimePrompt: realtimePrompt,
                 model: model,
                 serviceTier: serviceTier,
+                effort: effort,
                 outputSchema: outputSchema,
                 skills: skills
             )

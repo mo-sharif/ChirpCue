@@ -179,7 +179,7 @@ final class ClaudeIsolatedRuntimeTests: XCTestCase {
         )
         XCTAssertTrue(
             ClaudeRuntimeArguments.deepSystemPrompt.contains(
-                GeneralGuidancePolicy.modelInstructions
+                GeneralGuidancePolicy.detailedModelInstructions
             )
         )
         XCTAssertTrue(

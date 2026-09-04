@@ -317,10 +317,10 @@ private struct SpeakerBriefSetupSection: View {
     @AppStorage("paceNote.speakerBrief") private var speakerBrief = ""
 
     var body: some View {
-        GroupBox("About you (optional)") {
+        GroupBox("About you and your examples (optional)") {
             VStack(alignment: .leading, spacing: 8) {
                 TextEditor(text: $speakerBrief)
-                    .frame(minHeight: 82)
+                    .frame(minHeight: 120)
                     .accessibilityLabel("About You")
                     .accessibilityIdentifier("meeting-setup.speaker-brief")
                     .onChange(of: speakerBrief) { _, newValue in
@@ -333,7 +333,7 @@ private struct SpeakerBriefSetupSection: View {
                     }
                 HStack(alignment: .firstTextBaseline) {
                     Text(
-                        "Write short first-person facts you would naturally say, such as your React experience, recent work, and role. A relevant sentence can appear immediately as your Quick answer. This is stored locally until you clear it."
+                        "Start with a short summary, then add real project stories: the situation, your role, what you did, and the result. Deep uses these facts for personal examples; missing stories stay hypothetical. Saved locally until cleared and sent with meeting inference. ChatGPT memories are not imported."
                     )
                     Spacer()
                     Text("\(speakerBrief.count)/\(SpeakerBriefPolicy.maximumCharacters)")
